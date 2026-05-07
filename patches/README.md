@@ -51,29 +51,32 @@ node fix-sidebar.js
 
 Idempotent — already-present entries are skipped.
 
-## 3. Terminal preset commands — `update-presets.js`
+## 3. Agent commands — `update-presets.js`
 
-Sets the Claude / Codex / Gemini agent presets to "max-thinking + bypass
-approvals" command lines. Edits `v2-terminal-presets-{orgId}` in the same
-Chromium localStorage as `fix-sidebar.js`.
+Sets the Claude / Codex / Gemini agent argv to "max-thinking + bypass
+approvals". Calls the **local host-service tRPC**
+(`settings.agentConfigs.update`) at `http://127.0.0.1:<port>/trpc/...`.
 
-Current targets (matched by `agentId`, not name):
+Live update — Superset stays running, UI auto-refreshes on next
+`getAgentPresets` query invalidation (Settings → Agents panel close+open,
+or Cmd+R).
 
-| Agent  | Command |
-|--------|---------|
-| claude | `claude --dangerously-skip-permissions --effort max` |
-| codex  | `codex -c model_reasoning_effort="xhigh" --yolo` |
-| gemini | `gemini --yolo` |
+Current targets (matched by `preset_id` in `host.db`):
+
+| Agent  | Argv |
+|--------|------|
+| claude | `--dangerously-skip-permissions --effort max` |
+| codex  | `-c model_reasoning_effort="xhigh" --yolo` |
+| gemini | `--yolo` |
 
 ```bash
-# 1. Cmd+Q Superset
-# 2. From a NON-Superset terminal:
 node update-presets.js
-# 3. Relaunch Superset
 ```
 
-Idempotent — already-correct presets report `unchanged`. Customize the
-`TARGETS` map at the top of the script to change commands.
+No npm packages required (Node built-ins only). Reads the auth token from
+`~/.superset/host/<org>/manifest.json` and the agent IDs from
+`~/.superset/host/<org>/host.db`. Customize the `TARGETS` map at the top
+of the script to change argv.
 
 ## When to re-run
 
@@ -81,8 +84,8 @@ After **every Superset desktop update**:
 1. `python3 patch-asar.py` — re-apply icon size
 2. `fix-sidebar.js` only if worktrees are missing in sidebar (rare; happens
    only when adopt was called via API outside the UI)
-3. `update-presets.js` only if presets reset (rare; localStorage usually
-   survives updates)
+3. `update-presets.js` only if presets reset (rare; `host.db` survives
+   updates — but if Superset reseeds defaults, re-run)
 
 ## How this was found
 
