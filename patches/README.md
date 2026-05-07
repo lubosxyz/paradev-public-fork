@@ -1,7 +1,8 @@
 # Superset v2 patches
 
-Two persistent customizations that need to be re-applied after each
-Superset desktop update (the update overwrites `app.asar`).
+Three persistent customizations for Superset v2 desktop. Numbers 1+2 need
+re-applying after each Superset update (the update overwrites `app.asar`);
+number 3 is one-shot localStorage, only re-run if presets reset.
 
 ## 1. Sidebar icon size — `patch-asar.py`
 
@@ -50,12 +51,38 @@ node fix-sidebar.js
 
 Idempotent — already-present entries are skipped.
 
+## 3. Terminal preset commands — `update-presets.js`
+
+Sets the Claude / Codex / Gemini agent presets to "max-thinking + bypass
+approvals" command lines. Edits `v2-terminal-presets-{orgId}` in the same
+Chromium localStorage as `fix-sidebar.js`.
+
+Current targets (matched by `agentId`, not name):
+
+| Agent  | Command |
+|--------|---------|
+| claude | `claude --dangerously-skip-permissions --effort max` |
+| codex  | `codex -c model_reasoning_effort="xhigh" --yolo` |
+| gemini | `gemini --yolo` |
+
+```bash
+# 1. Cmd+Q Superset
+# 2. From a NON-Superset terminal:
+node update-presets.js
+# 3. Relaunch Superset
+```
+
+Idempotent — already-correct presets report `unchanged`. Customize the
+`TARGETS` map at the top of the script to change commands.
+
 ## When to re-run
 
 After **every Superset desktop update**:
 1. `python3 patch-asar.py` — re-apply icon size
-2. `fix-sidebar.js` only if you see worktrees missing in sidebar (rare;
-   only happens when adopt was called via API outside the UI)
+2. `fix-sidebar.js` only if worktrees are missing in sidebar (rare; happens
+   only when adopt was called via API outside the UI)
+3. `update-presets.js` only if presets reset (rare; localStorage usually
+   survives updates)
 
 ## How this was found
 
