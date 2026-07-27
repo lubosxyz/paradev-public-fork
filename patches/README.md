@@ -1,8 +1,9 @@
 # Superset v2 patches
 
-Four persistent customizations for Superset v2 desktop. Numbers 1+2+4 need
-re-applying after each Superset update (the update overwrites `app.asar`);
-number 3 is one-shot localStorage, only re-run if presets reset.
+Five persistent customizations and recovery procedures for Superset v2 desktop.
+Sections 1+4 patch the app bundle and may need re-applying after an update.
+Sections 2+3+5 repair persisted local state and only run when their specific
+symptom appears.
 
 ## 1. Sidebar icon size — `patch-asar.py`
 
@@ -115,9 +116,25 @@ What it changes, all idempotent:
 > for modules that aren't there (2026-07-27 incident). Repair:
 > `node ~/.superset/restore-asar-unpacked.js --apply`.
 
+## 5. Codex white rows
+
+Codex probes the terminal background through OSC 11 and derives user-message
+and composer backgrounds from the returned RGB value. Sessions started while
+Superset reported a light background persisted explicit `#f4f4f4` or
+`#f0f0f0` escape sequences in terminal buffers. Changing the current palette
+or setting `NO_COLOR` cannot rewrite those stored sequences.
+
+Keep Superset on an explicit dark terminal theme before starting Codex. For
+affected sessions, restart only their Codex process and replace the two stale
+background sequences in the persisted `terminal-buffer:*` and
+`terminal-state-v2:*` localStorage entries with the dark derived background
+`#40413c` (`ESC[48;2;64;65;60m`). Do not change the global xterm palette:
+current Codex processes already derive the correct dark background.
+
 ## When to re-run
 
-After **every Superset desktop update**:
+After a **Superset desktop update**, re-apply bundle patches and run the other
+procedures only if their symptom appears:
 1. `python3 patch-asar.py` — re-apply icon size
 2. `python3 apply-ui-patches.py <dist-root>` — re-apply icon source, layout
    markers and CSS (only needed when you rebuild/repack; the in-place asar
@@ -126,6 +143,8 @@ After **every Superset desktop update**:
    only when adopt was called via API outside the UI)
 4. `update-presets.js` only if presets reset (rare; `host.db` survives
    updates — but if Superset reseeds defaults, re-run)
+5. Follow **Codex white rows** only if an existing Codex session shows stale
+   light rows; do not rewrite healthy buffers.
 
 ## How this was found
 
