@@ -2,15 +2,23 @@
 """
 Binary-patch Superset app.asar to enlarge sidebar project icons.
 
-Default v2 sidebar renders project icons at 16×16 (size-4). This patch
-enlarges the icon container + ProjectThumbnail to 20×20 (size-5).
+The v2 sidebar renders the project icon via three cooperating class
+strings inside the sidebar row component:
 
-Both replacements are length-preserving (size-4↔size-5↔size-6↔size-7
-all are 6 chars), so the asar header offsets stay valid — no repacking
-needed.
+  1. container  — the flex box that holds the icon       ("flex size-N …")
+  2. thumbnail  — the ProjectThumbnail itself            ("size-N group-hover:hidden")
+  3. chevron    — the hover-reveal collapse arrow         ("hidden size-N … group-hover:block")
+
+Newer Superset builds ship these at mixed sizes (container size-5 = 20px
+box, but thumbnail size-4 = 16px icon inside it), which is why the icon
+looks small even after an earlier patch. This script sets ALL THREE to the
+same target size so the icon actually fills the box.
+
+Every "size-N" token is 6 chars, so all replacements are length-preserving
+— the asar header offsets stay valid, no repacking needed.
 
 Usage:
-    python3 patch-asar.py              # default: size-5
+    python3 patch-asar.py              # default: size-5 (20×20)
     python3 patch-asar.py --size 6     # 24×24
     python3 patch-asar.py --revert     # restore from latest backup
 
@@ -25,6 +33,15 @@ import time
 ASAR = "/Applications/Superset.app/Contents/Resources/app.asar"
 BACKUP_DIR = os.path.expanduser("~/.superset")
 
+# Each element is matched by a template containing "size-{}" exactly once in
+# the relevant spot. We try every current size 4..9 until the template hits
+# exactly one occurrence, then rewrite it to the target size.
+TEMPLATES = {
+    "container": '"flex size-{} shrink-0 items-center justify-center", children: [',
+    "thumbnail": 'className: "size-{} group-hover:hidden"',
+    "chevron": '"hidden size-{} text-muted-foreground transition-transform group-hover:block"',
+}
+
 
 def latest_backup():
     backups = sorted(
@@ -34,11 +51,25 @@ def latest_backup():
     return os.path.join(BACKUP_DIR, backups[-1]) if backups else None
 
 
+def patch_element(data: bytes, name: str, tmpl: str, size: int) -> bytes:
+    target = tmpl.format(size).encode()
+    if data.count(target) == 1:
+        print(f"{name}: already size-{size}")
+        return data
+    for cur in range(4, 10):
+        if cur == size:
+            continue
+        old = tmpl.format(cur).encode()
+        if data.count(old) == 1:
+            data = data.replace(old, target)
+            print(f"{name}: size-{cur} → size-{size}")
+            return data
+    sys.exit(f"no unique '{name}' anchor found — bundle structure may have changed")
+
+
 def patch(size: int):
     if not (4 <= size <= 9):
         sys.exit("size must be 4..9 (tailwind size-N)")
-    if size == 4:
-        sys.exit("size-4 is the default, nothing to patch")
 
     backup = os.path.join(BACKUP_DIR, f"app.asar.backup-pre-icon-patch-{time.strftime('%Y%m%d-%H%M%S')}")
     shutil.copy2(ASAR, backup)
@@ -47,40 +78,8 @@ def patch(size: int):
     with open(ASAR, "rb") as f:
         data = f.read()
 
-    # Find any size-N → replace to size-{size}; both must currently exist somewhere
-    for cur in range(4, 10):
-        if cur == size:
-            continue
-        old_thumb = f'"size-{cur} group-hover:hidden"'.encode()
-        new_thumb = f'"size-{size} group-hover:hidden"'.encode()
-        n = data.count(old_thumb)
-        if n == 1:
-            data = data.replace(old_thumb, new_thumb)
-            print(f"thumbnail: size-{cur} → size-{size}")
-            break
-    else:
-        sys.exit("no thumbnail size-N (4..9) found — bundle structure may have changed")
-
-    # Container — anchored multi-line context
-    for cur in range(4, 10):
-        if cur == size:
-            continue
-        anchor = (
-            f'"flex size-{cur} shrink-0 items-center justify-center", children: [\n'
-            '                /* @__PURE__ */ jsxRuntimeExports.jsx(\n'
-            '                  ProjectThumbnail,'
-        ).encode()
-        new_anchor = anchor.replace(
-            f'flex size-{cur}'.encode(),
-            f'flex size-{size}'.encode(),
-        )
-        n = data.count(anchor)
-        if n == 1:
-            data = data.replace(anchor, new_anchor)
-            print(f"container: size-{cur} → size-{size}")
-            break
-    else:
-        sys.exit("no container anchor found — bundle structure may have changed")
+    for name, tmpl in TEMPLATES.items():
+        data = patch_element(data, name, tmpl, size)
 
     with open(ASAR, "wb") as f:
         f.write(data)

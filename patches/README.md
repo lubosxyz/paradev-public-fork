@@ -1,6 +1,6 @@
 # Superset v2 patches
 
-Three persistent customizations for Superset v2 desktop. Numbers 1+2 need
+Four persistent customizations for Superset v2 desktop. Numbers 1+2+4 need
 re-applying after each Superset update (the update overwrites `app.asar`);
 number 3 is one-shot localStorage, only re-run if presets reset.
 
@@ -8,10 +8,15 @@ number 3 is one-shot localStorage, only re-run if presets reset.
 
 Default v2 renders project icons at 16×16 (`size-4`) in the sidebar,
 which is too small. Patch enlarges to 20×20 (`size-5`) by binary-patching
-two same-length strings inside the bundled `layout-*.js` chunk:
+three cooperating class strings inside the bundled `layout-*.js` chunk:
 
-- ProjectThumbnail className: `"size-4 group-hover:hidden"` → `"size-5 group-hover:hidden"`
-- Container className anchor: `"flex size-4 shrink-0 ..."` (followed by ProjectThumbnail) → `"flex size-5 ..."`
+- container — the flex box holding the icon: `"flex size-N shrink-0 items-center justify-center"`
+- thumbnail — the ProjectThumbnail itself: `"size-N group-hover:hidden"`
+- chevron — the hover-reveal collapse arrow: `"hidden size-N … group-hover:block"`
+
+Newer builds ship these at *mixed* sizes (container `size-5` but thumbnail
+`size-4`), so the icon stayed visually small after the older two-string patch —
+hence all three are now driven from one `TEMPLATES` map and set together.
 
 All `size-N` strings are 6 chars, so asar header offsets stay valid — no repacking, no
 unpacking-pattern issues with native modules.
@@ -78,13 +83,48 @@ No npm packages required (Node built-ins only). Reads the auth token from
 `~/.superset/host/<org>/host.db`. Customize the `TARGETS` map at the top
 of the script to change argv.
 
+## 4. Sidebar layout + icon source — `apply-ui-patches.py`
+
+Operates on an **extracted dist tree** (plain files, no asar length limits), so
+it fits both a source build and an unpacked archive:
+
+```bash
+python3 apply-ui-patches.py /path/to/apps/desktop        # source build (has dist/)
+python3 apply-ui-patches.py /path/to/extracted-asar-root # before repacking
+```
+
+What it changes, all idempotent:
+
+- **Icon source** — 1.17 composes sidebar icons as GitHub owner avatars and
+  ignores custom ones. Rewrites that to `superset-icon://projects/<key>`, the
+  internal protocol serving `~/.superset/project-icons/<projectId>.<ext>`.
+- **Sizes** — expanded sidebar rows to `size-6`, matching the collapsed rail;
+  drops the icon→chevron swap on row hover.
+- **Layout markers** — tags the nav, children container, sidebar root, project
+  header and footer so CSS can reach them (`topnav`, `kids`, `sbroot`,
+  `projhdr`, `sbfoot`), and switches the footer org dropdown to its collapsed
+  variant.
+- **CSS** — injects a `<style>` block into `dist/renderer/index.html`: nav
+  icons on one row with hover tooltips, the settings/avatar/add-repo cluster in
+  the top-right corner, an orange stripe + grey gradient on the active session,
+  and a hover gradient tween (330 ms in / 410 ms out).
+
+> When you deploy a repacked `app.asar` by hand, you must install
+> **`app.asar.unpacked/` as well** — `createPackageWithOptions` writes those
+> files beside the archive, and shipping only the archive leaves the app looking
+> for modules that aren't there (2026-07-27 incident). Repair:
+> `node ~/.superset/restore-asar-unpacked.js --apply`.
+
 ## When to re-run
 
 After **every Superset desktop update**:
 1. `python3 patch-asar.py` — re-apply icon size
-2. `fix-sidebar.js` only if worktrees are missing in sidebar (rare; happens
+2. `python3 apply-ui-patches.py <dist-root>` — re-apply icon source, layout
+   markers and CSS (only needed when you rebuild/repack; the in-place asar
+   variants live in the `/patch-superset` skill)
+3. `fix-sidebar.js` only if worktrees are missing in sidebar (rare; happens
    only when adopt was called via API outside the UI)
-3. `update-presets.js` only if presets reset (rare; `host.db` survives
+4. `update-presets.js` only if presets reset (rare; `host.db` survives
    updates — but if Superset reseeds defaults, re-run)
 
 ## How this was found
