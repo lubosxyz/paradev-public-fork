@@ -301,16 +301,17 @@ grep -a -o -E 'theme-type.{0,12}|"background":"#[0-9a-fA-F]{6}"' \
 After a **Superset desktop update**, re-apply bundle patches and run the other
 procedures only if their symptom appears:
 1. `python3 patch-asar.py` — re-apply icon size
-2. `python3 apply-ui-patches.py <dist-root>` — re-apply icon source, layout
+2. `python3 patch-tray-icon.py` — keep the macOS menu-bar icon hidden
+3. `python3 apply-ui-patches.py <dist-root>` — re-apply icon source, layout
    markers and CSS (only needed when you rebuild/repack; the in-place asar
    variants live in the `/patch-superset` skill)
-3. `fix-sidebar.js` only if worktrees are missing in sidebar (rare; happens
+4. `fix-sidebar.js` only if worktrees are missing in sidebar (rare; happens
    only when adopt was called via API outside the UI)
-4. `update-presets.js` only if presets reset (rare; `host.db` survives
+5. `update-presets.js` only if presets reset (rare; `host.db` survives
    updates — but if Superset reseeds defaults, re-run)
-5. Follow **Codex white rows** only if an existing Codex session shows stale
+6. Follow **Codex white rows** only if an existing Codex session shows stale
    light rows; do not rewrite healthy buffers.
-6. `python3 render-guard.py` — **always**, and after any app restart. It is a
+7. `python3 render-guard.py` — **always**, and after any app restart. It is a
    read-only check; it only writes with `--apply`.
 
 > **The installed build does not actually auto-update.** 1.17.0 was repacked and
