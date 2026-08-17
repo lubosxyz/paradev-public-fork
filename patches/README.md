@@ -7,11 +7,17 @@ symptom appears. Section 6 asserts the settings that keep terminal panes
 readable — run it on every `/patch-superset`, it is a check first and a repair
 only on request.
 
+> **Signed production bundle:** every `app.asar` mutation invalidates Apple's
+> resource seal, even when byte length and ASAR offsets stay unchanged. The
+> in-place scripts therefore require `--ack-invalid-apple-signature` for the
+> default `/Applications/Superset.app` target. Ad-hoc or differently signed
+> replacements also change the code requirement and break Squirrel update
+> compatibility with official Superset releases.
+
 ## 1. Sidebar icon size — `patch-asar.py`
 
-Default v2 renders project icons at 16×16 (`size-4`) in the sidebar,
-which is too small. Patch enlarges to 20×20 (`size-5`) by binary-patching
-three cooperating class strings inside the bundled `layout-*.js` chunk:
+Superset 1.22 ships a `size-5` container with a `size-4` thumbnail. The current
+patch sets all three cooperating class strings to `size-6` (24×24):
 
 - container — the flex box holding the icon: `"flex size-N shrink-0 items-center justify-center"`
 - thumbnail — the ProjectThumbnail itself: `"size-N group-hover:hidden"`
@@ -19,18 +25,28 @@ three cooperating class strings inside the bundled `layout-*.js` chunk:
 
 Newer builds ship these at *mixed* sizes (container `size-5` but thumbnail
 `size-4`), so the icon stayed visually small after the older two-string patch —
-hence all three are now driven from one `TEMPLATES` map and set together.
+hence all three are validated and changed together.
 
 All `size-N` strings are 6 chars, so asar header offsets stay valid — no repacking, no
 unpacking-pattern issues with native modules.
 
+The approved 1.22 UI set is applied in one validated atomic swap:
+
 ```bash
-python3 patch-asar.py             # default size-5 (20×20)
-python3 patch-asar.py --size 6    # 24×24 if you want bigger
-python3 patch-asar.py --revert    # restore from ~/.superset/app.asar.backup-*
+python3 patch-asar.py --size 6 --hide-tray --custom-project-icons \
+  --keep-icon-on-hover --ack-invalid-apple-signature
+python3 patch-asar.py --revert
 ```
 
-Backup of the original is saved to `~/.superset/app.asar.backup-pre-icon-patch-<ts>`.
+The original is saved to `~/.superset/app.asar.backup-pre-ui-patch-<ts>` with
+a sibling integrity manifest. Restore verifies the backup SHA-256 and refuses
+to overwrite an ASAR other than the exact patched bundle paired with it; both
+backup publication and restore use an atomic swap. The combined and legacy
+tray-only patchers share a target-keyed lock under `~/.superset/patch-locks/`
+(outside the signed app bundle), and the combined patch
+rechecks the source digest immediately before replacing it.
+Parent/child indentation no longer needs a local patch: 1.22 ships the project
+row at `pl-2`, while child rows retain their deeper indentation.
 
 ## 2. Sidebar workspace visibility — `fix-sidebar.js`
 
@@ -172,7 +188,8 @@ renderer — Claude in your own terminal keeps the flicker-free one.
 
 It matches on `command = 'claude'`, not on `preset_id`, because
 `resume-all.js` creates its own **"Claude Resume"** config (`preset_id='custom'`,
-`env: {}`) and `/superset-resume-all` restores panes through *that* id. A
+`env: {"CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN":"1"}`) and
+`/superset-resume-all` restores panes through *that* id. A
 preset-only guard reports OK while the exact recovery path that produced the
 mangled output stays unfixed — which is how this was found (Codex review round
 10, confirmed against the live `host.db`).
@@ -300,8 +317,8 @@ grep -a -o -E 'theme-type.{0,12}|"background":"#[0-9a-fA-F]{6}"' \
 
 After a **Superset desktop update**, re-apply bundle patches and run the other
 procedures only if their symptom appears:
-1. `python3 patch-asar.py` — re-apply icon size
-2. `python3 patch-tray-icon.py` — keep the macOS menu-bar icon hidden
+1. `python3 patch-asar.py --size 6 --hide-tray --custom-project-icons --keep-icon-on-hover --ack-invalid-apple-signature` — re-apply the complete approved production patch set after accepting an invalid Apple seal
+2. `python3 patch-tray-icon.py --ack-invalid-apple-signature` — legacy tray-only alternative; do not run it in addition to step 1
 3. `python3 apply-ui-patches.py <dist-root>` — re-apply icon source, layout
    markers and CSS (only needed when you rebuild/repack; the in-place asar
    variants live in the `/patch-superset` skill)
@@ -314,13 +331,12 @@ procedures only if their symptom appears:
 7. `python3 render-guard.py` — **always**, and after any app restart. It is a
    read-only check; it only writes with `--apply`.
 
-> **The installed build does not actually auto-update.** 1.17.0 was repacked and
-> ad-hoc re-signed on 2026-07-29, so Squirrel rejects every downloaded update:
-> `Code signature … did not pass validation` (seen again for 1.20.0 on
-> 2026-08-10 12:49 CEST in `~/Library/Logs/Superset/main.log`). So "an update
-> overwrote the patch" is *not* how these settings get lost — `host.db` preset
-> reseeding, `app-state.json` rewrites and agent-CLI defaults are. Check with
-> `render-guard.py`, not by watching the version number.
+> **Updater caveat:** the clean official 1.22 bundle was modified in place on
+> 2026-08-17 with explicit user approval. Its Apple resource seal is therefore
+> invalid, although ASAR offsets and the original signing identity are retained.
+> Do not assume Squirrel will update it successfully. Run
+> `check-upstream-patches.py`, install an official update consciously, then
+> re-apply only the anchors that remain necessary.
 
 ## How this was found
 

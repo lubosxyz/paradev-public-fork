@@ -1,0 +1,447 @@
+"""Tests for the transactional, length-preserving Superset UI patch."""
+
+import importlib.util
+from pathlib import Path
+import tempfile
+import unittest
+from unittest import mock
+
+
+MODULE_PATH = Path(__file__).parents[1] / "setup/superset/patches/patch-asar.py"
+SPEC = importlib.util.spec_from_file_location("patch_superset_asar", MODULE_PATH)
+MODULE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MODULE)
+
+
+class SupersetIconPatchSafetyTest(unittest.TestCase):
+    """The production bundle must not lose its Apple seal implicitly."""
+
+    def test_default_signed_bundle_requires_explicit_signature_ack(self):
+        with self.assertRaisesRegex(RuntimeError, "Apple resource seal"):
+            MODULE.require_signature_ack(MODULE.DEFAULT_ASAR, False)
+
+    def test_signature_ack_allows_default_bundle(self):
+        MODULE.require_signature_ack(MODULE.DEFAULT_ASAR, True)
+
+    def test_non_default_fixture_does_not_need_signature_ack(self):
+        MODULE.require_signature_ack(Path("/tmp/fixture.app.asar"), False)
+
+    def test_lock_path_depends_on_target_not_backup_directory(self):
+        target = Path("/tmp/fixture.app.asar")
+        lock = MODULE._lock_path(target)
+        self.assertEqual(lock.parent, MODULE.LOCK_ROOT)
+        self.assertEqual(lock.suffix, ".lock")
+        self.assertEqual(lock, MODULE._lock_path(target.resolve()))
+
+
+class SupersetUiPatchTest(unittest.TestCase):
+    def stock_bundle(self):
+        return b"|".join(
+            [
+                MODULE.TRAY_ENABLED,
+                MODULE.CONTAINER_TEMPLATE.format(5).encode(),
+                MODULE.THUMBNAIL_VISIBLE_TEMPLATE.format(4).encode(),
+                MODULE.CHEVRON_VISIBLE_TEMPLATE.format(4).encode(),
+                *([MODULE.PROJECT_ICON_UPSTREAM] * MODULE.EXPECTED_PROJECT_ICON_COUNT),
+            ]
+        )
+
+    def patch(self, data):
+        return MODULE.patch_bytes(
+            data,
+            size=6,
+            hide_tray=True,
+            custom_project_icons=True,
+            keep_icon_on_hover=True,
+        )
+
+    def test_selected_patch_is_length_preserving_and_complete(self):
+        original = self.stock_bundle()
+
+        patched, changes = self.patch(original)
+
+        self.assertEqual(len(original), len(patched))
+        self.assertIn(MODULE.TRAY_DISABLED, patched)
+        self.assertEqual(
+            patched.count(MODULE.PROJECT_ICON_CUSTOM),
+            MODULE.EXPECTED_PROJECT_ICON_COUNT,
+        )
+        self.assertIn(MODULE.CONTAINER_TEMPLATE.format(6).encode(), patched)
+        self.assertIn(MODULE.THUMBNAIL_PINNED_TEMPLATE.format(6).encode(), patched)
+        self.assertIn(MODULE.CHEVRON_HIDDEN_TEMPLATE.format(6).encode(), patched)
+        self.assertGreaterEqual(len(changes), 7)
+
+    def test_selected_patch_is_idempotent(self):
+        once, _ = self.patch(self.stock_bundle())
+
+        twice, changes = self.patch(once)
+
+        self.assertEqual(once, twice)
+        self.assertEqual(changes, [])
+
+    def test_project_icon_count_is_strict(self):
+        malformed = self.stock_bundle().replace(MODULE.PROJECT_ICON_UPSTREAM, b"x" * 51, 1)
+        with self.assertRaisesRegex(RuntimeError, "project icon anchors"):
+            self.patch(malformed)
+
+    def test_unknown_sidebar_anchor_is_refused(self):
+        malformed = self.stock_bundle().replace(
+            MODULE.CONTAINER_TEMPLATE.format(5).encode(), b"x" * len(MODULE.CONTAINER_TEMPLATE.format(5))
+        )
+        with self.assertRaisesRegex(RuntimeError, "container"):
+            self.patch(malformed)
+
+    def test_default_hover_and_upstream_icon_modes_remain_selectable(self):
+        original = self.stock_bundle()
+
+        patched, changes = MODULE.patch_bytes(
+            original,
+            size=5,
+            hide_tray=False,
+            custom_project_icons=False,
+            keep_icon_on_hover=False,
+        )
+
+        self.assertIn(MODULE.TRAY_ENABLED, patched)
+        self.assertEqual(patched.count(MODULE.PROJECT_ICON_UPSTREAM), MODULE.EXPECTED_PROJECT_ICON_COUNT)
+        self.assertIn(MODULE.THUMBNAIL_VISIBLE_TEMPLATE.format(5).encode(), patched)
+        self.assertIn(MODULE.CHEVRON_VISIBLE_TEMPLATE.format(5).encode(), patched)
+        self.assertEqual(len(changes), 2)
+
+    def test_invalid_icon_size_is_rejected_before_any_patch_is_planned(self):
+        with self.assertRaisesRegex(ValueError, "size must be 4..9"):
+            MODULE.patch_bytes(
+                MODULE.TRAY_ENABLED,
+                size=10,
+                hide_tray=False,
+                custom_project_icons=False,
+                keep_icon_on_hover=False,
+            )
+
+    def test_patch_file_atomically_writes_backup_and_revert_restores_it(self):
+        original = self.stock_bundle()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asar = root / "fixture.asar"
+            backup_dir = root / "backups"
+            asar.write_bytes(original)
+
+            backup, changes = MODULE.patch_file(
+                asar,
+                backup_dir,
+                acknowledge_invalid_signature=False,
+                size=6,
+                hide_tray=True,
+                custom_project_icons=True,
+                keep_icon_on_hover=True,
+            )
+
+            self.assertTrue(backup.exists())
+            self.assertEqual(backup.read_bytes(), original)
+            self.assertTrue(changes)
+            self.assertNotEqual(asar.read_bytes(), original)
+            MODULE.revert(asar, backup_dir)
+            self.assertEqual(asar.read_bytes(), original)
+
+    def test_patch_file_is_idempotent_without_creating_a_second_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asar = root / "fixture.asar"
+            backup_dir = root / "backups"
+            asar.write_bytes(self.stock_bundle())
+            options = {
+                "size": 6,
+                "hide_tray": True,
+                "custom_project_icons": True,
+                "keep_icon_on_hover": True,
+            }
+            MODULE.patch_file(asar, backup_dir, acknowledge_invalid_signature=False, **options)
+
+            backup, changes = MODULE.patch_file(
+                asar, backup_dir, acknowledge_invalid_signature=False, **options
+            )
+
+            self.assertIsNone(backup)
+            self.assertEqual(changes, [])
+            self.assertEqual(len(list(backup_dir.glob("app.asar.backup-pre-ui-patch-*"))), 2)
+
+    def test_idempotent_run_does_not_require_a_writable_backup_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asar = root / "fixture.asar"
+            options = {
+                "size": 6,
+                "hide_tray": True,
+                "custom_project_icons": True,
+                "keep_icon_on_hover": True,
+            }
+            patched, _changes = MODULE.patch_bytes(self.stock_bundle(), **options)
+            asar.write_bytes(patched)
+            missing_parent = root / "missing" / "backups"
+
+            backup, changes = MODULE.patch_file(
+                asar,
+                missing_parent,
+                acknowledge_invalid_signature=False,
+                **options,
+            )
+
+            self.assertIsNone(backup)
+            self.assertEqual(changes, [])
+            self.assertFalse(missing_parent.exists())
+
+    def test_failed_atomic_swap_preserves_origin_and_cleans_temp_file(self):
+        original = self.stock_bundle()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asar = root / "fixture.asar"
+            asar.write_bytes(original)
+            options = {
+                "size": 6,
+                "hide_tray": True,
+                "custom_project_icons": True,
+                "keep_icon_on_hover": True,
+            }
+            real_replace = MODULE.os.replace
+
+            def fail_only_final_swap(source, destination):
+                if Path(destination).resolve() == asar.resolve():
+                    raise OSError("swap blocked")
+                return real_replace(source, destination)
+
+            with mock.patch.object(MODULE.os, "replace", side_effect=fail_only_final_swap):
+                with self.assertRaisesRegex(OSError, "swap blocked"):
+                    MODULE.patch_file(
+                        asar, root / "backups", acknowledge_invalid_signature=False, **options
+                    )
+
+            self.assertEqual(asar.read_bytes(), original)
+            self.assertEqual(list(root.glob(".fixture.asar.*.patching")), [])
+            self.assertEqual(list((root / "backups").glob("app.asar.backup-pre-ui-patch-*")), [])
+
+    def test_compare_and_swap_refuses_a_concurrent_source_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asar = root / "fixture.asar"
+            backup_dir = root / "backups"
+            asar.write_bytes(self.stock_bundle())
+            real_write_manifest = MODULE._write_manifest
+
+            def change_source_after_manifest(backup, manifest):
+                real_write_manifest(backup, manifest)
+                asar.write_bytes(b"concurrent updater")
+
+            with mock.patch.object(MODULE, "_write_manifest", side_effect=change_source_after_manifest):
+                with self.assertRaisesRegex(RuntimeError, "source ASAR changed"):
+                    MODULE.patch_file(
+                        asar,
+                        backup_dir,
+                        acknowledge_invalid_signature=False,
+                        size=6,
+                        hide_tray=True,
+                        custom_project_icons=True,
+                        keep_icon_on_hover=True,
+                    )
+
+            self.assertEqual(asar.read_bytes(), b"concurrent updater")
+            self.assertEqual(list(backup_dir.glob("app.asar.backup-pre-ui-patch-*")), [])
+
+    def test_replans_from_snapshot_if_source_changes_before_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asar = root / "fixture.asar"
+            backup_dir = root / "backups"
+            original = self.stock_bundle()
+            newer = original + b" " + MODULE.PROJECT_ICON_UPSTREAM
+            asar.write_bytes(original)
+            real_copy = MODULE._atomic_copy
+
+            def replace_before_backup(source, destination):
+                asar.write_bytes(newer)
+                real_copy(source, destination)
+
+            with mock.patch.object(MODULE, "_atomic_copy", side_effect=replace_before_backup):
+                with self.assertRaisesRegex(RuntimeError, "project icon anchor"):
+                    MODULE.patch_file(
+                        asar,
+                        backup_dir,
+                        acknowledge_invalid_signature=False,
+                        size=6,
+                        hide_tray=True,
+                        custom_project_icons=True,
+                        keep_icon_on_hover=True,
+                    )
+
+            self.assertEqual(asar.read_bytes(), newer)
+            self.assertEqual(list(backup_dir.iterdir()), [])
+
+    def test_idempotent_result_rejects_source_change_after_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asar = root / "fixture.asar"
+            backup_dir = root / "backups"
+            options = {
+                "size": 6,
+                "hide_tray": True,
+                "custom_project_icons": True,
+                "keep_icon_on_hover": True,
+            }
+            patched, _changes = MODULE.patch_bytes(self.stock_bundle(), **options)
+            asar.write_bytes(patched)
+            replacement = self.stock_bundle()
+            real_plan = MODULE.plan_replacements
+
+            def replace_after_snapshot(data, **kwargs):
+                replacement_path = root / "replacement.asar"
+                replacement_path.write_bytes(replacement)
+                MODULE.os.replace(replacement_path, asar)
+                return real_plan(data, **kwargs)
+
+            with mock.patch.object(MODULE, "plan_replacements", side_effect=replace_after_snapshot):
+                with self.assertRaisesRegex(RuntimeError, "refusing no-op"):
+                    MODULE.patch_file(
+                        asar,
+                        backup_dir,
+                        acknowledge_invalid_signature=False,
+                        **options,
+                    )
+
+            self.assertEqual(asar.read_bytes(), replacement)
+            self.assertFalse(backup_dir.exists())
+
+    def test_revert_refuses_a_different_current_bundle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asar = root / "fixture.asar"
+            backup_dir = root / "backups"
+            asar.write_bytes(self.stock_bundle())
+            MODULE.patch_file(
+                asar,
+                backup_dir,
+                acknowledge_invalid_signature=False,
+                size=6,
+                hide_tray=True,
+                custom_project_icons=True,
+                keep_icon_on_hover=True,
+            )
+            asar.write_bytes(b"different release")
+
+            with self.assertRaisesRegex(RuntimeError, "no verified backup"):
+                MODULE.revert(asar, backup_dir)
+
+            self.assertEqual(asar.read_bytes(), b"different release")
+
+    def test_revert_refuses_a_corrupted_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asar = root / "fixture.asar"
+            backup_dir = root / "backups"
+            asar.write_bytes(self.stock_bundle())
+            backup, _changes = MODULE.patch_file(
+                asar,
+                backup_dir,
+                acknowledge_invalid_signature=False,
+                size=6,
+                hide_tray=True,
+                custom_project_icons=True,
+                keep_icon_on_hover=True,
+            )
+            patched = asar.read_bytes()
+            backup.write_bytes(b"corrupt")
+
+            with self.assertRaisesRegex(RuntimeError, "no verified backup"):
+                MODULE.revert(asar, backup_dir)
+
+            self.assertEqual(asar.read_bytes(), patched)
+
+    def test_revert_skips_non_object_manifest_and_uses_older_valid_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asar = root / "fixture.asar"
+            backup_dir = root / "backups"
+            original = self.stock_bundle()
+            asar.write_bytes(original)
+            MODULE.patch_file(
+                asar,
+                backup_dir,
+                acknowledge_invalid_signature=False,
+                size=6,
+                hide_tray=True,
+                custom_project_icons=True,
+                keep_icon_on_hover=True,
+            )
+            bogus = backup_dir / "app.asar.backup-pre-ui-patch-99999999-999999999"
+            bogus.write_bytes(b"bogus")
+            bogus.with_name(bogus.name + ".json").write_text("[]\n")
+
+            MODULE.revert(asar, backup_dir)
+
+            self.assertEqual(asar.read_bytes(), original)
+
+    def test_revert_refuses_source_change_during_restore_preparation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asar = root / "fixture.asar"
+            backup_dir = root / "backups"
+            asar.write_bytes(self.stock_bundle())
+            MODULE.patch_file(
+                asar,
+                backup_dir,
+                acknowledge_invalid_signature=False,
+                size=6,
+                hide_tray=True,
+                custom_project_icons=True,
+                keep_icon_on_hover=True,
+            )
+            newer = b"new official release"
+            real_sha256 = MODULE._sha256
+            asar_hash_calls = 0
+
+            def mutate_before_last_compare(path):
+                nonlocal asar_hash_calls
+                if Path(path).resolve() == asar.resolve():
+                    asar_hash_calls += 1
+                    if asar_hash_calls == 2:
+                        asar.write_bytes(newer)
+                return real_sha256(path)
+
+            with mock.patch.object(MODULE, "_sha256", side_effect=mutate_before_last_compare):
+                with self.assertRaisesRegex(RuntimeError, "current ASAR changed"):
+                    MODULE.revert(asar, backup_dir)
+
+            self.assertEqual(asar.read_bytes(), newer)
+            self.assertEqual(list(root.glob(".fixture.asar.*.restoring")), [])
+
+    def test_failed_revert_swap_preserves_the_patched_bundle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asar = root / "fixture.asar"
+            backup_dir = root / "backups"
+            asar.write_bytes(self.stock_bundle())
+            MODULE.patch_file(
+                asar,
+                backup_dir,
+                acknowledge_invalid_signature=False,
+                size=6,
+                hide_tray=True,
+                custom_project_icons=True,
+                keep_icon_on_hover=True,
+            )
+            patched = asar.read_bytes()
+            real_replace = MODULE.os.replace
+
+            def fail_only_restore(source, destination):
+                if Path(destination).resolve() == asar.resolve():
+                    raise OSError("restore swap blocked")
+                return real_replace(source, destination)
+
+            with mock.patch.object(MODULE.os, "replace", side_effect=fail_only_restore):
+                with self.assertRaisesRegex(OSError, "restore swap blocked"):
+                    MODULE.revert(asar, backup_dir)
+
+            self.assertEqual(asar.read_bytes(), patched)
+            self.assertEqual(list(root.glob(".fixture.asar.*.restoring")), [])
+
+
+if __name__ == "__main__":
+    unittest.main()
