@@ -51,6 +51,17 @@ PROTECTED_RES = (
     re.compile(r"^app\.asar\.backup-pre-tray-hide-(\d{8}-\d{6})(?:-(\d+))?$"),
 )
 LEGACY_RE = re.compile(r"^app\.asar\.backup-.+$")
+# patch-asar's atomic-copy temp files: only a hard kill leaves them, each a
+# full ~1.1GB copy; safe to sweep under --legacy because we hold the lock
+TEMP_RE = re.compile(r"^\.app\.asar\..*\.(copying|patching|restoring|writing)$")
+REVERT_PREFIXES = ("app.asar.backup-pre-ui-patch-",
+                   "app.asar.backup-pre-tray-hide-")
+
+
+def revert_candidate(name):
+    """Mirror revert()'s GLOB acceptance (any suffix), wider than sort_key."""
+    return any(name.startswith(pfx) and len(name) > len(pfx)
+               for pfx in REVERT_PREFIXES)
 DEFAULT_ASAR = "/Applications/Superset.app/Contents/Resources/app.asar"
 LOCK_ROOT = Path.home() / ".superset" / "patch-locks"
 
@@ -71,9 +82,14 @@ def sort_key(name):
 
 
 def manifest_of(backup):
-    """Return the manifest path when it exists as a regular file, else None."""
+    """Return the manifest path when it resolves to a regular file, else None.
+
+    Follows symlinks on purpose: patch-asar.py revert() reads the manifest via
+    is_file() too, so a symlinked manifest is revert-valid and its set must
+    count as verified (deleting it would kill a working revert path).
+    """
     s = backup.parent / (backup.name + ".json")
-    if s.is_file() and not s.is_symlink():
+    if s.is_file():
         return s
     return None
 
@@ -85,17 +101,33 @@ def collect(dir_path):
     else matching app.asar.backup-* (crash orphans, odd directories, orphaned
     sidecars, obsolete prefixes) is legacy.
     """
-    verified, legacy = [], []
-    for p in sorted(dir_path.iterdir()):
-        if p.is_symlink():
-            continue
-        key = sort_key(p.name)
-        if key is not None and p.is_file() and manifest_of(p) is not None:
-            verified.append((key, p))
-        elif LEGACY_RE.match(p.name):
-            legacy.append(p)
-    verified.sort(key=lambda t: t[0])
-    return [p for _, p in verified], legacy
+    entries = [p for p in sorted(dir_path.iterdir()) if not p.is_symlink()]
+    sortable, unsortable = [], []
+    for p in entries:
+        if revert_candidate(p.name) and p.is_file() and manifest_of(p) is not None:
+            key = sort_key(p.name)
+            if key is not None:
+                sortable.append((key, p))
+            else:
+                # revert() would accept it but the name carries no parseable
+                # timestamp (hand-renamed, restored from another machine):
+                # always keep — never surplus, never legacy
+                unsortable.append(p)
+    sortable.sort(key=lambda t: t[0])
+    verified_files = [p for _, p in sortable]
+    # verified sets AND their sidecars are shielded from the legacy bucket —
+    # only the keep-N surplus path may delete them (incident 2026-08-20:
+    # --legacy swept the manifests of the KEPT sets, orphaning them)
+    shielded = set()
+    for p in verified_files + unsortable:
+        shielded |= {p.name.lower(), p.name.lower() + ".json",
+                     p.name.lower() + ".unpacked"}
+    # case-insensitive comparison: on default APFS a manifest named ….JSON
+    # satisfies manifest_of() but would slip past an exact-name shield
+    legacy = [p for p in entries
+              if p.name.lower() not in shielded
+              and (LEGACY_RE.match(p.name) or TEMP_RE.match(p.name))]
+    return verified_files, legacy
 
 
 def sidecars(backup):
@@ -208,12 +240,15 @@ def _prune_locked(dir_path, args):
         if reverts_live_asar(backup, live_digest):
             print(f"  kept (reverts live asar): {backup.name}")
             continue
-        doomed.extend(sidecars(backup))  # sidecars first: an interrupted run
-        doomed.append(backup)            # leaves a set collect() still finds
+        # sidecars first, base marked dependent: an interrupted or failed
+        # sidecar delete keeps the base, so collect() still finds the set
+        doomed.extend((s, None) for s in sidecars(backup))
+        doomed.append((backup, backup))
     if args.legacy:
+        listed = {p for p, _ in doomed}
         for f in legacy:
-            if f not in doomed:
-                doomed.append(f)
+            if f not in listed:
+                doomed.append((f, None))
 
     kept = [b.name for b in verified[-args.keep:]]
     mode = "APPLY" if args.apply else "DRY RUN (pass --apply to delete)"
@@ -221,14 +256,24 @@ def _prune_locked(dir_path, args):
     print(f"keeping {len(kept)} newest verified revert set(s): "
           f"{', '.join(kept) or '(none)'}")
     freed, failures = 0, 0
-    for p in doomed:
+    failed_sets = set()
+    for p, base in doomed:
         size = size_of(p)
         if args.apply:
+            if base is not None and base in failed_sets:
+                print(f"  skipped (sidecar delete failed, set kept "
+                      f"discoverable): {p.name}")
+                failures += 1
+                continue
             if delete(p):
                 print(f"  deleted: {p.name} ({size} B)")
                 freed += size
             else:
                 failures += 1
+                # a failed sidecar poisons its set: never delete the base
+                owner = base if base is not None else _owner_of(p, surplus)
+                if owner is not None:
+                    failed_sets.add(owner)
         else:
             print(f"  would delete: {p.name} ({size} B)")
             freed += size
@@ -236,6 +281,15 @@ def _prune_locked(dir_path, args):
           f"({freed / 1e9:.2f} GB), {len(doomed) - failures} item(s)"
           + (f", {failures} FAILED" if failures else ""))
     return 1 if failures else 0
+
+
+def _owner_of(sidecar, surplus):
+    """Return the surplus backup this sidecar belongs to, or None."""
+    for b in surplus:
+        if sidecar.name.lower() in (b.name.lower() + ".json",
+                                    b.name.lower() + ".unpacked"):
+            return b
+    return None
 
 
 if __name__ == "__main__":

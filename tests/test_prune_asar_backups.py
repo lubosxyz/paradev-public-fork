@@ -217,6 +217,19 @@ class PruneAsarBackupsTest(unittest.TestCase):
         self.assertIn("local.db", kept)
         self.assertIn("app.asar.backup-pre-ui-patch-20260819-181400-242750000", kept)
 
+    def test_legacy_never_touches_kept_set_sidecars(self):
+        # regression (incident 2026-08-20): --legacy swept the .json manifests
+        # of the KEPT verified sets, orphaning them for revert()
+        kept = mkset(self.dir, "20260819-181400-242750000", unpacked=True)
+        (self.dir / "app.asar.backup-pre-icon-patch-20260612-005244").write_bytes(b"old")
+        r = self.run_script(["--apply", "--legacy"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        names = self.names()
+        self.assertIn(kept.name, names)
+        self.assertIn(kept.name + ".json", names)
+        self.assertIn(kept.name + ".unpacked", names)
+        self.assertNotIn("app.asar.backup-pre-icon-patch-20260612-005244", names)
+
     def test_legacy_sweeps_orphan_sidecars(self):
         (self.dir / "app.asar.backup-pre-icon-patch-20260612-005244.json").write_text("{}")
         mkset(self.dir, "20260819-181400-242750000")
@@ -235,6 +248,98 @@ class PruneAsarBackupsTest(unittest.TestCase):
         kept = self.names()
         self.assertIn("app.asar.backup-pre-ui-patch-20260817-143258", kept)
         self.assertIn("app.asar.backup-pre-ui-patch-20260819-181400-242750000", kept)
+
+    def _fs_case_insensitive(self):
+        probe = self.dir / "CaseProbe"
+        probe.write_bytes(b"x")
+        result = (self.dir / "caseprobe").exists()
+        probe.unlink()
+        return result
+
+    def test_uppercase_manifest_shielded_on_case_insensitive_fs(self):
+        # APFS default: ….JSON satisfies manifest_of(); an exact-name shield
+        # would let --legacy sweep it (codex P1 on the 0.1.9.1 hot-fix)
+        if not self._fs_case_insensitive():
+            self.skipTest("case-sensitive filesystem")
+        base = mkset(self.dir, "20260819-181400-242750000", manifest=False)
+        upper = self.dir / (base.name + ".JSON")
+        upper.write_text(json.dumps({"format": 1, "patched_sha256": "0" * 64}))
+        r = self.run_script(["--apply", "--legacy"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        names = self.names()
+        self.assertIn(base.name, names)
+        self.assertIn(base.name + ".JSON", names)
+
+    def test_symlinked_manifest_counts_as_verified(self):
+        # patch-asar revert() reads manifests via is_file() (follows links);
+        # prune must not classify such a set as legacy and sweep the backup
+        base = mkset(self.dir, "20260819-181400-242750000", manifest=False)
+        real = self.dir / "real-manifest.json"
+        real.write_text(json.dumps({"format": 1, "patched_sha256": "0" * 64}))
+        (self.dir / (base.name + ".json")).symlink_to(real)
+        r = self.run_script(["--apply", "--legacy"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        names = self.names()
+        self.assertIn(base.name, names)
+        self.assertIn(base.name + ".json", names)
+
+    def test_failed_sidecar_delete_keeps_base_discoverable(self):
+        # a surplus set whose .unpacked cannot be removed must keep its base
+        # file so the next run still finds the whole set
+        surplus = mkset(self.dir, "20260601-000000", unpacked=True)
+        locked = self.dir / (surplus.name + ".unpacked") / "sub"
+        locked.mkdir()
+        (locked / "f").write_bytes(b"x")
+        os.chmod(locked, 0o000)
+        try:
+            mkset(self.dir, "20260702-000000")
+            mkset(self.dir, "20260803-000000")
+            r = self.run_script(["--apply"])
+        finally:
+            os.chmod(locked, 0o755)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        names = self.names()
+        self.assertIn(surplus.name, names)  # base survived the failed set
+
+    def test_digest_guarded_surplus_survives_legacy_sweep(self):
+        # variant B of the incident: a digest-guarded surplus set must keep
+        # base AND sidecars even when --legacy runs in the same pass
+        guarded = mkset(self.dir, "20260601-000000", unpacked=True,
+                        patched_sha256=self.live_digest())
+        mkset(self.dir, "20260702-000000")
+        mkset(self.dir, "20260803-000000")
+        r = self.run_script(["--apply", "--keep", "1", "--legacy"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        names = self.names()
+        self.assertIn(guarded.name, names)
+        self.assertIn(guarded.name + ".json", names)
+        self.assertIn(guarded.name + ".unpacked", names)
+
+    def test_nontimestamp_revert_candidate_always_kept(self):
+        # revert() globs any suffix; a hand-renamed manifest-backed candidate
+        # must never fall into legacy nor into the surplus quota
+        odd = self.dir / "app.asar.backup-pre-ui-patch-2026-08-19T18.14.00"
+        odd.write_bytes(b"restored-from-other-machine")
+        (self.dir / (odd.name + ".json")).write_text(
+            json.dumps({"format": 1, "patched_sha256": "0" * 64}))
+        mkset(self.dir, "20260702-000000")
+        mkset(self.dir, "20260803-000000")
+        r = self.run_script(["--apply", "--legacy"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        names = self.names()
+        self.assertIn(odd.name, names)
+        self.assertIn(odd.name + ".json", names)
+
+    def test_legacy_sweeps_atomic_copy_temp_files(self):
+        temp = self.dir / ".app.asar.backup-x.abc123.copying"
+        temp.write_bytes(b"crash leftover")
+        mkset(self.dir, "20260819-181400-242750000")
+        r0 = self.run_script(["--apply"])
+        self.assertEqual(r0.returncode, 0, r0.stderr)
+        self.assertIn(temp.name, self.names())  # untouched without --legacy
+        r = self.run_script(["--apply", "--legacy"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn(temp.name, self.names())
 
     def test_keep_must_be_at_least_one(self):
         r = self.run_script(["--keep", "0", "--apply"])
