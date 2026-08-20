@@ -14,7 +14,7 @@ only on request.
 > replacements also change the code requirement and break Squirrel update
 > compatibility with official Superset releases.
 
-## 1. Sidebar icon size — `patch-asar.py`
+## 1. Sidebar icon size and compact layout — `patch-asar.py`
 
 Superset 1.22 ships a `size-5` container with a `size-4` thumbnail. The current
 patch sets all three cooperating class strings to `size-6` (24×24):
@@ -30,11 +30,22 @@ hence all three are validated and changed together.
 All `size-N` strings are 6 chars, so asar header offsets stay valid — no repacking, no
 unpacking-pattern issues with native modules.
 
-The approved 1.22 UI set is applied in one validated atomic swap:
+With `--compact-sidebar`, the expanded utility navigation becomes a four-column
+icon grid. Its seven button labels remain in the accessibility tree as
+`sr-only` names and are also exposed as native hover titles. Keyboard hints are
+removed only from the compact New Workspace and Search buttons; the shared hint
+renderer remains unchanged for other sidebars. Direct workspace
+children move from `pl-3` to `pl-7`; grouped children move from `pl-8` to
+`pl-9`, so their hierarchy is visibly distinct from the `pl-2` project row.
+The patch uses renderer utilities already present in the shipped bundle plus a
+length-preserving inline `gridTemplateColumns` declaration (the 1.23 CSS does
+not ship `grid-cols-4`). It does not inject CSS or repack the archive.
+
+The approved UI set is applied in one validated atomic swap:
 
 ```bash
 python3 patch-asar.py --size 6 --hide-tray --custom-project-icons \
-  --keep-icon-on-hover --ack-invalid-apple-signature
+  --keep-icon-on-hover --compact-sidebar --ack-invalid-apple-signature
 python3 patch-asar.py --revert
 ```
 
@@ -45,8 +56,9 @@ backup publication and restore use an atomic swap. The combined and legacy
 tray-only patchers share a target-keyed lock under `~/.superset/patch-locks/`
 (outside the signed app bundle), and the combined patch
 rechecks the source digest immediately before replacing it.
-Parent/child indentation no longer needs a local patch: 1.22 ships the project
-row at `pl-2`, while child rows retain their deeper indentation.
+Every compact-layout anchor is validated as a single upstream-or-patched
+variant before the first write. A partial or changed upstream layout fails
+closed instead of leaving a half-patched navigation.
 
 ## 2. Sidebar workspace visibility — `fix-sidebar.js`
 
@@ -102,10 +114,12 @@ No npm packages required (Node built-ins only). Reads the auth token from
 `~/.superset/host/<org>/host.db`. Customize the `TARGETS` map at the top
 of the script to change argv.
 
-## 4. Sidebar layout + icon source — `apply-ui-patches.py`
+## 4. Legacy extracted-tree sidebar patch — `apply-ui-patches.py`
 
-Operates on an **extracted dist tree** (plain files, no asar length limits), so
-it fits both a source build and an unpacked archive:
+This historical Superset 1.17 helper operates on an **extracted dist tree**.
+Its old marker/CSS layout is not the production 1.23 patch path; current
+in-place icon-grid and indentation behavior lives in `patch-asar.py` above.
+Keep this helper only for an old source build or intentionally rebased repack:
 
 ```bash
 python3 apply-ui-patches.py /path/to/apps/desktop        # source build (has dist/)
@@ -317,7 +331,7 @@ grep -a -o -E 'theme-type.{0,12}|"background":"#[0-9a-fA-F]{6}"' \
 
 After a **Superset desktop update**, re-apply bundle patches and run the other
 procedures only if their symptom appears:
-1. `python3 patch-asar.py --size 6 --hide-tray --custom-project-icons --keep-icon-on-hover --ack-invalid-apple-signature` — re-apply the complete approved production patch set after accepting an invalid Apple seal
+1. `python3 patch-asar.py --size 6 --hide-tray --custom-project-icons --keep-icon-on-hover --compact-sidebar --ack-invalid-apple-signature` — re-apply the complete approved production patch set after accepting an invalid Apple seal
 2. `python3 patch-tray-icon.py --ack-invalid-apple-signature` — legacy tray-only alternative; do not run it in addition to step 1
 3. `python3 apply-ui-patches.py <dist-root>` — re-apply icon source, layout
    markers and CSS (only needed when you rebuild/repack; the in-place asar

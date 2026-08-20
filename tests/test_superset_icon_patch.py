@@ -35,6 +35,10 @@ class SupersetIconPatchSafetyTest(unittest.TestCase):
 
 
 class SupersetUiPatchTest(unittest.TestCase):
+    WORKSPACE_NEW_SHORTCUT = (
+        b"        /* @__PURE__ */ jsxRuntimeExports.jsx(SidebarKbdHint, { label: shortcutText })"
+    )
+
     def stock_bundle(self):
         return b"|".join(
             [
@@ -43,6 +47,16 @@ class SupersetUiPatchTest(unittest.TestCase):
                 MODULE.THUMBNAIL_VISIBLE_TEMPLATE.format(4).encode(),
                 MODULE.CHEVRON_VISIBLE_TEMPLATE.format(4).encode(),
                 *([MODULE.PROJECT_ICON_UPSTREAM] * MODULE.EXPECTED_PROJECT_ICON_COUNT),
+                MODULE.TOP_NAV_STACK,
+                MODULE.TOP_NAV_TITLEBAR_STACK,
+                MODULE.WORKSPACE_INDENT_UPSTREAM,
+                MODULE.SHORTCUT_HINT_VISIBLE,
+                MODULE.DASHBOARD_NEW_SHORTCUT,
+                MODULE.DASHBOARD_SEARCH_SHORTCUT,
+                self.WORKSPACE_NEW_SHORTCUT,
+                MODULE.AUTOMATION_BADGE_INLINE,
+                *[variant[0] for variant in MODULE.TOP_NAV_BUTTON_VARIANTS],
+                *[variant[0] for variant in MODULE.TOP_NAV_LABEL_VARIANTS],
             ]
         )
 
@@ -53,6 +67,7 @@ class SupersetUiPatchTest(unittest.TestCase):
             hide_tray=True,
             custom_project_icons=True,
             keep_icon_on_hover=True,
+            compact_sidebar=True,
         )
 
     def test_selected_patch_is_length_preserving_and_complete(self):
@@ -69,7 +84,62 @@ class SupersetUiPatchTest(unittest.TestCase):
         self.assertIn(MODULE.CONTAINER_TEMPLATE.format(6).encode(), patched)
         self.assertIn(MODULE.THUMBNAIL_PINNED_TEMPLATE.format(6).encode(), patched)
         self.assertIn(MODULE.CHEVRON_HIDDEN_TEMPLATE.format(6).encode(), patched)
-        self.assertGreaterEqual(len(changes), 7)
+        self.assertIn(MODULE.TOP_NAV_GRID, patched)
+        self.assertIn(b'gridTemplateColumns:"repeat(4,1fr)"', patched)
+        self.assertNotIn(b"grid-cols-4", MODULE.TOP_NAV_GRID)
+        self.assertIn(MODULE.TOP_NAV_TITLEBAR_GRID, patched)
+        self.assertIn(MODULE.WORKSPACE_INDENT_DEEP, patched)
+        self.assertIn(MODULE.SHORTCUT_HINT_VISIBLE, patched)
+        self.assertIn(MODULE.DASHBOARD_NEW_SHORTCUT_HIDDEN, patched)
+        self.assertIn(MODULE.DASHBOARD_SEARCH_SHORTCUT_HIDDEN, patched)
+        self.assertIn(self.WORKSPACE_NEW_SHORTCUT, patched)
+        self.assertIn(MODULE.AUTOMATION_BADGE_OVERLAY, patched)
+        for _old, new, _label in MODULE.TOP_NAV_BUTTON_VARIANTS:
+            self.assertIn(new, patched)
+        for _old, new, _label in MODULE.TOP_NAV_LABEL_VARIANTS:
+            self.assertIn(new, patched)
+        self.assertGreaterEqual(len(changes), 20)
+
+    def test_compact_sidebar_preserves_accessible_names_and_adds_hover_titles(self):
+        patched, _changes = self.patch(self.stock_bundle())
+
+        for _old, new, label in MODULE.TOP_NAV_BUTTON_VARIANTS:
+            self.assertIn(f'title: "{label}"'.encode(), new)
+            self.assertIn(new, patched)
+        for _old, new, label in MODULE.TOP_NAV_LABEL_VARIANTS:
+            self.assertIn(b'className: "sr-only', new)
+            self.assertIn(f'children: "{label}"'.encode(), new)
+            self.assertIn(new, patched)
+
+    def test_compact_sidebar_overlays_the_automation_failure_badge(self):
+        patched, _changes = self.patch(self.stock_bundle())
+
+        self.assertIn(b'className: "absolute right-0 top-0 flex size-4', patched)
+        self.assertNotIn(MODULE.AUTOMATION_BADGE_INLINE, patched)
+
+    def test_compact_sidebar_restores_shared_hint_and_only_hides_dashboard_callsites(self):
+        globally_hidden = self.stock_bundle().replace(
+            MODULE.SHORTCUT_HINT_VISIBLE,
+            MODULE.SHORTCUT_HINT_HIDDEN,
+        )
+
+        patched, changes = self.patch(globally_hidden)
+
+        self.assertIn(MODULE.SHORTCUT_HINT_VISIBLE, patched)
+        self.assertNotIn(MODULE.SHORTCUT_HINT_HIDDEN, patched)
+        self.assertIn(MODULE.DASHBOARD_NEW_SHORTCUT_HIDDEN, patched)
+        self.assertIn(MODULE.DASHBOARD_SEARCH_SHORTCUT_HIDDEN, patched)
+        self.assertIn(self.WORKSPACE_NEW_SHORTCUT, patched)
+        self.assertIn("sidebar: restore shared shortcut hints", changes)
+
+    def test_compact_sidebar_refuses_unknown_or_partial_upstream_layout(self):
+        malformed = self.stock_bundle().replace(
+            MODULE.WORKSPACE_INDENT_UPSTREAM,
+            b"x" * len(MODULE.WORKSPACE_INDENT_UPSTREAM),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "workspace indentation"):
+            self.patch(malformed)
 
     def test_selected_patch_is_idempotent(self):
         once, _ = self.patch(self.stock_bundle())
@@ -116,7 +186,32 @@ class SupersetUiPatchTest(unittest.TestCase):
                 hide_tray=False,
                 custom_project_icons=False,
                 keep_icon_on_hover=False,
+                compact_sidebar=False,
             )
+
+    def test_cli_forwards_compact_sidebar_to_patch_file(self):
+        with mock.patch.object(MODULE, "patch_file", return_value=(None, [])) as patch_file:
+            result = MODULE.main(
+                [
+                    "--asar",
+                    "/tmp/fixture.asar",
+                    "--backup-dir",
+                    "/tmp/backups",
+                    "--compact-sidebar",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        patch_file.assert_called_once_with(
+            Path("/tmp/fixture.asar"),
+            Path("/tmp/backups"),
+            size=6,
+            hide_tray=False,
+            custom_project_icons=False,
+            keep_icon_on_hover=False,
+            compact_sidebar=True,
+            acknowledge_invalid_signature=False,
+        )
 
     def test_patch_file_atomically_writes_backup_and_revert_restores_it(self):
         original = self.stock_bundle()
@@ -134,12 +229,13 @@ class SupersetUiPatchTest(unittest.TestCase):
                 hide_tray=True,
                 custom_project_icons=True,
                 keep_icon_on_hover=True,
+                compact_sidebar=True,
             )
 
             self.assertTrue(backup.exists())
             self.assertEqual(backup.read_bytes(), original)
             self.assertTrue(changes)
-            self.assertNotEqual(asar.read_bytes(), original)
+            self.assertIn(MODULE.TOP_NAV_GRID, asar.read_bytes())
             MODULE.revert(asar, backup_dir)
             self.assertEqual(asar.read_bytes(), original)
 

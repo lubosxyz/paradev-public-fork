@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Apply strict, length-preserving Superset app.asar UI patches.
 
-The selected 1.22 patches are deliberately narrow: sidebar icons at 24 px,
+The selected patches cover the compact sidebar, 24 px project icons,
 project-owned icon URLs, project icons retained on hover, and no menu-bar tray
 icon. Every replacement has exactly the same byte length as its source. That
 preserves ASAR offsets, but any app.asar mutation still invalidates Apple's
@@ -43,6 +43,210 @@ CHEVRON_HIDDEN_TEMPLATE = (
 PROJECT_ICON_UPSTREAM = b"https://github.com/${project.repoOwner}.png?size=64"
 PROJECT_ICON_CUSTOM = b"superset-icon://projects/${project.projectKey}?v=64"
 EXPECTED_PROJECT_ICON_COUNT = 4
+
+
+def _pad_variant(source: bytes, replacement: bytes) -> bytes:
+    """Pad one shorter JavaScript replacement to its source byte length."""
+    if len(replacement) > len(source):
+        raise ValueError("replacement is longer than its source anchor")
+    return replacement + (b" " * (len(source) - len(replacement)))
+
+
+TOP_NAV_STACK = (
+    b'className: "flex flex-col gap-px px-2 pt-2 pb-2",\n'
+    b'      style: isMac ? { paddingTop: `${8 / zoomFactor}px` } : void 0,'
+)
+TOP_NAV_GRID = _pad_variant(
+    TOP_NAV_STACK,
+    b'className:"grid gap-1 p-2",style:{gridTemplateColumns:"repeat(4,1fr)",'
+    b'paddingTop:isMac?8/zoomFactor:void 0},',
+)
+TOP_NAV_TITLEBAR_STACK = b'className: "-mx-2 mb-3 flex h-8 items-center pr-3"'
+TOP_NAV_TITLEBAR_GRID = _pad_variant(
+    TOP_NAV_TITLEBAR_STACK,
+    b'className: "col-span-4 mx-0 flex h-8 items-center"',
+)
+WORKSPACE_INDENT_UPSTREAM = b'isInSection ? "pl-8" : "pl-3"'
+WORKSPACE_INDENT_DEEP = b'isInSection ? "pl-9" : "pl-7"'
+
+_SHORTCUT_CLASS = (
+    "invisible inline-flex h-5 min-w-5 shrink-0 items-center justify-center "
+    "rounded border border-foreground/10 bg-fill-selected px-1 font-sans "
+    "text-[10px] font-medium text-muted-foreground group-hover:visible "
+    "group-focus-visible:visible"
+)
+SHORTCUT_HINT_VISIBLE = (
+    f'className: "{_SHORTCUT_CLASS}", children: label'.encode()
+)
+SHORTCUT_HINT_HIDDEN = _pad_variant(
+    SHORTCUT_HINT_VISIBLE,
+    b'className: "hidden", children: label',
+)
+DASHBOARD_NEW_SHORTCUT = (
+    b"              /* @__PURE__ */ jsxRuntimeExports.jsx(SidebarKbdHint, { label: shortcutText })"
+)
+DASHBOARD_NEW_SHORTCUT_HIDDEN = _pad_variant(
+    DASHBOARD_NEW_SHORTCUT,
+    b"              /* compact dashboard new-workspace shortcut */ null",
+)
+DASHBOARD_SEARCH_SHORTCUT = (
+    b'searchShortcutText !== "Unassigned" && /* @__PURE__ */ '
+    b"jsxRuntimeExports.jsx(SidebarKbdHint, { label: searchShortcutText })"
+)
+DASHBOARD_SEARCH_SHORTCUT_HIDDEN = _pad_variant(
+    DASHBOARD_SEARCH_SHORTCUT,
+    b"/* compact dashboard search shortcut */ null",
+)
+AUTOMATION_BADGE_INLINE = (
+    b'className: "flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full '
+    b'bg-red-500/15 px-1 text-[10px] font-medium tabular-nums text-red-600 '
+    b'dark:text-red-400"'
+)
+AUTOMATION_BADGE_OVERLAY = _pad_variant(
+    AUTOMATION_BADGE_INLINE,
+    b'className: "absolute right-0 top-0 flex size-4 items-center justify-center '
+    b'rounded-full bg-red-500/15 text-[10px] tabular-nums text-red-600 '
+    b'dark:text-red-400"',
+)
+
+_TOP_NAV_COMMON_CLASS = (
+    "flex w-full items-center gap-2 rounded-md px-2 py-1 text-[13px] "
+    "font-medium transition-colors"
+)
+_TOP_NAV_ICON_CLASS = "relative flex w-full justify-center rounded-md p-1"
+_TOP_NAV_NEW_CLASS = (
+    "group flex w-full items-center gap-2 rounded-md bg-fill-hover/60 "
+    "[.light_&]:bg-fill-hover px-1 py-1 text-[13px] font-medium "
+    "text-muted-foreground transition-colors hover:bg-fill-selected "
+    "[.light_&]:hover:bg-fill-selected hover:text-foreground"
+)
+_TOP_NAV_NEW_ICON_CLASS = (
+    "relative flex w-full items-center justify-center rounded-md "
+    "bg-fill-hover/60 [.light_&]:bg-fill-hover p-1 text-muted-foreground "
+    "hover:bg-fill-selected [.light_&]:hover:bg-fill-selected "
+    "hover:text-foreground"
+)
+_TOP_NAV_SEARCH_CLASS = (
+    "group flex w-full items-center gap-2 rounded-md px-2 py-1 text-[13px] "
+    "font-medium text-muted-foreground transition-colors hover:bg-fill-hover "
+    "hover:text-foreground"
+)
+_TOP_NAV_SEARCH_ICON_CLASS = (
+    "relative flex w-full items-center justify-center rounded-md p-1 "
+    "text-muted-foreground hover:bg-fill-hover hover:text-foreground"
+)
+
+
+def _button_variant(
+    click: str,
+    title: str,
+    source_class: str,
+    icon_class: str,
+    *,
+    uses_cn: bool,
+    attributes: tuple[str, ...] = (),
+) -> tuple[bytes, bytes, str]:
+    """Build one strict equal-length icon-button replacement."""
+    class_open = "className: cn(\n              " if uses_cn else "className: "
+    attribute_block = "".join(f"            {attribute}\n" for attribute in attributes)
+    source = (
+        f'onClick: {click},\n{attribute_block}            '
+        f'{class_open}"{source_class}",'
+    ).encode()
+    replacement = (
+        f'onClick: {click},\n{attribute_block}            title: "{title}",\n            '
+        f'{class_open}"{icon_class}",'
+    ).encode()
+    return source, _pad_variant(source, replacement), title
+
+
+TOP_NAV_BUTTON_VARIANTS = [
+    _button_variant(
+        "() => openModal(activeProjectId)",
+        "New Workspace",
+        _TOP_NAV_NEW_CLASS,
+        _TOP_NAV_NEW_ICON_CLASS,
+        uses_cn=False,
+    ),
+    _button_variant(
+        "handleSearchClick",
+        "Search",
+        _TOP_NAV_SEARCH_CLASS,
+        _TOP_NAV_SEARCH_ICON_CLASS,
+        uses_cn=False,
+    ),
+    _button_variant(
+        "handleWorkspacesClick",
+        "Workspaces",
+        _TOP_NAV_COMMON_CLASS,
+        _TOP_NAV_ICON_CLASS,
+        uses_cn=True,
+    ),
+    _button_variant(
+        "handleAutomationsClick",
+        "Automations",
+        _TOP_NAV_COMMON_CLASS,
+        _TOP_NAV_ICON_CLASS,
+        uses_cn=True,
+    ),
+    _button_variant(
+        "handleTasksClick",
+        "Tasks",
+        _TOP_NAV_COMMON_CLASS,
+        _TOP_NAV_ICON_CLASS,
+        uses_cn=True,
+        attributes=(
+            '"aria-label": "Tasks",',
+            '"aria-current": isTasksOpen ? "page" : void 0,',
+        ),
+    ),
+    _button_variant(
+        "handlePullRequestsClick",
+        "Pull requests",
+        _TOP_NAV_COMMON_CLASS,
+        _TOP_NAV_ICON_CLASS,
+        uses_cn=True,
+        attributes=(
+            '"aria-label": "Pull requests",',
+            '"aria-current": isPullRequestsOpen ? "page" : void 0,',
+        ),
+    ),
+    _button_variant(
+        "handleUsageClick",
+        "Usage",
+        _TOP_NAV_COMMON_CLASS,
+        _TOP_NAV_ICON_CLASS,
+        uses_cn=True,
+        attributes=(
+            '"aria-label": "Usage",',
+            '"aria-current": isUsageOpen ? "page" : void 0,',
+        ),
+    ),
+]
+
+
+def _label_variant(title: str, source_class: str) -> tuple[bytes, bytes, str]:
+    """Keep a button's text as an accessible-only name without displaying it."""
+    hidden_class = "sr-only" + (" " * (len(source_class) - len("sr-only")))
+    source = f'className: "{source_class}", children: "{title}"'.encode()
+    replacement = f'className: "{hidden_class}", children: "{title}"'.encode()
+    return source, replacement, title
+
+
+TOP_NAV_LABEL_VARIANTS = [
+    _label_variant("New Workspace", "flex-1 truncate text-left whitespace-nowrap"),
+    *[
+        _label_variant(title, "flex-1 text-left")
+        for title in (
+            "Search",
+            "Workspaces",
+            "Automations",
+            "Tasks",
+            "Pull requests",
+            "Usage",
+        )
+    ],
+]
 
 
 
@@ -87,6 +291,7 @@ def plan_replacements(
     hide_tray: bool,
     custom_project_icons: bool,
     keep_icon_on_hover: bool,
+    compact_sidebar: bool = False,
 ) -> list[tuple[int, bytes, bytes, str]]:
     """Validate the complete bundle first, then return equal-length writes."""
     if not 4 <= size <= 9:
@@ -144,6 +349,59 @@ def plan_replacements(
             (offset, PROJECT_ICON_UPSTREAM, PROJECT_ICON_CUSTOM, "project icon: local protocol")
             for offset in upstream
         )
+
+    if compact_sidebar:
+        sidebar_variants = [
+            ("top navigation layout", TOP_NAV_STACK, TOP_NAV_GRID, "sidebar: four-column icon grid"),
+            (
+                "top navigation titlebar",
+                TOP_NAV_TITLEBAR_STACK,
+                TOP_NAV_TITLEBAR_GRID,
+                "sidebar: titlebar spans icon grid",
+            ),
+            (
+                "workspace indentation",
+                WORKSPACE_INDENT_UPSTREAM,
+                WORKSPACE_INDENT_DEEP,
+                "sidebar: deeper workspace indentation",
+            ),
+            (
+                "shared shortcut hint renderer",
+                SHORTCUT_HINT_HIDDEN,
+                SHORTCUT_HINT_VISIBLE,
+                "sidebar: restore shared shortcut hints",
+            ),
+            (
+                "dashboard new-workspace shortcut",
+                DASHBOARD_NEW_SHORTCUT,
+                DASHBOARD_NEW_SHORTCUT_HIDDEN,
+                "sidebar: hide dashboard new-workspace shortcut",
+            ),
+            (
+                "dashboard search shortcut",
+                DASHBOARD_SEARCH_SHORTCUT,
+                DASHBOARD_SEARCH_SHORTCUT_HIDDEN,
+                "sidebar: hide dashboard search shortcut",
+            ),
+            (
+                "automation failure badge",
+                AUTOMATION_BADGE_INLINE,
+                AUTOMATION_BADGE_OVERLAY,
+                "sidebar: automation failure badge overlay",
+            ),
+        ]
+        sidebar_variants.extend(
+            (f"{title} button", source, target, f"sidebar: {title} icon button")
+            for source, target, title in TOP_NAV_BUTTON_VARIANTS
+        )
+        sidebar_variants.extend(
+            (f"{title} label", source, target, f"sidebar: {title} accessible label")
+            for source, target, title in TOP_NAV_LABEL_VARIANTS
+        )
+        for name, source, target, label in sidebar_variants:
+            offset, old = _single_variant(data, name, [source, target])
+            if old != target:
+                replacements.append((offset, old, target, label))
 
     for _offset, old, new, label in replacements:
         if len(old) != len(new):
@@ -421,6 +679,11 @@ def main(argv=None):
     parser.add_argument("--hide-tray", action="store_true")
     parser.add_argument("--custom-project-icons", action="store_true")
     parser.add_argument("--keep-icon-on-hover", action="store_true")
+    parser.add_argument(
+        "--compact-sidebar",
+        action="store_true",
+        help="use a four-column icon grid and visibly deeper workspace children",
+    )
     parser.add_argument("--revert", action="store_true")
     parser.add_argument("--asar", type=Path, default=DEFAULT_ASAR)
     parser.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
@@ -442,6 +705,7 @@ def main(argv=None):
             hide_tray=args.hide_tray,
             custom_project_icons=args.custom_project_icons,
             keep_icon_on_hover=args.keep_icon_on_hover,
+            compact_sidebar=args.compact_sidebar,
             acknowledge_invalid_signature=args.ack_invalid_apple_signature,
         )
     except (OSError, RuntimeError, ValueError) as exc:
