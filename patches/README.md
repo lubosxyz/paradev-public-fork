@@ -338,6 +338,36 @@ procedures only if their symptom appears:
 > `check-upstream-patches.py`, install an official update consciously, then
 > re-apply only the anchors that remain necessary.
 
+## Automated re-apply
+
+The `Daily Superset upstream patch audit` automation (id
+`96c8b045-6af1-4cc9-b46c-6e96dc48e132`, daily 9:00 Europe/Prague, worker
+`codex-terra`) runs `check-upstream-patches.py` every morning. On
+`local_patch_drift` — an installed bundle without the local patches,
+typically the morning after an accidental update — it no longer just files a
+review task: it launches a pre-authorized `/task-run-goal` that redoes the
+"When to re-run" flow above (`apply.py` → `patch-asar.py
+--ack-invalid-apple-signature` → `render-guard.py --apply` → read-only
+worker-audit → re-check) from its own clean worktree, sends a macOS
+notification, and deletes its own run workspace when done. It caps at two
+failed attempts per version before escalating to a review Task instead of
+relaunching forever. Standing user authorization for the resulting Apple
+resource-seal invalidation was granted 2026-08-19 (see the exception note in
+`setup/claude/commands/patch-superset.md`).
+
+SoT for the automation's prompt is
+`setup/superset/automation/upstream-update-watch.md`; after editing it,
+redeploy:
+
+```bash
+superset automations prompt set 96c8b045-6af1-4cc9-b46c-6e96dc48e132 \
+  --from-file setup/superset/automation/upstream-update-watch.md
+```
+
+The manual steps above still apply for `update_patch_compatible`,
+`rebase_required`, `checker_error`, and for an immediate on-demand fix via
+`/patch-superset`.
+
 ## How this was found
 
 See conversation transcript on 2026-05-07. Key insights:
