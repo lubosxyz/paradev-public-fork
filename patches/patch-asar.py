@@ -163,7 +163,11 @@ def patch_bytes(data: bytes, **options) -> tuple[bytes, list[str]]:
 
 
 def _backup_path(backup_dir: Path) -> Path:
-    """Allocate a timestamped, collision-resistant backup destination."""
+    """Allocate a timestamped, collision-resistant backup destination.
+
+    Naming/glob contract shared with prune-asar-backups.py (PROTECTED_RES)
+    and latest_backup()/revert() below — change all of them together.
+    """
     stamp = time.strftime("%Y%m%d-%H%M%S") + f"-{time.time_ns() % 1_000_000_000:09d}"
     return backup_dir / f"app.asar.backup-pre-ui-patch-{stamp}"
 

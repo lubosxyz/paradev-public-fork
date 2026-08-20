@@ -351,7 +351,13 @@ review task: it launches a pre-authorized `/task-run-goal` that redoes the
 worker-audit → re-check) from its own clean worktree, sends a macOS
 notification, and deletes its own run workspace when done. It caps at two
 failed attempts per version before escalating to a review Task instead of
-relaunching forever. Standing user authorization for the resulting Apple
+relaunching forever. After a verified re-apply the worker also runs
+`prune-asar-backups.py --apply` (keep-2 retention of VERIFIED revert sets —
+protected name per patch-asar's revert glob + `.json` manifest present; a set
+whose manifest `patched_sha256` matches the live bundle is never deleted, and
+the run holds patch-asar's per-asar flock so it cannot race a patch/revert.
+Dry run without `--apply`; `--legacy` sweeps obsolete prefixes, crash orphans
+and orphaned sidecars, and is never used by the automation). Standing user authorization for the resulting Apple
 resource-seal invalidation was granted 2026-08-19 (see the exception note in
 `setup/claude/commands/patch-superset.md`).
 
