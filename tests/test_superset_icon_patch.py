@@ -35,8 +35,10 @@ class SupersetIconPatchSafetyTest(unittest.TestCase):
 
 
 class SupersetUiPatchTest(unittest.TestCase):
+    # WorkspaceSidebarHeader renders the same hint expression at 4-space
+    # indent; the patch must leave that call site alone.
     WORKSPACE_NEW_SHORTCUT = (
-        b"        /* @__PURE__ */ jsxRuntimeExports.jsx(SidebarKbdHint, { label: shortcutText })"
+        b"\n    /* @__PURE__ */ jsxRuntimeExports.jsx(SidebarKbdHint, { label: shortcutText })"
     )
 
     def stock_bundle(self):
@@ -49,7 +51,9 @@ class SupersetUiPatchTest(unittest.TestCase):
                 *([MODULE.PROJECT_ICON_UPSTREAM] * MODULE.EXPECTED_PROJECT_ICON_COUNT),
                 MODULE.TOP_NAV_STACK,
                 MODULE.TOP_NAV_TITLEBAR_STACK,
-                MODULE.WORKSPACE_INDENT_UPSTREAM,
+                MODULE.UPSTREAM_INDENT_ASSERTION,
+                MODULE.PROJECT_ROW_COMPACT,
+                MODULE.WORKSPACE_ROW_COMPACT,
                 MODULE.SHORTCUT_HINT_VISIBLE,
                 MODULE.DASHBOARD_NEW_SHORTCUT,
                 MODULE.DASHBOARD_SEARCH_SHORTCUT,
@@ -88,7 +92,10 @@ class SupersetUiPatchTest(unittest.TestCase):
         self.assertIn(b'gridTemplateColumns:"repeat(4,1fr)"', patched)
         self.assertNotIn(b"grid-cols-4", MODULE.TOP_NAV_GRID)
         self.assertIn(MODULE.TOP_NAV_TITLEBAR_GRID, patched)
-        self.assertIn(MODULE.WORKSPACE_INDENT_DEEP, patched)
+        self.assertIn(MODULE.PROJECT_ROW_ROOMY, patched)
+        self.assertNotIn(MODULE.PROJECT_ROW_COMPACT, patched)
+        self.assertIn(MODULE.WORKSPACE_ROW_ROOMY, patched)
+        self.assertNotIn(MODULE.WORKSPACE_ROW_COMPACT, patched)
         self.assertIn(MODULE.SHORTCUT_HINT_VISIBLE, patched)
         self.assertIn(MODULE.DASHBOARD_NEW_SHORTCUT_HIDDEN, patched)
         self.assertIn(MODULE.DASHBOARD_SEARCH_SHORTCUT_HIDDEN, patched)
@@ -106,10 +113,56 @@ class SupersetUiPatchTest(unittest.TestCase):
         for _old, new, label in MODULE.TOP_NAV_BUTTON_VARIANTS:
             self.assertIn(f'title: "{label}"'.encode(), new)
             self.assertIn(new, patched)
-        for _old, new, label in MODULE.TOP_NAV_LABEL_VARIANTS:
+        for _old, new, _label in MODULE.TOP_NAV_LABEL_VARIANTS:
             self.assertIn(b'className: "sr-only', new)
-            self.assertIn(f'children: "{label}"'.encode(), new)
+            self.assertIn(b'id: "dashboard.sidebar.header.', new)
             self.assertIn(new, patched)
+
+    def test_retired_indent_region_still_guarded_by_verify_only_anchor(self):
+        # Retiring the indent patch must not retire its tripwire: an upstream
+        # change in that region has to fail the plan, not ship silently.
+        malformed = self.stock_bundle().replace(
+            MODULE.UPSTREAM_INDENT_ASSERTION,
+            b"x" * len(MODULE.UPSTREAM_INDENT_ASSERTION),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "upstream workspace indentation"):
+            self.patch(malformed)
+
+    def test_installed_bundle_accepts_the_full_plan(self):
+        # Anchor rot against the real bundle is invisible to the synthetic
+        # fixture (it is built from the constants under test), so smoke-test
+        # the installed ASAR when this machine has one.
+        import mmap
+
+        asar = Path("/Applications/Superset.app/Contents/Resources/app.asar")
+        if not asar.exists():
+            self.skipTest("no installed Superset bundle on this machine")
+        with asar.open("rb") as stream:
+            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                MODULE.plan_replacements(
+                    data,
+                    size=6,
+                    hide_tray=True,
+                    custom_project_icons=True,
+                    keep_icon_on_hover=True,
+                    compact_sidebar=True,
+                )
+
+    def test_top_nav_variant_lists_match_the_1_25_1_header_button_set(self):
+        # desktop-v1.25.1 dropped the Usage button and added Pages/Plugins;
+        # a silent re-add or drop of a button must fail this, not just the
+        # generic "at least N changes" bound in the length-preserving test.
+        button_titles = [title for _old, _new, title in MODULE.TOP_NAV_BUTTON_VARIANTS]
+        label_titles = [title for _old, _new, title in MODULE.TOP_NAV_LABEL_VARIANTS]
+
+        self.assertNotIn("Usage", button_titles)
+        self.assertNotIn("Usage", label_titles)
+        self.assertIn("Pages", button_titles)
+        self.assertIn("Plugins", button_titles)
+        self.assertEqual(len(MODULE.TOP_NAV_BUTTON_VARIANTS), 8)
+        self.assertEqual(len(MODULE.TOP_NAV_LABEL_VARIANTS), 8)
+        self.assertEqual(button_titles, label_titles)
 
     def test_compact_sidebar_overlays_the_automation_failure_badge(self):
         patched, _changes = self.patch(self.stock_bundle())
@@ -134,11 +187,11 @@ class SupersetUiPatchTest(unittest.TestCase):
 
     def test_compact_sidebar_refuses_unknown_or_partial_upstream_layout(self):
         malformed = self.stock_bundle().replace(
-            MODULE.WORKSPACE_INDENT_UPSTREAM,
-            b"x" * len(MODULE.WORKSPACE_INDENT_UPSTREAM),
+            MODULE.TOP_NAV_TITLEBAR_STACK,
+            b"x" * len(MODULE.TOP_NAV_TITLEBAR_STACK),
         )
 
-        with self.assertRaisesRegex(RuntimeError, "workspace indentation"):
+        with self.assertRaisesRegex(RuntimeError, "top navigation titlebar"):
             self.patch(malformed)
 
     def test_selected_patch_is_idempotent(self):

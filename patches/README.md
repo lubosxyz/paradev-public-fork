@@ -31,15 +31,26 @@ All `size-N` strings are 6 chars, so asar header offsets stay valid — no repac
 unpacking-pattern issues with native modules.
 
 With `--compact-sidebar`, the expanded utility navigation becomes a four-column
-icon grid. Its seven button labels remain in the accessibility tree as
-`sr-only` names and are also exposed as native hover titles. Keyboard hints are
-removed only from the compact New Workspace and Search buttons; the shared hint
-renderer remains unchanged for other sidebars. Direct workspace
-children move from `pl-3` to `pl-7`; grouped children move from `pl-8` to
-`pl-9`, so their hierarchy is visibly distinct from the `pl-2` project row.
-The patch uses renderer utilities already present in the shipped bundle plus a
-length-preserving inline `gridTemplateColumns` declaration (the 1.23 CSS does
-not ship `grid-cols-4`). It does not inject CSS or repack the archive.
+icon grid. Anchors track desktop-v1.25.1: eight buttons (New Workspace, Search,
+Workspaces, Automations, Tasks, Pull requests, plus the flag-gated Pages and
+Plugins; upstream removed Usage from this header). Labels render through Lingui
+`<Trans>` and remain in the accessibility tree as `sr-only` names (the six
+`cn()` buttons additionally keep upstream's localized `aria-label`); every
+button also gets a native hover title. Known limitation: the injected `title`
+tooltips are hardcoded English while upstream now localizes the header — under
+a non-English locale the tooltip stays English. A retired patch leaves a
+verify-only anchor behind (`UPSTREAM_INDENT_ASSERTION`), so an upstream change
+in that region still fails the plan instead of shipping silently. Project and
+workspace rows are lifted from upstream's `h-7` (28 px) to `h-8` (32 px) —
+1.25.x compacted them and the 24 px icons read cramped at 28 px.
+Keyboard hints are removed only from the
+compact New Workspace and Search buttons; the shared hint renderer remains
+unchanged for other sidebars. Deeper child-workspace indentation shipped
+upstream in 1.25.x (`pl-10`/`pl-6`), so the former local indent patch is
+retired. The patch uses renderer utilities already present in the shipped
+bundle plus a length-preserving inline `gridTemplateColumns` declaration
+(the bundle CSS does not ship `grid-cols-4`). It does not inject CSS or repack
+the archive.
 
 The approved UI set is applied in one validated atomic swap:
 
@@ -117,8 +128,8 @@ of the script to change argv.
 ## 4. Legacy extracted-tree sidebar patch — `apply-ui-patches.py`
 
 This historical Superset 1.17 helper operates on an **extracted dist tree**.
-Its old marker/CSS layout is not the production 1.23 patch path; current
-in-place icon-grid and indentation behavior lives in `patch-asar.py` above.
+Its old marker/CSS layout is not the current production patch path; in-place
+icon-grid behavior lives in `patch-asar.py` above.
 Keep this helper only for an old source build or intentionally rebased repack:
 
 ```bash
@@ -355,7 +366,9 @@ procedures only if their symptom appears:
 ## Automated re-apply
 
 The `Daily Superset upstream patch audit` automation (id
-`96c8b045-6af1-4cc9-b46c-6e96dc48e132`, daily 9:00 Europe/Prague, worker
+`387e95c9-56f3-4906-bea3-6fbd482dc87b` — recreated 2026-08-29, so a mismatch
+means re-lookup by name via `superset automations list --json` — daily 9:00
+Europe/Prague, worker
 `codex-terra`) runs `check-upstream-patches.py` every morning. On
 `local_patch_drift` — an installed bundle without the local patches,
 typically the morning after an accidental update — it no longer just files a
@@ -380,7 +393,7 @@ SoT for the automation's prompt is
 redeploy:
 
 ```bash
-superset automations prompt set 96c8b045-6af1-4cc9-b46c-6e96dc48e132 \
+superset automations prompt set 387e95c9-56f3-4906-bea3-6fbd482dc87b \
   --from-file setup/superset/automation/upstream-update-watch.md
 ```
 

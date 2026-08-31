@@ -52,9 +52,12 @@ def _pad_variant(source: bytes, replacement: bytes) -> bytes:
     return replacement + (b" " * (len(source) - len(replacement)))
 
 
+# Anchors track desktop-v1.25.1 (the style object became multi-line there).
 TOP_NAV_STACK = (
     b'className: "flex flex-col gap-px px-2 pt-2 pb-2",\n'
-    b'      style: isMac ? { paddingTop: `${8 / zoomFactor}px` } : void 0,'
+    b'      style: isMac ? {\n'
+    b'        paddingTop: `${8 / zoomFactor}px`\n'
+    b'      } : void 0,'
 )
 TOP_NAV_GRID = _pad_variant(
     TOP_NAV_STACK,
@@ -66,8 +69,23 @@ TOP_NAV_TITLEBAR_GRID = _pad_variant(
     TOP_NAV_TITLEBAR_STACK,
     b'className: "col-span-4 mx-0 flex h-8 items-center"',
 )
-WORKSPACE_INDENT_UPSTREAM = b'isInSection ? "pl-8" : "pl-3"'
-WORKSPACE_INDENT_DEEP = b'isInSection ? "pl-9" : "pl-7"'
+# Deeper child-workspace indentation was adopted upstream in desktop-v1.25.x
+# (rows now ship isInSection ? "pl-10" : "pl-6"), so the local indent patch
+# was retired instead of rebased. The verify-only anchor below keeps the
+# fail-closed tripwire: if upstream ever changes that region again, the plan
+# raises and forces a rebase review instead of silently shipping the old look.
+UPSTREAM_INDENT_ASSERTION = b'isInSection ? "pl-10" : "pl-6"'
+
+# Upstream 1.25.x compacted sidebar rows to h-7 (28 px) — with the 24 px
+# project icons this patch sets, rows read cramped. Restore breathing room
+# by lifting both row types to h-8 (32 px); "h-7"/"h-8" are equal length.
+PROJECT_ROW_COMPACT = (
+    b'cn("group mx-2 flex h-7 items-center rounded-md pl-2 pr-1 '
+    b'text-[13px] font-medium"'
+)
+PROJECT_ROW_ROOMY = PROJECT_ROW_COMPACT.replace(b"h-7", b"h-8")
+WORKSPACE_ROW_COMPACT = b'"group relative flex h-7 w-full items-center pr-2"'
+WORKSPACE_ROW_ROOMY = WORKSPACE_ROW_COMPACT.replace(b"h-7", b"h-8")
 
 _SHORTCUT_CLASS = (
     "invisible inline-flex h-5 min-w-5 shrink-0 items-center justify-center "
@@ -82,12 +100,14 @@ SHORTCUT_HINT_HIDDEN = _pad_variant(
     SHORTCUT_HINT_VISIBLE,
     b'className: "hidden", children: label',
 )
+# The leading newline + 10-space indent pins the dashboard-header call site;
+# WorkspaceSidebarHeader renders the same expression at 4-space indent.
 DASHBOARD_NEW_SHORTCUT = (
-    b"              /* @__PURE__ */ jsxRuntimeExports.jsx(SidebarKbdHint, { label: shortcutText })"
+    b"\n          /* @__PURE__ */ jsxRuntimeExports.jsx(SidebarKbdHint, { label: shortcutText })"
 )
 DASHBOARD_NEW_SHORTCUT_HIDDEN = _pad_variant(
     DASHBOARD_NEW_SHORTCUT,
-    b"              /* compact dashboard new-workspace shortcut */ null",
+    b"\n          /* compact dashboard new-workspace shortcut */ null",
 )
 DASHBOARD_SEARCH_SHORTCUT = (
     b'searchShortcutText !== "Unassigned" && /* @__PURE__ */ '
@@ -109,14 +129,16 @@ AUTOMATION_BADGE_OVERLAY = _pad_variant(
     b'dark:text-red-400"',
 )
 
-_TOP_NAV_COMMON_CLASS = (
-    "flex w-full items-center gap-2 rounded-md px-2 py-1 text-[13px] "
+# desktop-v1.25.1 renders every expanded-header button on one bundled line
+# and labels through Lingui <Trans>; the variants below mirror that exactly.
+_TOP_NAV_ROW_CLASS = (
+    "flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] "
     "font-medium transition-colors"
 )
 _TOP_NAV_ICON_CLASS = "relative flex w-full justify-center rounded-md p-1"
 _TOP_NAV_NEW_CLASS = (
-    "group flex w-full items-center gap-2 rounded-md bg-fill-hover/60 "
-    "[.light_&]:bg-fill-hover px-1 py-1 text-[13px] font-medium "
+    "group flex h-7 w-full items-center gap-2 rounded-md bg-fill-hover/60 "
+    "[.light_&]:bg-fill-hover px-1.5 text-[13px] font-medium "
     "text-muted-foreground transition-colors hover:bg-fill-selected "
     "[.light_&]:hover:bg-fill-selected hover:text-foreground"
 )
@@ -127,7 +149,7 @@ _TOP_NAV_NEW_ICON_CLASS = (
     "hover:text-foreground"
 )
 _TOP_NAV_SEARCH_CLASS = (
-    "group flex w-full items-center gap-2 rounded-md px-2 py-1 text-[13px] "
+    "group flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] "
     "font-medium text-muted-foreground transition-colors hover:bg-fill-hover "
     "hover:text-foreground"
 )
@@ -135,115 +157,94 @@ _TOP_NAV_SEARCH_ICON_CLASS = (
     "relative flex w-full items-center justify-center rounded-md p-1 "
     "text-muted-foreground hover:bg-fill-hover hover:text-foreground"
 )
+_TOP_NAV_STATE_SUFFIX = (
+    ', {state} ? "bg-fill-selected text-foreground" : '
+    '"text-muted-foreground hover:bg-fill-hover hover:text-foreground")'
+)
 
 
-def _button_variant(
-    click: str,
-    title: str,
-    source_class: str,
-    icon_class: str,
-    *,
-    uses_cn: bool,
-    attributes: tuple[str, ...] = (),
+def _plain_button_variant(
+    prefix: str, title: str, source_class: str, icon_class: str
 ) -> tuple[bytes, bytes, str]:
-    """Build one strict equal-length icon-button replacement."""
-    class_open = "className: cn(\n              " if uses_cn else "className: "
-    attribute_block = "".join(f"            {attribute}\n" for attribute in attributes)
-    source = (
-        f'onClick: {click},\n{attribute_block}            '
-        f'{class_open}"{source_class}",'
-    ).encode()
+    """Build one equal-length replacement for a plain-string className button."""
+    source = f'{prefix}className: "{source_class}"'.encode()
+    replacement = f'{prefix}title: "{title}", className: "{icon_class}"'.encode()
+    return source, _pad_variant(source, replacement), title
+
+
+def _cn_button_variant(prefix: str, title: str, state: str) -> tuple[bytes, bytes, str]:
+    """Build one equal-length replacement for a cn(shared, stateful) button."""
+    suffix = _TOP_NAV_STATE_SUFFIX.format(state=state)
+    source = f'{prefix}className: cn("{_TOP_NAV_ROW_CLASS}"{suffix}'.encode()
     replacement = (
-        f'onClick: {click},\n{attribute_block}            title: "{title}",\n            '
-        f'{class_open}"{icon_class}",'
+        f'{prefix}title: "{title}", className: cn("{_TOP_NAV_ICON_CLASS}"{suffix}'
     ).encode()
     return source, _pad_variant(source, replacement), title
 
 
 TOP_NAV_BUTTON_VARIANTS = [
-    _button_variant(
-        "() => openModal(activeProjectId)",
+    _plain_button_variant(
+        "onClick: () => openModal(activeProjectId), ",
         "New Workspace",
         _TOP_NAV_NEW_CLASS,
         _TOP_NAV_NEW_ICON_CLASS,
-        uses_cn=False,
     ),
-    _button_variant(
-        "handleSearchClick",
+    _plain_button_variant(
+        "onPointerDown: handleSearchPointerDown, onClick: handleSearchClick, ",
         "Search",
         _TOP_NAV_SEARCH_CLASS,
         _TOP_NAV_SEARCH_ICON_CLASS,
-        uses_cn=False,
     ),
-    _button_variant(
-        "handleWorkspacesClick",
-        "Workspaces",
-        _TOP_NAV_COMMON_CLASS,
-        _TOP_NAV_ICON_CLASS,
-        uses_cn=True,
+    _cn_button_variant(
+        "onClick: handleWorkspacesClick, ", "Workspaces", "isWorkspacesListOpen"
     ),
-    _button_variant(
-        "handleAutomationsClick",
-        "Automations",
-        _TOP_NAV_COMMON_CLASS,
-        _TOP_NAV_ICON_CLASS,
-        uses_cn=True,
+    _cn_button_variant(
+        "onClick: handleAutomationsClick, ", "Automations", "isAutomationsOpen"
     ),
-    _button_variant(
-        "handleTasksClick",
-        "Tasks",
-        _TOP_NAV_COMMON_CLASS,
-        _TOP_NAV_ICON_CLASS,
-        uses_cn=True,
-        attributes=(
-            '"aria-label": "Tasks",',
-            '"aria-current": isTasksOpen ? "page" : void 0,',
-        ),
+    _cn_button_variant(
+        '"aria-current": isTasksOpen ? "page" : void 0, ', "Tasks", "isTasksOpen"
     ),
-    _button_variant(
-        "handlePullRequestsClick",
+    _cn_button_variant(
+        '"aria-current": isPullRequestsOpen ? "page" : void 0, ',
         "Pull requests",
-        _TOP_NAV_COMMON_CLASS,
-        _TOP_NAV_ICON_CLASS,
-        uses_cn=True,
-        attributes=(
-            '"aria-label": "Pull requests",',
-            '"aria-current": isPullRequestsOpen ? "page" : void 0,',
-        ),
+        "isPullRequestsOpen",
     ),
-    _button_variant(
-        "handleUsageClick",
-        "Usage",
-        _TOP_NAV_COMMON_CLASS,
-        _TOP_NAV_ICON_CLASS,
-        uses_cn=True,
-        attributes=(
-            '"aria-label": "Usage",',
-            '"aria-current": isUsageOpen ? "page" : void 0,',
-        ),
+    _cn_button_variant(
+        '"aria-current": isPagesOpen ? "page" : void 0, ', "Pages", "isPagesOpen"
+    ),
+    _cn_button_variant(
+        '"aria-current": isPluginsOpen ? "page" : void 0, ', "Plugins", "isPluginsOpen"
     ),
 ]
 
 
-def _label_variant(title: str, source_class: str) -> tuple[bytes, bytes, str]:
-    """Keep a button's text as an accessible-only name without displaying it."""
+def _label_variant(title: str, ident: str, source_class: str) -> tuple[bytes, bytes, str]:
+    """Visually hide one Trans-rendered button label while keeping it accessible."""
     hidden_class = "sr-only" + (" " * (len(source_class) - len("sr-only")))
-    source = f'className: "{source_class}", children: "{title}"'.encode()
-    replacement = f'className: "{hidden_class}", children: "{title}"'.encode()
+    tail = (
+        ', children: /* @__PURE__ */ jsxRuntimeExports.jsx(Trans, { .../** i18n */\n'
+        "          {\n"
+        f'            id: "dashboard.sidebar.header.{ident}"'
+    )
+    source = f'className: "{source_class}"{tail}'.encode()
+    replacement = f'className: "{hidden_class}"{tail}'.encode()
     return source, replacement, title
 
 
 TOP_NAV_LABEL_VARIANTS = [
-    _label_variant("New Workspace", "flex-1 truncate text-left whitespace-nowrap"),
+    _label_variant(
+        "New Workspace", "newWorkspace", "flex-1 truncate text-left whitespace-nowrap"
+    ),
     *[
-        _label_variant(title, "flex-1 text-left")
-        for title in (
-            "Search",
-            "Workspaces",
-            "Automations",
-            "Tasks",
-            "Pull requests",
-            "Usage",
+        _label_variant(title, ident, "flex-1 text-left")
+        for title, ident in (
+            ("Search", "search"),
+            ("Workspaces", "workspaces"),
+            ("Automations", "automations"),
+            ("Tasks", "tasks"),
+            ("Pull requests", "pullRequests"),
+            ("Pages", "pages"),
+            ("Plugins", "plugins"),
         )
     ],
 ]
@@ -351,6 +352,11 @@ def plan_replacements(
         )
 
     if compact_sidebar:
+        # Verify-only: the retired indent patch's region must still look the
+        # way upstream shipped it in 1.25.x; any change there needs a review.
+        _single_variant(
+            data, "upstream workspace indentation", [UPSTREAM_INDENT_ASSERTION]
+        )
         sidebar_variants = [
             ("top navigation layout", TOP_NAV_STACK, TOP_NAV_GRID, "sidebar: four-column icon grid"),
             (
@@ -358,12 +364,6 @@ def plan_replacements(
                 TOP_NAV_TITLEBAR_STACK,
                 TOP_NAV_TITLEBAR_GRID,
                 "sidebar: titlebar spans icon grid",
-            ),
-            (
-                "workspace indentation",
-                WORKSPACE_INDENT_UPSTREAM,
-                WORKSPACE_INDENT_DEEP,
-                "sidebar: deeper workspace indentation",
             ),
             (
                 "shared shortcut hint renderer",
@@ -388,6 +388,18 @@ def plan_replacements(
                 AUTOMATION_BADGE_INLINE,
                 AUTOMATION_BADGE_OVERLAY,
                 "sidebar: automation failure badge overlay",
+            ),
+            (
+                "project row height",
+                PROJECT_ROW_COMPACT,
+                PROJECT_ROW_ROOMY,
+                "sidebar: roomier project rows (h-8)",
+            ),
+            (
+                "workspace row height",
+                WORKSPACE_ROW_COMPACT,
+                WORKSPACE_ROW_ROOMY,
+                "sidebar: roomier workspace rows (h-8)",
             ),
         ]
         sidebar_variants.extend(
@@ -682,7 +694,7 @@ def main(argv=None):
     parser.add_argument(
         "--compact-sidebar",
         action="store_true",
-        help="use a four-column icon grid and visibly deeper workspace children",
+        help="collapse the expanded header navigation into a four-column icon grid",
     )
     parser.add_argument("--revert", action="store_true")
     parser.add_argument("--asar", type=Path, default=DEFAULT_ASAR)
