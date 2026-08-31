@@ -375,10 +375,15 @@ typically the morning after an accidental update — it no longer just files a
 review task: it launches a pre-authorized `/task-run-goal` that redoes the
 "When to re-run" flow above (`apply.py` → `patch-asar.py
 --ack-invalid-apple-signature` → `render-guard.py --apply` → read-only
-worker-audit → re-check) from its own clean worktree, sends a macOS
-notification, and deletes its own run workspace when done. It caps at two
-failed attempts per version before escalating to a review Task instead of
-relaunching forever. After a verified re-apply the worker also runs
+worker-audit → re-check) from its own clean worktree and deletes its own run
+workspace when done. Incompatible anchors after an update launch an
+autonomous REBASE goal the same way (worker sol, runbook `REBASE.md`,
+self-merge). There are NO notifications and no extra review tasks (user
+decision 2026-08-31): a failure keeps the run worktree glowing in the
+sidebar, renamed `⚠ Superset patch: <reason>` with `NEEDS-ATTENTION.md`
+inside; an attention janitor removes resolved rows. It caps at two failed
+attempts per version before raising that signal instead of relaunching
+forever. After a verified re-apply the worker also runs
 `prune-asar-backups.py --apply` (keep-2 retention of VERIFIED revert sets —
 protected name per patch-asar's revert glob + `.json` manifest present; a set
 whose manifest `patched_sha256` matches the live bundle is never deleted, and
