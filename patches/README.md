@@ -100,8 +100,8 @@ Idempotent — already-present entries are skipped.
 
 ## 3. Agent commands — `update-presets.js`
 
-Sets the Claude / Codex / Gemini agent argv to "max-thinking + bypass
-approvals". Calls the **local host-service tRPC**
+Sets the Claude / Codex / Gemini agent argv to the intended bounded effort plus bypass
+approvals. Calls the **local host-service tRPC**
 (`settings.agentConfigs.update`) at `http://127.0.0.1:<port>/trpc/...`.
 
 Live update — Superset stays running, UI auto-refreshes on next
@@ -110,17 +110,19 @@ or Cmd+R).
 
 Current targets (matched by `preset_id` in `host.db`):
 
-| Agent  | Argv |
-|--------|------|
-| claude | `--dangerously-skip-permissions --effort max` |
-| codex  | `-c model_reasoning_effort="xhigh" --yolo` |
-| gemini | `--yolo` |
+| Agent  | Command / argv |
+|--------|----------------|
+| claude | `claude-affine --profile lubos --superset-canonical-fable5 -- --model claude-fable-5[1m] --effort high --dangerously-skip-permissions` |
+| codex  | `codex -c model_reasoning_effort="xhigh" --yolo` |
+| gemini | `gemini --yolo` |
 
 ```bash
 node update-presets.js
 ```
 
-No npm packages required (Node built-ins only). Reads the auth token from
+The canonical marker is necessary because Superset appends its model picker after stored args;
+without normalization a moving `--model fable` would out-vote the exact pin. No npm packages
+required (Node built-ins only). Reads the auth token from
 `~/.superset/host/<org>/manifest.json` and the agent IDs from
 `~/.superset/host/<org>/host.db`. Customize the `TARGETS` map at the top
 of the script to change argv.
