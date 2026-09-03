@@ -112,7 +112,7 @@ Current targets (matched by `preset_id` in `host.db`):
 
 | Agent  | Command / argv |
 |--------|----------------|
-| claude | `claude-affine --profile lubos --superset-canonical-fable5 -- --model claude-fable-5[1m] --effort high --dangerously-skip-permissions` |
+| claude | `claude-affine --superset-default-profile --superset-canonical-fable5 -- --model claude-fable-5[1m] --effort high --dangerously-skip-permissions` |
 | codex  | `codex -c model_reasoning_effort="xhigh" --yolo` |
 | gemini | `gemini --yolo` |
 
@@ -214,7 +214,7 @@ The guard puts the fix on the **Superset agent configs** rather than in
 renderer — Claude in your own terminal keeps the flicker-free one.
 
 It matches on `command = 'claude'`, not on `preset_id`, because
-`resume-all.js` creates its own **"Claude Resume"** config (`preset_id='custom'`,
+`resume-all.js` creates its own **"Claude Resume [profile]"** config (`preset_id='custom'`,
 `env: {"CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN":"1"}`) and
 `/superset-resume-all` restores panes through *that* id. A
 preset-only guard reports OK while the exact recovery path that produced the
@@ -265,7 +265,7 @@ write it while the GUI is up and tells you the two safe paths instead:
 ```bash
 python3 render-guard.py                       # all three must print OK
 # Check every org dir (see the placeholder-org note below) and every config that
-# launches claude — filtering on preset_id would miss "Claude Resume". Read ONLY
+# launches claude — filtering on preset_id would miss "Claude Resume [profile]". Read ONLY
 # this one key: `SELECT env_json` would dump every value in it, tokens included.
 for db in ~/.superset/host/*/host.db; do
   echo "$(basename "$(dirname "$db")")"
