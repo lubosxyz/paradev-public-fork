@@ -31,10 +31,14 @@ All `size-N` strings are 6 chars, so asar header offsets stay valid — no repac
 unpacking-pattern issues with native modules.
 
 With `--compact-sidebar`, the expanded utility navigation becomes a four-column
-icon grid. Anchors track desktop-v1.25.1: eight buttons (New Workspace, Search,
+icon grid. Anchor families track desktop-v1.25.1 and desktop-v1.26.0–v1.27.0:
+eight buttons (New Workspace, Search,
 Workspaces, Automations, Tasks, Pull requests, plus the flag-gated Pages and
 Plugins; upstream removed Usage from this header). Labels render through Lingui
-`<Trans>` and remain in the accessibility tree as `sr-only` names (the six
+`<Trans>` and remain in the accessibility tree as `sr-only` names. Version
+1.26.0 regenerated the eight message ids and 1.27.0 retains them, so each
+logical label family accepts exactly one release-specific stock or patched
+variant (the six
 `cn()` buttons additionally keep upstream's localized `aria-label`); every
 button also gets a native hover title. Known limitation: the injected `title`
 tooltips are hardcoded English while upstream now localizes the header — under
@@ -47,7 +51,8 @@ Keyboard hints are removed only from the
 compact New Workspace and Search buttons; the shared hint renderer remains
 unchanged for other sidebars. Deeper child-workspace indentation shipped
 upstream in 1.25.x (`pl-10`/`pl-6`), so the former local indent patch is
-retired. The patch uses renderer utilities already present in the shipped
+retired; the 1.26.0–1.27.0 verify-only anchor also pins the explicit top-level
+mode (`pl-2`). The patch uses renderer utilities already present in the shipped
 bundle plus a length-preserving inline `gridTemplateColumns` declaration
 (the bundle CSS does not ship `grid-cols-4`). It does not inject CSS or repack
 the archive.
@@ -59,6 +64,11 @@ python3 patch-asar.py --size 6 --hide-tray --custom-project-icons \
   --keep-icon-on-hover --compact-sidebar --ack-invalid-apple-signature
 python3 patch-asar.py --revert
 ```
+
+`project-icons/komfi-ops.svg` is an intentional palette exception: its
+slate-900 (`#0f172a`) background and slate-200 (`#e2e8f0`) gear stroke retain
+the approved dark-background identity instead of following the light sibling
+icon convention.
 
 The original is saved to `~/.superset/app.asar.backup-pre-ui-patch-<ts>` with
 a sibling integrity manifest. Restore verifies the backup SHA-256 and refuses

@@ -52,7 +52,7 @@ def _pad_variant(source: bytes, replacement: bytes) -> bytes:
     return replacement + (b" " * (len(source) - len(replacement)))
 
 
-# Anchors track desktop-v1.25.1 (the style object became multi-line there).
+# Anchors track desktop-v1.27.0 (the style object became multi-line in 1.25.1).
 TOP_NAV_STACK = (
     b'className: "flex flex-col gap-px px-2 pt-2 pb-2",\n'
     b'      style: isMac ? {\n'
@@ -69,12 +69,17 @@ TOP_NAV_TITLEBAR_GRID = _pad_variant(
     TOP_NAV_TITLEBAR_STACK,
     b'className: "col-span-4 mx-0 flex h-8 items-center"',
 )
-# Deeper child-workspace indentation was adopted upstream in desktop-v1.25.x
-# (rows now ship isInSection ? "pl-10" : "pl-6"), so the local indent patch
-# was retired instead of rebased. The verify-only anchor below keeps the
-# fail-closed tripwire: if upstream ever changes that region again, the plan
-# raises and forces a rebase review instead of silently shipping the old look.
-UPSTREAM_INDENT_ASSERTION = b'isInSection ? "pl-10" : "pl-6"'
+# Deeper child-workspace indentation was adopted upstream in desktop-v1.25.x.
+# Desktop 1.26.0 added a distinct top-level mode, retained by 1.27.0, while
+# preserving grouped and workspace indentation. The local patch stays retired;
+# this exact verify-only family keeps the original row region fail-closed.
+UPSTREAM_INDENT_ASSERTION = (
+    b'resolvedIndentation === "top-level" ? "pl-2" : '
+    b'resolvedIndentation === "grouped" ? "pl-10" : "pl-6"'
+)
+UPSTREAM_INDENT_ASSERTION_1_25_1 = b'isInSection ? "pl-10" : "pl-6"'
+SIDEBAR_RELEASE_CURRENT = "1.26.0+"
+SIDEBAR_RELEASE_LEGACY = "1.25.1"
 
 # Upstream 1.25.x compacted sidebar rows to h-7 (28 px) — with the 24 px
 # project icons this patch sets, rows read cramped. Restore breathing room
@@ -129,7 +134,7 @@ AUTOMATION_BADGE_OVERLAY = _pad_variant(
     b'dark:text-red-400"',
 )
 
-# desktop-v1.25.1 renders every expanded-header button on one bundled line
+# desktop-v1.27.0 renders every expanded-header button on one bundled line
 # and labels through Lingui <Trans>; the variants below mirror that exactly.
 _TOP_NAV_ROW_CLASS = (
     "flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] "
@@ -218,13 +223,15 @@ TOP_NAV_BUTTON_VARIANTS = [
 ]
 
 
-def _label_variant(title: str, ident: str, source_class: str) -> tuple[bytes, bytes, str]:
+def _label_variant(
+    title: str, message_id: str, source_class: str
+) -> tuple[bytes, bytes, str]:
     """Visually hide one Trans-rendered button label while keeping it accessible."""
     hidden_class = "sr-only" + (" " * (len(source_class) - len("sr-only")))
     tail = (
         ', children: /* @__PURE__ */ jsxRuntimeExports.jsx(Trans, { .../** i18n */\n'
         "          {\n"
-        f'            id: "dashboard.sidebar.header.{ident}"'
+        f'            id: "{message_id}"'
     )
     source = f'className: "{source_class}"{tail}'.encode()
     replacement = f'className: "{hidden_class}"{tail}'.encode()
@@ -233,18 +240,40 @@ def _label_variant(title: str, ident: str, source_class: str) -> tuple[bytes, by
 
 TOP_NAV_LABEL_VARIANTS = [
     _label_variant(
-        "New Workspace", "newWorkspace", "flex-1 truncate text-left whitespace-nowrap"
+        "New Workspace", "VxFQK8", "flex-1 truncate text-left whitespace-nowrap"
     ),
     *[
-        _label_variant(title, ident, "flex-1 text-left")
-        for title, ident in (
-            ("Search", "search"),
-            ("Workspaces", "workspaces"),
-            ("Automations", "automations"),
-            ("Tasks", "tasks"),
-            ("Pull requests", "pullRequests"),
-            ("Pages", "pages"),
-            ("Plugins", "plugins"),
+        _label_variant(title, message_id, "flex-1 text-left")
+        for title, message_id in (
+            ("Search", "A1taO8"),
+            ("Workspaces", "pmt7u4"),
+            ("Automations", "EF-M0w"),
+            ("Tasks", "GtycJ_"),
+            ("Pull requests", "6tMqGq"),
+            ("Pages", "wRR604"),
+            ("Plugins", "ohUJJM"),
+        )
+    ],
+]
+
+# Keep the old 1.25.1 bundle patchable; every logical label family accepts
+# exactly one current or legacy stock/patched variant.
+TOP_NAV_LABEL_VARIANTS_1_25_1 = [
+    _label_variant(
+        "New Workspace",
+        "dashboard.sidebar.header.newWorkspace",
+        "flex-1 truncate text-left whitespace-nowrap",
+    ),
+    *[
+        _label_variant(title, message_id, "flex-1 text-left")
+        for title, message_id in (
+            ("Search", "dashboard.sidebar.header.search"),
+            ("Workspaces", "dashboard.sidebar.header.workspaces"),
+            ("Automations", "dashboard.sidebar.header.automations"),
+            ("Tasks", "dashboard.sidebar.header.tasks"),
+            ("Pull requests", "dashboard.sidebar.header.pullRequests"),
+            ("Pages", "dashboard.sidebar.header.pages"),
+            ("Plugins", "dashboard.sidebar.header.plugins"),
         )
     ],
 ]
@@ -353,10 +382,18 @@ def plan_replacements(
 
     if compact_sidebar:
         # Verify-only: the retired indent patch's region must still look the
-        # way upstream shipped it in 1.25.x; any change there needs a review.
-        _single_variant(
-            data, "upstream workspace indentation", [UPSTREAM_INDENT_ASSERTION]
+        # way upstream shipped it in 1.25.1 or 1.26.0+; any other shape needs
+        # a review.
+        _indent_offset, indent_variant = _single_variant(
+            data,
+            "upstream workspace indentation",
+            [UPSTREAM_INDENT_ASSERTION, UPSTREAM_INDENT_ASSERTION_1_25_1],
         )
+        release_families = {
+            SIDEBAR_RELEASE_CURRENT
+            if indent_variant == UPSTREAM_INDENT_ASSERTION
+            else SIDEBAR_RELEASE_LEGACY
+        }
         sidebar_variants = [
             ("top navigation layout", TOP_NAV_STACK, TOP_NAV_GRID, "sidebar: four-column icon grid"),
             (
@@ -406,14 +443,40 @@ def plan_replacements(
             (f"{title} button", source, target, f"sidebar: {title} icon button")
             for source, target, title in TOP_NAV_BUTTON_VARIANTS
         )
-        sidebar_variants.extend(
-            (f"{title} label", source, target, f"sidebar: {title} accessible label")
-            for source, target, title in TOP_NAV_LABEL_VARIANTS
-        )
         for name, source, target, label in sidebar_variants:
             offset, old = _single_variant(data, name, [source, target])
             if old != target:
                 replacements.append((offset, old, target, label))
+        for current, legacy in zip(
+            TOP_NAV_LABEL_VARIANTS, TOP_NAV_LABEL_VARIANTS_1_25_1, strict=True
+        ):
+            current_source, current_target, title = current
+            legacy_source, legacy_target, legacy_title = legacy
+            if title != legacy_title:
+                raise RuntimeError("internal error: label variant title mismatch")
+            offset, old = _single_variant(
+                data,
+                f"{title} label",
+                [current_source, current_target, legacy_source, legacy_target],
+            )
+            target = (
+                current_target
+                if old in (current_source, current_target)
+                else legacy_target
+            )
+            release_families.add(
+                SIDEBAR_RELEASE_CURRENT
+                if old in (current_source, current_target)
+                else SIDEBAR_RELEASE_LEGACY
+            )
+            if old != target:
+                replacements.append(
+                    (offset, old, target, f"sidebar: {title} accessible label")
+                )
+        if len(release_families) != 1:
+            raise RuntimeError(
+                "mixed sidebar release families; bundle structure may have changed"
+            )
 
     for _offset, old, new, label in replacements:
         if len(old) != len(new):

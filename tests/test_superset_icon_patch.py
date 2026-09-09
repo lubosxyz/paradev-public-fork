@@ -5,9 +5,17 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
+import xml.etree.ElementTree as ET
 
 
 MODULE_PATH = Path(__file__).parents[1] / "setup/superset/patches/patch-asar.py"
+KOMFI_OPS_ICON = (
+    Path(__file__).parents[1]
+    / "setup"
+    / "superset"
+    / "project-icons"
+    / "komfi-ops.svg"
+)
 SPEC = importlib.util.spec_from_file_location("patch_superset_asar", MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
@@ -32,6 +40,16 @@ class SupersetIconPatchSafetyTest(unittest.TestCase):
         self.assertEqual(lock.parent, MODULE.LOCK_ROOT)
         self.assertEqual(lock.suffix, ".lock")
         self.assertEqual(lock, MODULE._lock_path(target.resolve()))
+
+    def test_komfi_ops_icon_keeps_the_dark_palette(self):
+        icon = KOMFI_OPS_ICON.read_text()
+        root = ET.fromstring(icon)
+        rectangle, gear = list(root)
+
+        self.assertEqual(rectangle.attrib["fill"], "#0f172a")
+        self.assertEqual(gear.attrib["stroke"], "#e2e8f0")
+        self.assertNotIn("#f1f5f9", icon)
+        self.assertNotIn("#334155", icon)
 
 
 class SupersetUiPatchTest(unittest.TestCase):
@@ -74,6 +92,20 @@ class SupersetUiPatchTest(unittest.TestCase):
             compact_sidebar=True,
         )
 
+    def legacy_stock_bundle(self):
+        """Return the synthetic fixture with every release-specific family on 1.25.1."""
+        legacy = self.stock_bundle().replace(
+            MODULE.UPSTREAM_INDENT_ASSERTION,
+            MODULE.UPSTREAM_INDENT_ASSERTION_1_25_1,
+        )
+        for current, old_release in zip(
+            MODULE.TOP_NAV_LABEL_VARIANTS,
+            MODULE.TOP_NAV_LABEL_VARIANTS_1_25_1,
+            strict=True,
+        ):
+            legacy = legacy.replace(current[0], old_release[0])
+        return legacy
+
     def test_selected_patch_is_length_preserving_and_complete(self):
         original = self.stock_bundle()
 
@@ -115,7 +147,7 @@ class SupersetUiPatchTest(unittest.TestCase):
             self.assertIn(new, patched)
         for _old, new, _label in MODULE.TOP_NAV_LABEL_VARIANTS:
             self.assertIn(b'className: "sr-only', new)
-            self.assertIn(b'id: "dashboard.sidebar.header.', new)
+            self.assertIn(b'jsxRuntimeExports.jsx(Trans', new)
             self.assertIn(new, patched)
 
     def test_retired_indent_region_still_guarded_by_verify_only_anchor(self):
@@ -149,12 +181,87 @@ class SupersetUiPatchTest(unittest.TestCase):
                     compact_sidebar=True,
                 )
 
-    def test_top_nav_variant_lists_match_the_1_25_1_header_button_set(self):
-        # desktop-v1.25.1 dropped the Usage button and added Pages/Plugins;
-        # a silent re-add or drop of a button must fail this, not just the
-        # generic "at least N changes" bound in the length-preserving test.
+    def test_unpatched_1_25_1_label_family_remains_patchable(self):
+        legacy = self.legacy_stock_bundle()
+
+        patched, _changes = self.patch(legacy)
+
+        for source, target, _title in MODULE.TOP_NAV_LABEL_VARIANTS_1_25_1:
+            self.assertNotIn(source, patched)
+            self.assertIn(target, patched)
+
+    def test_patched_1_25_1_label_family_is_idempotent(self):
+        legacy = self.legacy_stock_bundle()
+
+        once, _changes = self.patch(legacy)
+        twice, changes = self.patch(once)
+
+        self.assertEqual(once, twice)
+        self.assertEqual(changes, [])
+
+    def test_label_family_refuses_ambiguous_release_variants(self):
+        for current, legacy in zip(
+            MODULE.TOP_NAV_LABEL_VARIANTS,
+            MODULE.TOP_NAV_LABEL_VARIANTS_1_25_1,
+            strict=True,
+        ):
+            title = current[2]
+            for kind, duplicate in zip(
+                ("current source", "current target", "legacy source", "legacy target"),
+                (*current[:2], *legacy[:2]),
+                strict=True,
+            ):
+                with self.subTest(title=title, kind=kind):
+                    ambiguous = self.stock_bundle() + b"|" + duplicate
+                    with self.assertRaisesRegex(
+                        RuntimeError, f"{title} label anchor, found 2"
+                    ):
+                        self.patch(ambiguous)
+
+    def test_mixed_label_release_families_are_refused(self):
+        current = MODULE.TOP_NAV_LABEL_VARIANTS[0][0]
+        legacy = MODULE.TOP_NAV_LABEL_VARIANTS_1_25_1[0][0]
+        mixed = self.stock_bundle().replace(current, legacy)
+
+        with self.assertRaisesRegex(RuntimeError, "mixed sidebar release families"):
+            self.patch(mixed)
+
+    def test_mixed_indent_release_family_is_refused(self):
+        mixed = self.stock_bundle().replace(
+            MODULE.UPSTREAM_INDENT_ASSERTION,
+            MODULE.UPSTREAM_INDENT_ASSERTION_1_25_1,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "mixed sidebar release families"):
+            self.patch(mixed)
+
+    def test_label_family_title_mismatch_is_an_internal_error(self):
+        mismatched = list(MODULE.TOP_NAV_LABEL_VARIANTS_1_25_1)
+        source, target, _title = mismatched[0]
+        mismatched[0] = (source, target, "Wrong title")
+
+        with mock.patch.object(MODULE, "TOP_NAV_LABEL_VARIANTS_1_25_1", mismatched):
+            with self.assertRaisesRegex(RuntimeError, "label variant title mismatch"):
+                self.patch(self.stock_bundle())
+
+    def test_top_nav_variant_lists_match_the_1_27_0_header_button_set(self):
+        # desktop-v1.27.0 keeps the eight buttons and 1.26.0 Lingui ids; pin
+        # both membership and exact ids so stale label anchors fail locally.
         button_titles = [title for _old, _new, title in MODULE.TOP_NAV_BUTTON_VARIANTS]
         label_titles = [title for _old, _new, title in MODULE.TOP_NAV_LABEL_VARIANTS]
+        legacy_label_titles = [
+            title for _old, _new, title in MODULE.TOP_NAV_LABEL_VARIANTS_1_25_1
+        ]
+        label_ids = [
+            "VxFQK8",
+            "A1taO8",
+            "pmt7u4",
+            "EF-M0w",
+            "GtycJ_",
+            "6tMqGq",
+            "wRR604",
+            "ohUJJM",
+        ]
 
         self.assertNotIn("Usage", button_titles)
         self.assertNotIn("Usage", label_titles)
@@ -162,7 +269,19 @@ class SupersetUiPatchTest(unittest.TestCase):
         self.assertIn("Plugins", button_titles)
         self.assertEqual(len(MODULE.TOP_NAV_BUTTON_VARIANTS), 8)
         self.assertEqual(len(MODULE.TOP_NAV_LABEL_VARIANTS), 8)
+        self.assertEqual(len(MODULE.TOP_NAV_LABEL_VARIANTS_1_25_1), 8)
         self.assertEqual(button_titles, label_titles)
+        self.assertEqual(button_titles, legacy_label_titles)
+        for (source, _target, _title), message_id in zip(
+            MODULE.TOP_NAV_LABEL_VARIANTS, label_ids, strict=True
+        ):
+            self.assertIn(f'id: "{message_id}"'.encode(), source)
+
+        self.assertEqual(
+            MODULE.UPSTREAM_INDENT_ASSERTION,
+            b'resolvedIndentation === "top-level" ? "pl-2" : '
+            b'resolvedIndentation === "grouped" ? "pl-10" : "pl-6"',
+        )
 
     def test_compact_sidebar_overlays_the_automation_failure_badge(self):
         patched, _changes = self.patch(self.stock_bundle())
