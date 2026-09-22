@@ -122,7 +122,7 @@ Current targets (matched by `preset_id` in `host.db`):
 
 | Agent  | Command / argv |
 |--------|----------------|
-| claude | `claude-affine --superset-default-profile --superset-canonical-fable5 -- --model claude-fable-5[1m] --effort high --dangerously-skip-permissions` |
+| claude | `claude-affine --superset-default-profile --superset-canonical-fable5 -- --model claude-opus-5-5[1m] --effort high --dangerously-skip-permissions` |
 | codex  | `codex -c model_reasoning_effort="xhigh" --yolo` |
 | gemini | `gemini --yolo` |
 
