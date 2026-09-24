@@ -31,12 +31,12 @@ All `size-N` strings are 6 chars, so asar header offsets stay valid — no repac
 unpacking-pattern issues with native modules.
 
 With `--compact-sidebar`, the expanded utility navigation becomes a four-column
-icon grid. Anchor families track desktop-v1.25.1 and desktop-v1.26.0–v1.27.0:
+icon grid. Anchor families track desktop-v1.25.1 and desktop-v1.26.0–v1.30.2:
 eight buttons (New Workspace, Search,
 Workspaces, Automations, Tasks, Pull requests, plus the flag-gated Pages and
 Plugins; upstream removed Usage from this header). Labels render through Lingui
 `<Trans>` and remain in the accessibility tree as `sr-only` names. Version
-1.26.0 regenerated the eight message ids and 1.27.0 retains them, so each
+1.26.0 regenerated the eight message ids and 1.30.2 retains them, so each
 logical label family accepts exactly one release-specific stock or patched
 variant (the six
 `cn()` buttons additionally keep upstream's localized `aria-label`); every
@@ -377,11 +377,26 @@ procedures only if their symptom appears:
 
 ## Automated re-apply
 
+The local `com.lubosxyz.superset-patch-watch` LaunchAgent runs every minute
+from an immutable snapshot installed with `python3 setup/superset/install-patch-watch.py
+--apply`. Its source and tests are versioned in this repository. It inspects
+newly installed signed bundles without mutating `app.asar`; a manual
+`watch-local-patches.py --apply` requires a separate bundle opt-in. `state.json`
+reports `active` only after the app's main process has started after the
+verified ASAR was written; `activation_pending` means a reload or restart has
+not been proved. A zero launchd exit alone is not activation evidence.
+Unchanged clean or drifted bundles reuse the inspected fingerprint; a changed
+bundle or watcher release triggers a fresh full scan.
+
 The `Daily Superset upstream patch audit` automation (id
 `387e95c9-56f3-4906-bea3-6fbd482dc87b` — recreated 2026-08-29, so a mismatch
 means re-lookup by name via `superset automations list --json` — daily 9:00
 Europe/Prague, worker
-`codex-terra`) runs `check-upstream-patches.py` every morning. On
+`codex-terra`) is configured to run `check-upstream-patches.py` every morning,
+but remains paused as of 2026-09-23: its last dispatches found the host offline,
+and the cloud prompt is older than this checkout. The local watcher remains
+active independently. Once the prompt and host dispatch are verified, the
+automation can be resumed deliberately. On
 `local_patch_drift` — an installed bundle without the local patches,
 typically the morning after an accidental update — it no longer just files a
 review task: it launches a pre-authorized `/task-run-goal` that redoes the

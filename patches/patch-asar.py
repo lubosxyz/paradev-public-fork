@@ -222,6 +222,14 @@ TOP_NAV_BUTTON_VARIANTS = [
     ),
 ]
 
+# Desktop 1.30 routes the same header button through the new workspace flow.
+TOP_NAV_NEW_WORKSPACE_1_30 = _plain_button_variant(
+    "onClick: () => openNewWorkspace(activeProjectId), ",
+    "New Workspace",
+    _TOP_NAV_NEW_CLASS,
+    _TOP_NAV_NEW_ICON_CLASS,
+)
+
 
 def _label_variant(
     title: str, message_id: str, source_class: str
@@ -439,9 +447,18 @@ def plan_replacements(
                 "sidebar: roomier workspace rows (h-8)",
             ),
         ]
+        old_new, old_target, _ = TOP_NAV_BUTTON_VARIANTS[0]
+        current_new, current_target, _ = TOP_NAV_NEW_WORKSPACE_1_30
+        new_offset, new_old = _single_variant(
+            data, "New Workspace button",
+            [old_new, old_target, current_new, current_target],
+        )
+        new_target = current_target if new_old in (current_new, current_target) else old_target
+        if new_old != new_target:
+            replacements.append((new_offset, new_old, new_target, "sidebar: New Workspace icon button"))
         sidebar_variants.extend(
             (f"{title} button", source, target, f"sidebar: {title} icon button")
-            for source, target, title in TOP_NAV_BUTTON_VARIANTS
+            for source, target, title in TOP_NAV_BUTTON_VARIANTS[1:]
         )
         for name, source, target, label in sidebar_variants:
             offset, old = _single_variant(data, name, [source, target])

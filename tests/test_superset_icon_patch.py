@@ -181,6 +181,29 @@ class SupersetUiPatchTest(unittest.TestCase):
                     compact_sidebar=True,
                 )
 
+    # Preserve the 1.27 button variant while accepting the exact 1.30 callback name.
+    def test_new_workspace_button_1_30_variant_is_patchable(self):
+        """The renamed upstream callback keeps the icon replacement length preserving."""
+        old = MODULE.TOP_NAV_BUTTON_VARIANTS[0][0]
+        new = old.replace(b"openModal(activeProjectId)", b"openNewWorkspace(activeProjectId)")
+        self.assertEqual(new.count(b"openNewWorkspace(activeProjectId)"), 1)
+        fixture = self.stock_bundle().replace(old, new)
+        patched, changes = self.patch(fixture)
+        self.assertEqual(len(fixture), len(patched))
+        self.assertIn(b'title: "New Workspace"', patched)
+        self.assertIn("sidebar: New Workspace icon button", changes)
+        again, changes = self.patch(patched)
+        self.assertEqual(patched, again)
+        self.assertEqual(changes, [])
+
+    # Reject a bundle that mixes both generations of the New Workspace button.
+    def test_new_workspace_button_rejects_mixed_generations(self):
+        """Both callback variants present together fail the single anchor check."""
+        old = MODULE.TOP_NAV_BUTTON_VARIANTS[0][0]
+        new = old.replace(b"openModal(activeProjectId)", b"openNewWorkspace(activeProjectId)")
+        with self.assertRaisesRegex(RuntimeError, "New Workspace button anchor, found 2"):
+            self.patch(self.stock_bundle() + b"|" + new)
+
     def test_unpatched_1_25_1_label_family_remains_patchable(self):
         legacy = self.legacy_stock_bundle()
 
