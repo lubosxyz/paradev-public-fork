@@ -179,6 +179,7 @@ class SupersetUiPatchTest(unittest.TestCase):
                     custom_project_icons=True,
                     keep_icon_on_hover=True,
                     compact_sidebar=True,
+                    pinned_icon_only=True,
                 )
 
     # Preserve the 1.27 button variant while accepting the exact 1.30 callback name.
@@ -405,6 +406,7 @@ class SupersetUiPatchTest(unittest.TestCase):
             custom_project_icons=False,
             keep_icon_on_hover=False,
             compact_sidebar=True,
+            pinned_icon_only=False,
             acknowledge_invalid_signature=False,
         )
 
@@ -732,6 +734,173 @@ class SupersetUiPatchTest(unittest.TestCase):
 
             self.assertEqual(asar.read_bytes(), patched)
             self.assertEqual(list(root.glob(".fixture.asar.*.restoring")), [])
+
+
+class SupersetPinnedIconOnlyPatchTest(unittest.TestCase):
+    """--pinned-icon-only drops the project prefix and enlarges the pinned icon."""
+
+    # Literal excerpts of desktop-v1.30.2 DashboardSidebarExpandedWorkspaceRow
+    # (dist/renderer/assets/layout-*.js), written out by hand instead of being
+    # built from the module constants so anchor drift fails here too.
+    STOCK_THUMBNAIL = (
+        b'        ), iconUrl: pinnedContext.projectIconUrl, className: "size-3.5 text-[8px]" }) }) }),\n'
+    )
+    STOCK_PREFIX = (
+        b"          /* @__PURE__ */ jsxRuntimeExports.jsx(WorkspaceNameMarquee, "
+        b"{ name: name || branch, prefix: pinnedContext ? pinnedContext.projectName ?? _t(\n"
+        b"            /** i18n */\n"
+        b"            {\n"
+        b'              id: "CqO9qC"\n'
+        b"            }\n"
+        b"          ) : void 0, forceActive: isFocused, className: cn(\"text-[13px] leading-tight\n"
+    )
+    PATCHED_THUMBNAIL = (
+        b'        ), iconUrl: pinnedContext.projectIconUrl, className: "size-5 text-[11px] " }) }) }),\n'
+    )
+    PATCHED_PREFIX = (
+        b"          /* @__PURE__ */ jsxRuntimeExports.jsx(WorkspaceNameMarquee, "
+        b"{ name: name || branch, prefix: /*iconOnly*/0 ? pinnedContext.projectName ?? _t(\n"
+        b"            /** i18n */\n"
+        b"            {\n"
+        b'              id: "CqO9qC"\n'
+        b"            }\n"
+        b"          ) : void 0, forceActive: isFocused, className: cn(\"text-[13px] leading-tight\n"
+    )
+
+    def stock_bundle(self):
+        """Return the shared synthetic bundle plus the 1.30.2 pinned-row excerpts."""
+        return b"|".join(
+            [SupersetUiPatchTest.stock_bundle(self), self.STOCK_THUMBNAIL, self.STOCK_PREFIX]
+        )
+
+    WORKSPACE_NEW_SHORTCUT = SupersetUiPatchTest.WORKSPACE_NEW_SHORTCUT
+
+    def patch(self, data, pinned_icon_only=True):
+        """Apply the approved set with the pinned icon-only option toggled."""
+        return MODULE.patch_bytes(
+            data,
+            size=6,
+            hide_tray=True,
+            custom_project_icons=True,
+            keep_icon_on_hover=True,
+            compact_sidebar=True,
+            pinned_icon_only=pinned_icon_only,
+        )
+
+    def test_pinned_rows_lose_prefix_and_get_a_larger_icon(self):
+        original = self.stock_bundle()
+
+        patched, changes = self.patch(original)
+
+        self.assertEqual(len(original), len(patched))
+        self.assertIn(self.PATCHED_THUMBNAIL, patched)
+        self.assertIn(self.PATCHED_PREFIX, patched)
+        self.assertNotIn(b"prefix: pinnedContext ?", patched)
+        self.assertNotIn(b'"size-3.5 text-[8px]"', patched)
+        self.assertIn("pinned: hide project name prefix", changes)
+        self.assertIn("pinned: project icon size-5", changes)
+
+    def test_pinned_patch_is_idempotent(self):
+        once, _changes = self.patch(self.stock_bundle())
+
+        twice, changes = self.patch(once)
+
+        self.assertEqual(once, twice)
+        self.assertEqual(changes, [])
+
+    def test_flag_off_leaves_pinned_rows_untouched(self):
+        patched, changes = self.patch(self.stock_bundle(), pinned_icon_only=False)
+
+        self.assertIn(self.STOCK_THUMBNAIL, patched)
+        self.assertIn(self.STOCK_PREFIX, patched)
+        self.assertFalse([change for change in changes if change.startswith("pinned:")])
+
+    def test_projects_tree_thumbnail_is_not_touched(self):
+        patched, _changes = self.patch(self.stock_bundle())
+
+        self.assertIn(MODULE.THUMBNAIL_PINNED_TEMPLATE.format(6).encode(), patched)
+        self.assertEqual(patched.count(b"size-5 text-[11px]"), 1)
+
+    def test_missing_pinned_anchor_fails_closed(self):
+        for name, anchor in (
+            ("pinned project prefix", self.STOCK_PREFIX),
+            ("pinned project icon", self.STOCK_THUMBNAIL),
+        ):
+            with self.subTest(name=name):
+                malformed = self.stock_bundle().replace(anchor, b"x" * len(anchor))
+                with self.assertRaisesRegex(RuntimeError, f"{name} anchor, found 0"):
+                    self.patch(malformed)
+
+    def test_duplicate_pinned_anchor_fails_closed(self):
+        for name, anchor in (
+            ("pinned project prefix", self.PATCHED_PREFIX),
+            ("pinned project icon", self.PATCHED_THUMBNAIL),
+        ):
+            with self.subTest(name=name):
+                ambiguous = self.stock_bundle() + b"|" + anchor
+                with self.assertRaisesRegex(RuntimeError, f"{name} anchor, found 2"):
+                    self.patch(ambiguous)
+
+    def test_replacements_are_length_preserving_and_falsy(self):
+        self.assertEqual(len(MODULE.PINNED_PREFIX_STOCK), len(MODULE.PINNED_PREFIX_HIDDEN))
+        self.assertEqual(len(MODULE.PINNED_ICON_STOCK), len(MODULE.PINNED_ICON_LARGE))
+        # The ternary condition must be a constant falsy literal so the
+        # marquee receives `void 0` and renders the bare workspace name.
+        self.assertIn(b"prefix: /*iconOnly*/0 ?", MODULE.PINNED_PREFIX_HIDDEN)
+
+    def test_installed_bundle_accepts_pinned_icon_only(self):
+        # Independent of the compact-sidebar families so real-anchor drift in
+        # the pinned row is reported on its own.
+        import mmap
+
+        asar = Path("/Applications/Superset.app/Contents/Resources/app.asar")
+        if not asar.exists():
+            self.skipTest("no installed Superset bundle on this machine")
+        with asar.open("rb") as stream:
+            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                MODULE._plan_pinned_icon_only(data)
+
+    def test_cli_forwards_pinned_icon_only_to_patch_file(self):
+        with mock.patch.object(MODULE, "patch_file", return_value=(None, [])) as patch_file:
+            result = MODULE.main(
+                [
+                    "--asar",
+                    "/tmp/fixture.asar",
+                    "--backup-dir",
+                    "/tmp/backups",
+                    "--pinned-icon-only",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        self.assertTrue(patch_file.call_args.kwargs["pinned_icon_only"])
+        self.assertFalse(patch_file.call_args.kwargs["compact_sidebar"])
+
+    def test_patch_file_applies_and_reverts_pinned_patch(self):
+        original = self.stock_bundle()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asar = root / "fixture.asar"
+            backup_dir = root / "backups"
+            asar.write_bytes(original)
+
+            backup, changes = MODULE.patch_file(
+                asar,
+                backup_dir,
+                acknowledge_invalid_signature=False,
+                size=6,
+                hide_tray=True,
+                custom_project_icons=True,
+                keep_icon_on_hover=True,
+                compact_sidebar=True,
+                pinned_icon_only=True,
+            )
+
+            self.assertEqual(backup.read_bytes(), original)
+            self.assertIn("pinned: hide project name prefix", changes)
+            self.assertIn(self.PATCHED_PREFIX, asar.read_bytes())
+            MODULE.revert(asar, backup_dir)
+            self.assertEqual(asar.read_bytes(), original)
 
 
 if __name__ == "__main__":

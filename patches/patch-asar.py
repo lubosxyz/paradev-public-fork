@@ -2,10 +2,11 @@
 """Apply strict, length-preserving Superset app.asar UI patches.
 
 The selected patches cover the compact sidebar, 24 px project icons,
-project-owned icon URLs, project icons retained on hover, and no menu-bar tray
-icon. Every replacement has exactly the same byte length as its source. That
-preserves ASAR offsets, but any app.asar mutation still invalidates Apple's
-resource seal and therefore requires an explicit production acknowledgement.
+project-owned icon URLs, project icons retained on hover, icon-only pinned
+workspace rows, and no menu-bar tray icon. Every replacement has exactly the
+same byte length as its source. That preserves ASAR offsets, but any app.asar
+mutation still invalidates Apple's resource seal and therefore requires an
+explicit production acknowledgement.
 """
 
 import argparse
@@ -286,6 +287,62 @@ TOP_NAV_LABEL_VARIANTS_1_25_1 = [
     ],
 ]
 
+# --pinned-icon-only (anchors track desktop-v1.30.2, layout-*.js,
+# DashboardSidebarExpandedWorkspaceRow). Only pinned rows receive a
+# `pinnedContext` prop (DashboardSidebarPinnedSection is its sole producer), so
+# both anchors below leave PROJECTS tree rows and other sidebars untouched.
+#
+# 1. The row label renders `${prefix}/${name}` through WorkspaceNameMarquee
+#    (useFocusVisible-*.js: `const label = prefix ? ... : name` and
+#    `prefix && <span>{prefix}/</span>`). Replacing the ternary condition
+#    `pinnedContext` with the equally long constant `/*iconOnly*/0` makes the
+#    expression always evaluate its `void 0` branch: the marquee then renders the
+#    bare workspace name and its title, and the dead branch (a pure `_t()` call)
+#    is never executed. The project name stays in the icon tooltip.
+# 2. The pinned ProjectThumbnail is `size-3.5 text-[8px]` (14 px). `size-5`
+#    (20 px, ~+43 %) is the closest existing class to +50 % — the bundle CSS
+#    ships size-5 and size-6 but no size-5.5 — and `text-[11px]` scales the
+#    letter fallback alike. Both classes already exist in index-*.css; the one
+#    freed byte becomes a trailing space inside the class string, which cn()
+#    ignores. The row is `h-8 items-center`, so the icon stays vertically
+#    centred.
+PINNED_PREFIX_STOCK = (
+    b"jsx(WorkspaceNameMarquee, { name: name || branch, "
+    b"prefix: pinnedContext ? pinnedContext.projectName ?? _t("
+)
+PINNED_PREFIX_HIDDEN = PINNED_PREFIX_STOCK.replace(
+    b"prefix: pinnedContext ?", b"prefix: /*iconOnly*/0 ?"
+)
+PINNED_ICON_STOCK = (
+    b'iconUrl: pinnedContext.projectIconUrl, className: "size-3.5 text-[8px]"'
+)
+PINNED_ICON_LARGE = _pad_variant(
+    PINNED_ICON_STOCK[:-1],
+    b'iconUrl: pinnedContext.projectIconUrl, className: "size-5 text-[11px]',
+) + b'"'
+
+
+def _plan_pinned_icon_only(data) -> list[tuple[int, bytes, bytes, str]]:
+    """Validate both pinned-row anchors and return the writes still needed."""
+    replacements = []
+    for name, source, target, label in (
+        (
+            "pinned project prefix",
+            PINNED_PREFIX_STOCK,
+            PINNED_PREFIX_HIDDEN,
+            "pinned: hide project name prefix",
+        ),
+        (
+            "pinned project icon",
+            PINNED_ICON_STOCK,
+            PINNED_ICON_LARGE,
+            "pinned: project icon size-5",
+        ),
+    ):
+        offset, old = _single_variant(data, name, [source, target])
+        if old != target:
+            replacements.append((offset, old, target, label))
+    return replacements
 
 
 def require_signature_ack(asar: Path, acknowledged: bool) -> None:
@@ -330,6 +387,7 @@ def plan_replacements(
     custom_project_icons: bool,
     keep_icon_on_hover: bool,
     compact_sidebar: bool = False,
+    pinned_icon_only: bool = False,
 ) -> list[tuple[int, bytes, bytes, str]]:
     """Validate the complete bundle first, then return equal-length writes."""
     if not 4 <= size <= 9:
@@ -494,6 +552,9 @@ def plan_replacements(
             raise RuntimeError(
                 "mixed sidebar release families; bundle structure may have changed"
             )
+
+    if pinned_icon_only:
+        replacements.extend(_plan_pinned_icon_only(data))
 
     for _offset, old, new, label in replacements:
         if len(old) != len(new):
@@ -776,6 +837,11 @@ def main(argv=None):
         action="store_true",
         help="collapse the expanded header navigation into a four-column icon grid",
     )
+    parser.add_argument(
+        "--pinned-icon-only",
+        action="store_true",
+        help="PINNED sidebar rows: drop the project-name prefix and enlarge the project icon",
+    )
     parser.add_argument("--revert", action="store_true")
     parser.add_argument("--asar", type=Path, default=DEFAULT_ASAR)
     parser.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
@@ -798,6 +864,7 @@ def main(argv=None):
             custom_project_icons=args.custom_project_icons,
             keep_icon_on_hover=args.keep_icon_on_hover,
             compact_sidebar=args.compact_sidebar,
+            pinned_icon_only=args.pinned_icon_only,
             acknowledge_invalid_signature=args.ack_invalid_apple_signature,
         )
     except (OSError, RuntimeError, ValueError) as exc:

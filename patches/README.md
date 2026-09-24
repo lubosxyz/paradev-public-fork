@@ -57,13 +57,41 @@ bundle plus a length-preserving inline `gridTemplateColumns` declaration
 (the bundle CSS does not ship `grid-cols-4`). It does not inject CSS or repack
 the archive.
 
+With `--pinned-icon-only` (anchors track desktop-v1.30.2), rows in the sidebar
+**PINNED** section show only the workspace name — `budtekomfi-cz/SSZ křivka…`
+becomes `SSZ křivka…` — and the project is identified by its icon (the project
+name stays in the icon tooltip). Two length-preserving edits in
+`DashboardSidebarExpandedWorkspaceRow`, the only renderer that receives the
+pinned-only `pinnedContext` prop, so PROJECTS tree rows and other sidebars are
+untouched:
+
+- prefix — `prefix: pinnedContext ? …` → `prefix: /*iconOnly*/0 ? …`; the
+  constant-false ternary always yields `void 0`, so `WorkspaceNameMarquee`
+  renders the bare name (and title) and never runs the dead `_t()` branch.
+- icon — `"size-3.5 text-[8px]"` (14 px) → `"size-5 text-[11px] "` (20 px,
+  ~+43 %). The bundle CSS ships `size-5` and `size-6` but no `size-5.5`, so
+  `size-5` is the closest existing class to +50 %; the freed byte is a trailing
+  space inside the class string. Rows are `h-8 items-center`, so the icon stays
+  vertically centred.
+
+Both anchors are validated as exactly one stock-or-patched variant; drift fails
+closed and a re-run is a no-op. Without the flag the pinned rows are left as
+they are; undo with `--revert`.
+
 The approved UI set is applied in one validated atomic swap:
 
 ```bash
 python3 patch-asar.py --size 6 --hide-tray --custom-project-icons \
-  --keep-icon-on-hover --compact-sidebar --ack-invalid-apple-signature
+  --keep-icon-on-hover --compact-sidebar --pinned-icon-only \
+  --ack-invalid-apple-signature
 python3 patch-asar.py --revert
 ```
+
+`--pinned-icon-only` is not yet requested by the automated re-apply path
+(`check-upstream-patches.py` `PATCH_OPTIONS`, the upstream-update-watch prompt,
+`/patch-superset`, "When to re-run" below): add it there only after the live
+result has been confirmed visually. Until then a routine re-apply leaves an
+already patched pinned row alone but will not restore it after an update.
 
 `project-icons/komfi-ops.svg` is an intentional palette exception: its
 slate-900 (`#0f172a`) background and slate-200 (`#e2e8f0`) gear stroke retain
@@ -354,7 +382,7 @@ grep -a -o -E 'theme-type.{0,12}|"background":"#[0-9a-fA-F]{6}"' \
 
 After a **Superset desktop update**, re-apply bundle patches and run the other
 procedures only if their symptom appears:
-1. `python3 patch-asar.py --size 6 --hide-tray --custom-project-icons --keep-icon-on-hover --compact-sidebar --ack-invalid-apple-signature` — re-apply the complete approved production patch set after accepting an invalid Apple seal
+1. `python3 patch-asar.py --size 6 --hide-tray --custom-project-icons --keep-icon-on-hover --compact-sidebar --pinned-icon-only --ack-invalid-apple-signature` — re-apply the complete approved production patch set after accepting an invalid Apple seal (`--pinned-icon-only` is manual-only here — it is not yet in the automated re-apply path, see section 1 above)
 2. `python3 patch-tray-icon.py --ack-invalid-apple-signature` — legacy tray-only alternative; do not run it in addition to step 1
 3. `python3 apply-ui-patches.py <dist-root>` — re-apply icon source, layout
    markers and CSS (only needed when you rebuild/repack; the in-place asar
