@@ -53,7 +53,7 @@ def _pad_variant(source: bytes, replacement: bytes) -> bytes:
     return replacement + (b" " * (len(source) - len(replacement)))
 
 
-# Anchors track desktop-v1.27.0 (the style object became multi-line in 1.25.1).
+# Anchors track desktop-v1.27.0..v1.31.0 (the style object became multi-line in 1.25.1).
 TOP_NAV_STACK = (
     b'className: "flex flex-col gap-px px-2 pt-2 pb-2",\n'
     b'      style: isMac ? {\n'
@@ -133,6 +133,19 @@ AUTOMATION_BADGE_OVERLAY = _pad_variant(
     b'className: "absolute right-0 top-0 flex size-4 items-center justify-center '
     b'rounded-full bg-red-500/15 text-[10px] tabular-nums text-red-600 '
     b'dark:text-red-400"',
+)
+# Desktop 1.31.0 removed the Automations failure badge (`myFailedCount` span)
+# from the expanded header, so the overlay patch has nothing to restyle there.
+# The family stays release-coupled and fail-closed: exactly one of the 1.30.x
+# inline badge, its patched overlay, or this 1.31 verify-only shape (the
+# Automations label closing straight into the Tasks button, no badge between)
+# must appear in the bundle. The anchor is absent from 1.30.2 (badge in between).
+AUTOMATION_NO_BADGE_1_31 = (
+    b'id: "EF-M0w"\n'
+    b'          } }) })\n'
+    b'        ] }),\n'
+    b'        /* @__PURE__ */ jsxRuntimeExports.jsxs("button", '
+    b'{ type: "button", onClick: handleTasksClick'
 )
 
 # desktop-v1.27.0 renders every expanded-header button on one bundled line
@@ -487,12 +500,6 @@ def plan_replacements(
                 "sidebar: hide dashboard search shortcut",
             ),
             (
-                "automation failure badge",
-                AUTOMATION_BADGE_INLINE,
-                AUTOMATION_BADGE_OVERLAY,
-                "sidebar: automation failure badge overlay",
-            ),
-            (
                 "project row height",
                 PROJECT_ROW_COMPACT,
                 PROJECT_ROW_ROOMY,
@@ -518,6 +525,17 @@ def plan_replacements(
             (f"{title} button", source, target, f"sidebar: {title} icon button")
             for source, target, title in TOP_NAV_BUTTON_VARIANTS[1:]
         )
+        # 1.30.x: inline badge -> overlay. 1.31+: badge removed upstream, so the
+        # family is verify-only (exactly one of the three shapes must exist).
+        offset, old = _single_variant(
+            data,
+            "automation failure badge",
+            [AUTOMATION_BADGE_INLINE, AUTOMATION_BADGE_OVERLAY, AUTOMATION_NO_BADGE_1_31],
+        )
+        if old == AUTOMATION_BADGE_INLINE:
+            replacements.append(
+                (offset, old, AUTOMATION_BADGE_OVERLAY, "sidebar: automation failure badge overlay")
+            )
         for name, source, target, label in sidebar_variants:
             offset, old = _single_variant(data, name, [source, target])
             if old != target:

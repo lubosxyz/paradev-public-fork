@@ -31,12 +31,12 @@ All `size-N` strings are 6 chars, so asar header offsets stay valid — no repac
 unpacking-pattern issues with native modules.
 
 With `--compact-sidebar`, the expanded utility navigation becomes a four-column
-icon grid. Anchor families track desktop-v1.25.1 and desktop-v1.26.0–v1.30.2:
+icon grid. Anchor families track desktop-v1.25.1 and desktop-v1.26.0–v1.33.0:
 eight buttons (New Workspace, Search,
 Workspaces, Automations, Tasks, Pull requests, plus the flag-gated Pages and
 Plugins; upstream removed Usage from this header). Labels render through Lingui
 `<Trans>` and remain in the accessibility tree as `sr-only` names. Version
-1.26.0 regenerated the eight message ids and 1.30.2 retains them, so each
+1.26.0 regenerated the eight message ids and 1.33.0 retains them, so each
 logical label family accepts exactly one release-specific stock or patched
 variant (the six
 `cn()` buttons additionally keep upstream's localized `aria-label`); every
@@ -47,6 +47,10 @@ verify-only anchor behind (`UPSTREAM_INDENT_ASSERTION`), so an upstream change
 in that region still fails the plan instead of shipping silently. Project and
 workspace rows are lifted from upstream's `h-7` (28 px) to `h-8` (32 px) —
 1.25.x compacted them and the 24 px icons read cramped at 28 px.
+Desktop 1.31.0 dropped the Automations failure badge, so the overlay patch is
+retired there: the badge family is verify-only (`AUTOMATION_NO_BADGE_1_31`; exactly
+one of the 1.30.x inline badge, its overlay, or the badgeless shape must exist) and
+1.30.x bundles still get the overlay.
 Keyboard hints are removed only from the
 compact New Workspace and Search buttons; the shared hint renderer remains
 unchanged for other sidebars. Deeper child-workspace indentation shipped
@@ -57,7 +61,7 @@ bundle plus a length-preserving inline `gridTemplateColumns` declaration
 (the bundle CSS does not ship `grid-cols-4`). It does not inject CSS or repack
 the archive.
 
-With `--pinned-icon-only` (anchors track desktop-v1.30.2), rows in the sidebar
+With `--pinned-icon-only` (anchors track desktop-v1.30.2–v1.33.0), rows in the sidebar
 **PINNED** section show only the workspace name — `budtekomfi-cz/SSZ křivka…`
 becomes `SSZ křivka…` — and the project is identified by its icon (the project
 name stays in the icon tooltip). Two length-preserving edits in

@@ -76,3 +76,14 @@ for worked examples.
   and its tests.
 - The anchor region became **ambiguous** (cannot construct a globally unique
   anchor) → stop; this needs a human design decision, not a forced match.
+
+## Worked example: 1.30.2 → 1.31.0/1.33.0 (2026-10-01)
+
+Only one family missed: upstream deleted the Automations failure badge
+(`myFailedCount`), so `automation failure badge` found 0. Retired per the rule
+above: the family now accepts exactly one of inline / overlay / the verify-only
+`AUTOMATION_NO_BADGE_1_31` shape (Automations label closing straight into the
+Tasks button), keeping 1.30.x patchable. 1.31.0 and 1.33.0 share every anchor.
+`check-upstream-patches.py` has no asar-path flag; to prove on a copy call
+`inspect_asar(Path(copy))` from the module (expect `patches_needed: 0` after
+patching).

@@ -313,6 +313,40 @@ class SupersetUiPatchTest(unittest.TestCase):
         self.assertIn(b'className: "absolute right-0 top-0 flex size-4', patched)
         self.assertNotIn(MODULE.AUTOMATION_BADGE_INLINE, patched)
 
+    def stock_bundle_1_31(self):
+        """Fixture of desktop-v1.31.0: upstream dropped the automation failure badge."""
+        return self.stock_bundle().replace(
+            MODULE.AUTOMATION_BADGE_INLINE, MODULE.AUTOMATION_NO_BADGE_1_31
+        )
+
+    def test_1_31_bundle_without_failure_badge_is_patchable_and_idempotent(self):
+        """Upstream removed the badge in 1.31: the family is verify-only there."""
+        fixture = self.stock_bundle_1_31()
+        patched, changes = self.patch(fixture)
+        self.assertEqual(len(fixture), len(patched))
+        self.assertNotIn("sidebar: automation failure badge overlay", changes)
+        self.assertIn(MODULE.AUTOMATION_NO_BADGE_1_31, patched)
+        self.assertNotIn(MODULE.AUTOMATION_BADGE_OVERLAY, patched)
+        self.assertIn(MODULE.TOP_NAV_GRID, patched)
+        again, changes = self.patch(patched)
+        self.assertEqual(patched, again)
+        self.assertEqual(changes, [])
+
+    def test_1_31_no_badge_anchor_is_absent_from_the_1_30_shape(self):
+        self.assertNotIn(MODULE.AUTOMATION_NO_BADGE_1_31, self.stock_bundle())
+
+    def test_automation_badge_region_without_any_known_shape_is_rejected(self):
+        broken = self.stock_bundle_1_31().replace(
+            MODULE.AUTOMATION_NO_BADGE_1_31, b"x" * len(MODULE.AUTOMATION_NO_BADGE_1_31)
+        )
+        with self.assertRaisesRegex(RuntimeError, "automation failure badge"):
+            self.patch(broken)
+
+    def test_automation_badge_region_with_both_shapes_is_rejected(self):
+        both = self.stock_bundle() + b"|" + MODULE.AUTOMATION_NO_BADGE_1_31
+        with self.assertRaisesRegex(RuntimeError, "automation failure badge"):
+            self.patch(both)
+
     def test_compact_sidebar_restores_shared_hint_and_only_hides_dashboard_callsites(self):
         globally_hidden = self.stock_bundle().replace(
             MODULE.SHORTCUT_HINT_VISIBLE,
