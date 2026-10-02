@@ -384,8 +384,10 @@ grep -a -o -E 'theme-type.{0,12}|"background":"#[0-9a-fA-F]{6}"' \
 
 ## When to re-run
 
-After a **Superset desktop update**, re-apply bundle patches and run the other
-procedures only if their symptom appears:
+After a **Superset desktop update**, first refresh project icons from the
+projects' current favicons (`python3 sync-project-icons.py --fetch --check`;
+drift → `--apply`, commit/PR, then `python3 apply.py`), then re-apply bundle
+patches and run the other procedures only if their symptom appears:
 1. `python3 patch-asar.py --size 6 --hide-tray --custom-project-icons --keep-icon-on-hover --compact-sidebar --pinned-icon-only --ack-invalid-apple-signature` — re-apply the complete approved production patch set after accepting an invalid Apple seal (`--pinned-icon-only` is manual-only here — it is not yet in the automated re-apply path, see section 1 above)
 2. `python3 patch-tray-icon.py --ack-invalid-apple-signature` — legacy tray-only alternative; do not run it in addition to step 1
 3. `python3 apply-ui-patches.py <dist-root>` — re-apply icon source, layout
