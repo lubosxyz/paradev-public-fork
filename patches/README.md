@@ -234,10 +234,11 @@ current Codex processes already derive the correct dark background.
 
 ## 6. Terminal render guard — `render-guard.py`
 
-Pane rendering settings kept drifting because **nothing asserted them**: which
-renderer the agent CLIs use in Superset panes, and a light pane background under
+Two pane defects kept coming back for years because **nothing asserted their
+prevention**: mangled/interleaved CLI output, and a light pane background under
 a dark agent UI. Neither lives in the app bundle, so sections 1+4 never covered
-them. This script checks all three settings and repairs what is safe to repair.
+them. This script checks all three settings that prevent them and repairs what
+is safe to repair.
 
 ```bash
 python3 render-guard.py            # check only, exit 1 on drift
@@ -247,50 +248,42 @@ python3 render-guard.py --json     # machine-readable
 
 | Check | Asserts | Where it lives |
 |---|---|---|
-| `claude-altscreen` | **no** agent config launching `claude`/`claude-affine` carries `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` (fullscreen TUI is intended since 2026-10-06) | `host.db` → `host_agent_configs.env_json` |
+| `claude-altscreen` | `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` on **every** agent config launching `claude` | `host.db` → `host_agent_configs.env_json` |
 | `codex-altscreen` | `[tui] alternate_screen = "never"` | `~/.codex/config.toml` |
 | `terminal-theme` | `activeThemeId` is an explicit **dark** theme, not `"system"` | `~/.superset/app-state.json` |
 
 ### Why these three
 
-**Claude renderer — fullscreen TUI is intended (2026-10-06).** Claude Code's
-`tui: "fullscreen"` renderer paints the xterm *alternate screen* with
-differential cell updates. On 2026-08-10 (PR #68) Superset's Claude panes were
-pinned to the main-screen renderer with `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`,
-because Superset restores a serialized xterm snapshot on reattach and replays
-the live PTY separately, so right after an app restart the stale cells were
-never repainted and you read a mix of two frames
-(`Mnlsiple sessionsív jeěnom worktree`).
+**Mangled output.** Claude Code's `tui: "fullscreen"` renderer (the default since
+2.x) paints the xterm *alternate screen* with differential cell updates — it
+rewrites only the cells it believes changed. Superset restores a serialized
+xterm snapshot on reattach and separately replays the live PTY, so after an app
+restart the renderer's model of the screen and the real screen disagree and the
+stale cells are never repainted. You read a mix of two frames:
+`Mnlsiple sessionsív jeěnom worktree` instead of
+`Multiple sessions v jednom worktree`. Codex has been immune since 2026-07-14
+because its `alternate_screen = "never"` survived in `~/.codex/config.toml`;
+Claude's half of the same 2026-07-14 prevention (`"tui": "default"`) did not.
 
-On 2026-10-06 Luboš decided Superset's Claude panes run the fullscreen TUI too:
-the prompt stays pinned to the bottom (`~/.claude/settings.json` has
-`"tui": "fullscreen"`). The opt-out is therefore **unwanted**, and the guard is
-inverted:
+The guard puts the fix on the **Superset agent configs** rather than in
+`~/.claude/settings.json`, so only Superset panes drop to the main-screen
+renderer — Claude in your own terminal keeps the flicker-free one.
 
-- `ok` — no config launching `claude`/`claude-affine` carries the key;
-- `drift` — at least one does (any value);
-- `--apply` removes **only that key** and keeps every other variable: live
-  host-service → `settings.agentConfigs.update` with the row's env minus the
-  key (the update replaces env wholesale); service down → the same
-  `json_remove … WHERE json_valid(env_json)` statement as the 2026-08-10
-  rollback, with the launcher re-checked in SQL.
+On 2026-10-06 LUBOS-1747 (#377) briefly dropped the opt-out so Superset panes
+ran the fullscreen TUI with the prompt pinned to the bottom. Luboš reverted it
+the same day: the pinned-prompt renderer was far too slow in Superset panes.
+The opt-out is the intended state again; do not remove it without a new decision.
 
-The known cost: **right after an app restart a restored pane can look
-scrambled** — that is the snapshot, not drift. Resume the session
-(`/superset-resume-all`, `cc-resume`) or force a redraw (resize the pane,
-Ctrl+L); never put the key back. The SoT writers agree: `resume-all.js`,
-`register-claude-affine-presets.js`, `agent-restart.js` and
-`update-presets.js` never set it and strip it when they touch a row, and
-`cc-resume` drops it from the environment it inherited from an older pane.
-Codex keeps `alternate_screen = "never"` in `~/.codex/config.toml` (unchanged).
-
-It matches on `command`, not on `preset_id`, because `resume-all.js` creates its
-own **"Claude Resume [profile]"** configs (`preset_id='custom'`) and
-`/superset-resume-all` restores panes through *those* ids — a preset-only guard
-would miss exactly the recovery path (Codex review round 10, 2026-08-10).
+It matches on the launcher (`claude` or the `claude-affine` wrapper, by basename), not on `preset_id`, because
+`resume-all.js` creates its own **"Claude Resume [profile]"** config (`preset_id='custom'`,
+`env: {"CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN":"1"}`) and
+`/superset-resume-all` restores panes through *that* id. A
+preset-only guard reports OK while the exact recovery path that produced the
+mangled output stays unfixed — which is how this was found (Codex review round
+10, confirmed against the live `host.db`).
 
 ```bash
-# diagnostic: does a given env enter the alt screen (CSI ?1049h)? 1 = fullscreen
+# proof the env var actually suppresses the alt screen (CSI ?1049h)
 python3 - <<'PY'
 import os, pty, select, time
 def probe(env):
@@ -303,8 +296,8 @@ def probe(env):
             buf += os.read(fd, 65536)
     os.system(f"kill -9 {pid}")
     return buf.count(b"\x1b[?1049h")
-print("fullscreen (want)", probe({}))                                        # 1
-print("opt-out (legacy) ", probe({"CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"}))  # 0
+print("baseline        ", probe({}))                                        # 1
+print("guard env       ", probe({"CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1"}))  # 0
 PY
 ```
 
@@ -334,15 +327,13 @@ write it while the GUI is up and tells you the two safe paths instead:
 python3 render-guard.py                       # all three must print OK
 # Check every org dir (see the placeholder-org note below) and every config that
 # launches claude — filtering on preset_id would miss "Claude Resume [profile]". Read ONLY
-# whether this one key exists: `SELECT env_json` would dump every value, tokens included.
-# Expected: every row prints `absent` (fullscreen TUI intended since 2026-10-06).
+# this one key: `SELECT env_json` would dump every value in it, tokens included.
 for db in ~/.superset/host/*/host.db; do
   echo "$(basename "$(dirname "$db")")"
   sqlite3 "$db" "SELECT '  ' || label || ' = ' ||
-                   CASE WHEN json_type(env_json,'\$.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN') IS NULL
-                        THEN 'absent' ELSE 'SET (drift)' END
+                   coalesce(json_extract(env_json,'\$.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN'),'MISSING')
                  FROM host_agent_configs
-                 WHERE (command LIKE '%claude' OR command LIKE '%claude-affine') AND json_valid(env_json);"
+                 WHERE command LIKE '%claude' OR command LIKE '%claude-affine';"
 done
 python3 -c "import json,os;print(json.load(open(os.path.expanduser('~/.superset/app-state.json')))['themeState']['activeThemeId'])"
 ```
@@ -387,12 +378,12 @@ grep -a -o -E 'theme-type.{0,12}|"background":"#[0-9a-fA-F]{6}"' \
   before the swap, not only at entry. The target path is resolved first — an
   `os.replace` onto a symlink would swap the *link* for a regular file, and
   these machines deliberately symlink configs (`setup/new-machine-migration.md`).
-- **Removing the opt-out by hand** (what `--apply` does offline): remove just the one key.
+- **Rolling the Claude fix back:** remove just the one key.
 
   ```bash
   sqlite3 <host.db> "UPDATE host_agent_configs
                      SET env_json = json_remove(env_json,'\$.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN')
-                     WHERE command='claude' AND json_valid(env_json)"
+                     WHERE (command LIKE '%claude' OR command LIKE '%claude-affine') AND json_valid(env_json)"
   ```
 
   `json_valid` is load-bearing: one empty or malformed `env_json` row (the guard
@@ -403,15 +394,10 @@ grep -a -o -E 'theme-type.{0,12}|"background":"#[0-9a-fA-F]{6}"' \
 - The preset env applies to **newly launched** panes. Already-running agent
   processes keep the environment they started with; they pick the fix up when
   their pane is relaunched.
-- **Re-introducing the opt-out is a policy change**, not a repair: it reverts
-  the 2026-10-06 decision, so it needs that decision reversed and this guard,
-  `resume-all.js`, `register-claude-affine-presets.js`, `agent-restart.js` and
-  `update-presets.js` changed together — otherwise the next resume or `--apply`
-  strips it again.
 - `host_agent_configs` is **not** update-proof: it was reseeded to stock defaults
-  on 2026-07-29 23:52 CEST (which dropped the `update-presets.js` argv), and an
-  older SoT build or a stale preimage restore can bring the opt-out back. That
-  is exactly why this is a recurring check and not a one-off fix.
+  on 2026-07-29 23:52 CEST, which is what silently dropped this env (and the
+  `update-presets.js` argv). That reseed is exactly why this is a recurring check
+  and not a one-off fix.
 - `CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT` is an undocumented alternative knob
   (keep the alt screen, force full repaints). Not used here — untested, and the
   main-screen renderer removes the failure mode instead of papering over it.
