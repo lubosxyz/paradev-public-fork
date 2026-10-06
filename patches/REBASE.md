@@ -87,3 +87,17 @@ Tasks button), keeping 1.30.x patchable. 1.31.0 and 1.33.0 share every anchor.
 `check-upstream-patches.py` has no asar-path flag; to prove on a copy call
 `inspect_asar(Path(copy))` from the module (expect `patches_needed: 0` after
 patching).
+
+## Worked example: 1.33.0 → 1.36.0 (2026-10-06)
+
+Three header families missed, all inside the expanded `DashboardSidebarHeader`:
+the layout `style` now uses `WINDOW_CONTROLS_ROW_TOP / (isMac ? zoomFactor : 1)`,
+the failure badge returned as a sibling `absolute right-2 top-1/2` button in a
+`relative` wrapper div, and that wrapper pushed the Automations `<Trans>` label
+two spaces deeper. Each got a `*_1_36` variant and the three form a separate
+release-coupled axis (`HEADER_RELEASE_1_36`), so a half-1.36 bundle fails closed.
+The regression fixture `tests/fixtures/superset-1.36.0-sidebar-header.js` is the
+exact header excerpt cut from the real bundle, so these anchors cannot rot
+silently the way the synthetic fixture can. Proof on a copy:
+`patch-asar.py --asar <copy> --backup-dir <tmp> …` twice (second run
+`already patched`), `--revert` back to the stock SHA-256.

@@ -31,12 +31,12 @@ All `size-N` strings are 6 chars, so asar header offsets stay valid — no repac
 unpacking-pattern issues with native modules.
 
 With `--compact-sidebar`, the expanded utility navigation becomes a four-column
-icon grid. Anchor families track desktop-v1.25.1 and desktop-v1.26.0–v1.33.0:
+icon grid. Anchor families track desktop-v1.25.1 and desktop-v1.26.0–v1.36.0:
 eight buttons (New Workspace, Search,
 Workspaces, Automations, Tasks, Pull requests, plus the flag-gated Pages and
-Plugins; upstream removed Usage from this header). Labels render through Lingui
+Plugins; Usage left this header and later returned flag-gated, see below). Labels render through Lingui
 `<Trans>` and remain in the accessibility tree as `sr-only` names. Version
-1.26.0 regenerated the eight message ids and 1.33.0 retains them, so each
+1.26.0 regenerated the eight message ids and 1.36.0 retains them, so each
 logical label family accepts exactly one release-specific stock or patched
 variant (the six
 `cn()` buttons additionally keep upstream's localized `aria-label`); every
@@ -51,6 +51,20 @@ Desktop 1.31.0 dropped the Automations failure badge, so the overlay patch is
 retired there: the badge family is verify-only (`AUTOMATION_NO_BADGE_1_31`; exactly
 one of the 1.30.x inline badge, its overlay, or the badgeless shape must exist) and
 1.30.x bundles still get the overlay.
+Desktop 1.36.0 brought the badge back as a sibling button inside a `relative`
+wrapper div (the grid cell), switched the header padding to
+`WINDOW_CONTROLS_ROW_TOP` and indented the Automations label two spaces deeper.
+The `*_1_36` variants restyle the badge to the same top-right corner overlay,
+keep upstream's window-controls offset in the grid, and hide the nested label.
+These three families are release-coupled: a bundle must present all of them
+from 1.36+ or all from before it (`mixed sidebar header generations` otherwise).
+Three more header buttons render only behind feature flags: Usage
+(`isUsageInSidebarEnabled`, back in the header before 1.33) and, since 1.33.0,
+Cloud Workspaces and Projects (`isCloudEnabled`). `TOP_NAV_FLAGGED_VARIANTS`
+turns them into icon cells with `sr-only` labels too, so flipping a flag never
+drops a full-width row into the grid. They are required on header generation
+1.36. On older releases each button+label pair must be either fully present or
+fully absent; a lone half fails closed.
 Keyboard hints are removed only from the
 compact New Workspace and Search buttons; the shared hint renderer remains
 unchanged for other sidebars. Deeper child-workspace indentation shipped
@@ -61,7 +75,7 @@ bundle plus a length-preserving inline `gridTemplateColumns` declaration
 (the bundle CSS does not ship `grid-cols-4`). It does not inject CSS or repack
 the archive.
 
-With `--pinned-icon-only` (anchors track desktop-v1.30.2–v1.33.0), rows in the sidebar
+With `--pinned-icon-only` (anchors track desktop-v1.30.2–v1.36.0), rows in the sidebar
 **PINNED** section show only the workspace name — `budtekomfi-cz/SSZ křivka…`
 becomes `SSZ křivka…` — and the project is identified by its icon (the project
 name stays in the icon tooltip). Two length-preserving edits in

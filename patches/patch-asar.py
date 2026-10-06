@@ -53,7 +53,8 @@ def _pad_variant(source: bytes, replacement: bytes) -> bytes:
     return replacement + (b" " * (len(source) - len(replacement)))
 
 
-# Anchors track desktop-v1.27.0..v1.31.0 (the style object became multi-line in 1.25.1).
+# Anchors track desktop-v1.25.1..v1.35 (the style object became multi-line in 1.25.1);
+# desktop-v1.36.0 uses TOP_NAV_STACK_1_36 below.
 TOP_NAV_STACK = (
     b'className: "flex flex-col gap-px px-2 pt-2 pb-2",\n'
     b'      style: isMac ? {\n'
@@ -65,6 +66,23 @@ TOP_NAV_GRID = _pad_variant(
     b'className:"grid gap-1 p-2",style:{gridTemplateColumns:"repeat(4,1fr)",'
     b'paddingTop:isMac?8/zoomFactor:void 0},',
 )
+# Desktop 1.36.0 pins the traffic-light row through WINDOW_CONTROLS_ROW_TOP and
+# divides by the zoom only on macOS; the grid keeps that exact offset.
+TOP_NAV_STACK_1_36 = (
+    b'className: "flex flex-col gap-px px-2 pt-2 pb-2",\n'
+    b'      style: {\n'
+    b'        paddingTop: `${WINDOW_CONTROLS_ROW_TOP / (isMac ? zoomFactor : 1)}px`\n'
+    b'      },'
+)
+TOP_NAV_GRID_1_36 = _pad_variant(
+    TOP_NAV_STACK_1_36,
+    b'className:"grid gap-1 p-2",style:{gridTemplateColumns:"repeat(4,1fr)",'
+    b'paddingTop:WINDOW_CONTROLS_ROW_TOP/(isMac?zoomFactor:1)},',
+)
+# Header generations are release-coupled across the layout, the failure badge
+# and the Automations label: a bundle must present all three from one side.
+HEADER_RELEASE_1_36 = "1.36.0+"
+HEADER_RELEASE_PRE_1_36 = "1.25.1-1.35"
 TOP_NAV_TITLEBAR_STACK = b'className: "-mx-2 mb-3 flex h-8 items-center pr-3"'
 TOP_NAV_TITLEBAR_GRID = _pad_variant(
     TOP_NAV_TITLEBAR_STACK,
@@ -146,6 +164,22 @@ AUTOMATION_NO_BADGE_1_31 = (
     b'        ] }),\n'
     b'        /* @__PURE__ */ jsxRuntimeExports.jsxs("button", '
     b'{ type: "button", onClick: handleTasksClick'
+)
+# Desktop 1.36.0 brought the badge back as a sibling button of the Automations
+# button inside a `relative` wrapper div (that div becomes the grid cell).
+# Pin it to the cell's top-right corner like the 1.30 overlay, keeping the
+# hover tint of the now clickable badge.
+AUTOMATION_BADGE_1_36 = (
+    b'className: "absolute right-2 top-1/2 flex h-4 min-w-4 -translate-y-1/2 '
+    b'items-center justify-center rounded-full bg-red-500/15 px-1 text-[10px] '
+    b'font-medium tabular-nums text-red-600 transition-colors '
+    b'hover:bg-red-500/25 dark:text-red-400"'
+)
+AUTOMATION_BADGE_OVERLAY_1_36 = _pad_variant(
+    AUTOMATION_BADGE_1_36,
+    b'className: "absolute right-0 top-0 flex size-4 items-center justify-center '
+    b'rounded-full bg-red-500/15 text-[10px] tabular-nums text-red-600 '
+    b'transition-colors hover:bg-red-500/25 dark:text-red-400"',
 )
 
 # desktop-v1.27.0 renders every expanded-header button on one bundled line
@@ -246,14 +280,14 @@ TOP_NAV_NEW_WORKSPACE_1_30 = _plain_button_variant(
 
 
 def _label_variant(
-    title: str, message_id: str, source_class: str
+    title: str, message_id: str, source_class: str, indent: int = 10
 ) -> tuple[bytes, bytes, str]:
     """Visually hide one Trans-rendered button label while keeping it accessible."""
     hidden_class = "sr-only" + (" " * (len(source_class) - len("sr-only")))
     tail = (
         ', children: /* @__PURE__ */ jsxRuntimeExports.jsx(Trans, { .../** i18n */\n'
-        "          {\n"
-        f'            id: "{message_id}"'
+        f"{' ' * indent}{{\n"
+        f'{" " * (indent + 2)}id: "{message_id}"'
     )
     source = f'className: "{source_class}"{tail}'.encode()
     replacement = f'className: "{hidden_class}"{tail}'.encode()
@@ -276,6 +310,50 @@ TOP_NAV_LABEL_VARIANTS = [
             ("Plugins", "ohUJJM"),
         )
     ],
+]
+
+# Desktop 1.36.0 nests the Automations button in the badge wrapper div, so its
+# label renders two spaces deeper; same message id, header generation 1.36.
+AUTOMATIONS_LABEL_1_36 = _label_variant(
+    "Automations", "EF-M0w", "flex-1 text-left", indent=12
+)
+TOP_NAV_LABEL_VARIANTS_1_36 = {AUTOMATIONS_LABEL_1_36[2]: AUTOMATIONS_LABEL_1_36}
+
+# Feature-flagged header buttons: Usage (isUsageInSidebarEnabled) and, since
+# desktop 1.33, Cloud Workspaces and Projects (isCloudEnabled). They become
+# icon cells like their siblings, otherwise a flag flip renders full-width rows
+# inside the four-column grid. Required on header generation 1.36, optional on
+# older releases (each pair is either fully present or fully absent).
+_TOP_NAV_USAGE_CLASS = (
+    "flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] "
+    "font-medium text-muted-foreground transition-colors hover:bg-fill-hover "
+    "hover:text-foreground"
+)
+TOP_NAV_FLAGGED_VARIANTS = [
+    (
+        _cn_button_variant(
+            '"aria-current": isCloudWorkspacesOpen ? "page" : void 0, ',
+            "Cloud Workspaces",
+            "isCloudWorkspacesOpen",
+        ),
+        _label_variant("Cloud Workspaces", "seme1w", "flex-1 text-left"),
+    ),
+    (
+        _cn_button_variant(
+            '"aria-current": isProjectsOpen ? "page" : void 0, ', "Projects", "isProjectsOpen"
+        ),
+        _label_variant("Projects", "-0B-ue", "flex-1 text-left"),
+    ),
+    (
+        # The Usage button is plain: its unique prefix is the tail of its aria-label.
+        _plain_button_variant(
+            'id: "7FaY4u"\n          }\n        ), ',
+            "Usage",
+            _TOP_NAV_USAGE_CLASS,
+            _TOP_NAV_SEARCH_ICON_CLASS,
+        ),
+        _label_variant("Usage", "7FaY4u", "flex-1 text-left"),
+    ),
 ]
 
 # Keep the old 1.25.1 bundle patchable; every logical label family accepts
@@ -380,16 +458,25 @@ def _find_all(data, needle: bytes) -> list[int]:
         cursor = offset + len(needle)
 
 
-def _single_variant(data, name: str, variants: list[bytes]) -> tuple[int, bytes]:
-    """Find exactly one member of a literal anchor family in one bundle scan."""
+def _variant_matches(data, variants: list[bytes]) -> list[tuple[int, bytes]]:
+    """Return every (offset, bytes) member of a literal anchor family in one scan."""
     pattern = re.compile(b"|".join(re.escape(variant) for variant in variants))
-    matches = [(match.start(), match.group(0)) for match in pattern.finditer(data)]
+    return [(match.start(), match.group(0)) for match in pattern.finditer(data)]
+
+
+def _exactly_one(name: str, matches: list[tuple[int, bytes]]) -> tuple[int, bytes]:
+    """Fail closed unless an anchor family matched exactly once."""
     if len(matches) != 1:
         raise RuntimeError(
             f"expected exactly one {name} anchor, found {len(matches)}; "
             "bundle structure may have changed"
         )
     return matches[0]
+
+
+def _single_variant(data, name: str, variants: list[bytes]) -> tuple[int, bytes]:
+    """Find exactly one member of a literal anchor family in one bundle scan."""
+    return _exactly_one(name, _variant_matches(data, variants))
 
 
 def plan_replacements(
@@ -473,8 +560,18 @@ def plan_replacements(
             if indent_variant == UPSTREAM_INDENT_ASSERTION
             else SIDEBAR_RELEASE_LEGACY
         }
+        header_generations = set()
+        offset, old = _single_variant(
+            data,
+            "top navigation layout",
+            [TOP_NAV_STACK, TOP_NAV_GRID, TOP_NAV_STACK_1_36, TOP_NAV_GRID_1_36],
+        )
+        layout_1_36 = old in (TOP_NAV_STACK_1_36, TOP_NAV_GRID_1_36)
+        header_generations.add(HEADER_RELEASE_1_36 if layout_1_36 else HEADER_RELEASE_PRE_1_36)
+        target = TOP_NAV_GRID_1_36 if layout_1_36 else TOP_NAV_GRID
+        if old != target:
+            replacements.append((offset, old, target, "sidebar: four-column icon grid"))
         sidebar_variants = [
-            ("top navigation layout", TOP_NAV_STACK, TOP_NAV_GRID, "sidebar: four-column icon grid"),
             (
                 "top navigation titlebar",
                 TOP_NAV_TITLEBAR_STACK,
@@ -525,16 +622,29 @@ def plan_replacements(
             (f"{title} button", source, target, f"sidebar: {title} icon button")
             for source, target, title in TOP_NAV_BUTTON_VARIANTS[1:]
         )
-        # 1.30.x: inline badge -> overlay. 1.31+: badge removed upstream, so the
-        # family is verify-only (exactly one of the three shapes must exist).
+        # 1.30.x: inline badge -> overlay. 1.31-1.35: badge removed upstream, so
+        # the family is verify-only there. 1.36+: sibling badge -> corner overlay.
+        # Exactly one of the five shapes must exist.
         offset, old = _single_variant(
             data,
             "automation failure badge",
-            [AUTOMATION_BADGE_INLINE, AUTOMATION_BADGE_OVERLAY, AUTOMATION_NO_BADGE_1_31],
+            [
+                AUTOMATION_BADGE_INLINE,
+                AUTOMATION_BADGE_OVERLAY,
+                AUTOMATION_NO_BADGE_1_31,
+                AUTOMATION_BADGE_1_36,
+                AUTOMATION_BADGE_OVERLAY_1_36,
+            ],
         )
-        if old == AUTOMATION_BADGE_INLINE:
+        badge_1_36 = old in (AUTOMATION_BADGE_1_36, AUTOMATION_BADGE_OVERLAY_1_36)
+        header_generations.add(HEADER_RELEASE_1_36 if badge_1_36 else HEADER_RELEASE_PRE_1_36)
+        badge_target = {
+            AUTOMATION_BADGE_INLINE: AUTOMATION_BADGE_OVERLAY,
+            AUTOMATION_BADGE_1_36: AUTOMATION_BADGE_OVERLAY_1_36,
+        }.get(old)
+        if badge_target is not None:
             replacements.append(
-                (offset, old, AUTOMATION_BADGE_OVERLAY, "sidebar: automation failure badge overlay")
+                (offset, old, badge_target, "sidebar: automation failure badge overlay")
             )
         for name, source, target, label in sidebar_variants:
             offset, old = _single_variant(data, name, [source, target])
@@ -547,20 +657,27 @@ def plan_replacements(
             legacy_source, legacy_target, legacy_title = legacy
             if title != legacy_title:
                 raise RuntimeError("internal error: label variant title mismatch")
+            newest = TOP_NAV_LABEL_VARIANTS_1_36.get(title)
+            newest_variants = list(newest[:2]) if newest else []
             offset, old = _single_variant(
                 data,
                 f"{title} label",
-                [current_source, current_target, legacy_source, legacy_target],
+                [current_source, current_target, legacy_source, legacy_target, *newest_variants],
             )
-            target = (
-                current_target
-                if old in (current_source, current_target)
-                else legacy_target
-            )
+            if old in newest_variants:
+                target = newest[1]
+            elif old in (current_source, current_target):
+                target = current_target
+            else:
+                target = legacy_target
+            if newest:
+                header_generations.add(
+                    HEADER_RELEASE_1_36 if old in newest_variants else HEADER_RELEASE_PRE_1_36
+                )
             release_families.add(
-                SIDEBAR_RELEASE_CURRENT
-                if old in (current_source, current_target)
-                else SIDEBAR_RELEASE_LEGACY
+                SIDEBAR_RELEASE_LEGACY
+                if old in (legacy_source, legacy_target)
+                else SIDEBAR_RELEASE_CURRENT
             )
             if old != target:
                 replacements.append(
@@ -570,6 +687,24 @@ def plan_replacements(
             raise RuntimeError(
                 "mixed sidebar release families; bundle structure may have changed"
             )
+        if len(header_generations) != 1:
+            raise RuntimeError(
+                "mixed sidebar header generations; bundle structure may have changed"
+            )
+        for button, label in TOP_NAV_FLAGGED_VARIANTS:
+            # One scan per pair; absent pairs are legal only before 1.36.
+            matches = _variant_matches(data, [*button[:2], *label[:2]])
+            if not matches and not layout_1_36:
+                continue
+            for part, kind, change in (
+                (button, "button", "icon button"),
+                (label, "label", "accessible label"),
+            ):
+                offset, old = _exactly_one(
+                    f"{part[2]} {kind}", [m for m in matches if m[1] in part[:2]]
+                )
+                if old != part[1]:
+                    replacements.append((offset, old, part[1], f"sidebar: {part[2]} {change}"))
 
     if pinned_icon_only:
         replacements.extend(_plan_pinned_icon_only(data))

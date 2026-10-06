@@ -347,6 +347,273 @@ class SupersetUiPatchTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "automation failure badge"):
             self.patch(both)
 
+    FIXTURE_1_36 = Path(__file__).parent / "fixtures" / "superset-1.36.0-sidebar-header.js"
+
+    def automations_label(self):
+        """Return the 1.26.0+ Automations label variant shared up to desktop 1.35."""
+        return next(v for v in MODULE.TOP_NAV_LABEL_VARIANTS if v[2] == "Automations")
+
+    def stock_bundle_1_36(self):
+        """Synthetic fixture with every desktop-v1.36.0 header family swapped in."""
+        return (
+            self.stock_bundle()
+            .replace(MODULE.TOP_NAV_STACK, MODULE.TOP_NAV_STACK_1_36)
+            .replace(MODULE.AUTOMATION_BADGE_INLINE, MODULE.AUTOMATION_BADGE_1_36)
+            .replace(self.automations_label()[0], MODULE.AUTOMATIONS_LABEL_1_36[0])
+            + b"|"
+            + b"|".join(self.flagged_sources())
+        )
+
+    def flagged_sources(self):
+        """Stock bytes of the feature-flagged header buttons and labels (1.33+)."""
+        return [part[0] for pair in MODULE.TOP_NAV_FLAGGED_VARIANTS for part in pair]
+
+    def real_bundle_1_36(self):
+        """Real desktop-v1.36.0 expanded-header bytes plus the non-header families."""
+        return b"|".join(
+            [
+                self.FIXTURE_1_36.read_bytes(),
+                MODULE.TRAY_ENABLED,
+                MODULE.CONTAINER_TEMPLATE.format(5).encode(),
+                MODULE.THUMBNAIL_VISIBLE_TEMPLATE.format(4).encode(),
+                MODULE.CHEVRON_VISIBLE_TEMPLATE.format(4).encode(),
+                *([MODULE.PROJECT_ICON_UPSTREAM] * MODULE.EXPECTED_PROJECT_ICON_COUNT),
+                MODULE.UPSTREAM_INDENT_ASSERTION,
+                MODULE.PROJECT_ROW_COMPACT,
+                MODULE.WORKSPACE_ROW_COMPACT,
+                MODULE.SHORTCUT_HINT_VISIBLE,
+                self.WORKSPACE_NEW_SHORTCUT,
+            ]
+        )
+
+    def test_1_36_fixture_pins_the_real_header_anchors(self):
+        """The 1.36 constants are exact bytes of the real bundle, the old shapes are gone."""
+        header = self.FIXTURE_1_36.read_bytes()
+
+        for anchor in (
+            MODULE.TOP_NAV_STACK_1_36,
+            MODULE.AUTOMATION_BADGE_1_36,
+            MODULE.AUTOMATIONS_LABEL_1_36[0],
+            MODULE.TOP_NAV_TITLEBAR_STACK,
+            MODULE.DASHBOARD_NEW_SHORTCUT,
+            MODULE.DASHBOARD_SEARCH_SHORTCUT,
+        ):
+            self.assertEqual(header.count(anchor), 1, anchor[:60])
+        for retired in (
+            MODULE.TOP_NAV_STACK,
+            MODULE.AUTOMATION_BADGE_INLINE,
+            MODULE.AUTOMATION_NO_BADGE_1_31,
+            self.automations_label()[0],
+        ):
+            self.assertNotIn(retired, header)
+
+    def test_real_1_36_header_is_patchable_and_idempotent(self):
+        """Grid, icon buttons, sr-only labels and the badge overlay all land on 1.36."""
+        original = self.real_bundle_1_36()
+
+        patched, changes = self.patch(original)
+
+        self.assertEqual(len(original), len(patched))
+        self.assertIn(MODULE.TOP_NAV_GRID_1_36, patched)
+        self.assertIn(MODULE.TOP_NAV_TITLEBAR_GRID, patched)
+        self.assertIn(MODULE.AUTOMATION_BADGE_OVERLAY_1_36, patched)
+        self.assertIn(MODULE.AUTOMATIONS_LABEL_1_36[1], patched)
+        self.assertIn(MODULE.TOP_NAV_NEW_WORKSPACE_1_30[1], patched)
+        for _old, new, _title in MODULE.TOP_NAV_BUTTON_VARIANTS[1:]:
+            self.assertIn(new, patched)
+        for _old, new, title in MODULE.TOP_NAV_LABEL_VARIANTS:
+            if title != "Automations":
+                self.assertIn(new, patched)
+        self.assertIn(MODULE.DASHBOARD_NEW_SHORTCUT_HIDDEN, patched)
+        self.assertIn(MODULE.DASHBOARD_SEARCH_SHORTCUT_HIDDEN, patched)
+        self.assertIn("sidebar: four-column icon grid", changes)
+        self.assertIn("sidebar: automation failure badge overlay", changes)
+        self.assertIn("sidebar: Automations accessible label", changes)
+
+        again, changes = self.patch(patched)
+        self.assertEqual(patched, again)
+        self.assertEqual(changes, [])
+
+    def test_patched_real_1_36_header_is_still_valid_javascript(self):
+        """Every length-preserving 1.36 edit keeps the header parseable by node."""
+        import shutil
+        import subprocess
+
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        header = self.FIXTURE_1_36.read_bytes()
+        patched, _changes = self.patch(self.real_bundle_1_36())
+        patched_header = patched[: len(header)]
+        self.assertNotEqual(patched_header, header)
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, body in (("stock.js", header), ("patched.js", patched_header)):
+                with self.subTest(name=name):
+                    script = Path(tmp) / name
+                    # The excerpt is a function body ending in its closing brace.
+                    script.write_bytes(b"function DashboardSidebarHeader() {\n" + body)
+                    result = subprocess.run(
+                        [node, "--check", str(script)], capture_output=True, text=True
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_synthetic_1_36_bundle_is_patchable_and_idempotent(self):
+        once, _changes = self.patch(self.stock_bundle_1_36())
+
+        twice, changes = self.patch(once)
+
+        self.assertEqual(once, twice)
+        self.assertEqual(changes, [])
+
+    def test_1_36_grid_keeps_the_window_controls_offset(self):
+        """The 1.36 grid keeps upstream's traffic-light row offset and four columns."""
+        self.assertIn(b'className:"grid gap-1 p-2"', MODULE.TOP_NAV_GRID_1_36)
+        self.assertIn(b'gridTemplateColumns:"repeat(4,1fr)"', MODULE.TOP_NAV_GRID_1_36)
+        self.assertIn(
+            b"paddingTop:WINDOW_CONTROLS_ROW_TOP/(isMac?zoomFactor:1)",
+            MODULE.TOP_NAV_GRID_1_36,
+        )
+        self.assertEqual(len(MODULE.TOP_NAV_GRID_1_36), len(MODULE.TOP_NAV_STACK_1_36))
+
+    def test_1_36_badge_becomes_a_corner_overlay(self):
+        """The sibling badge pins to the grid cell's top-right corner like the 1.30 overlay."""
+        overlay = MODULE.AUTOMATION_BADGE_OVERLAY_1_36
+
+        self.assertTrue(overlay.startswith(b'className: "absolute right-0 top-0 flex size-4 '))
+        self.assertNotIn(b"top-1/2", overlay)
+        self.assertNotIn(b"px-1", overlay)
+        self.assertIn(b"hover:bg-red-500/25", overlay)
+        self.assertEqual(len(overlay), len(MODULE.AUTOMATION_BADGE_1_36))
+
+    def test_1_36_automations_label_is_visually_hidden(self):
+        source, target, title = MODULE.AUTOMATIONS_LABEL_1_36
+
+        self.assertEqual(title, "Automations")
+        self.assertIn(b'className: "sr-only', target)
+        self.assertIn(b'\n            {\n              id: "EF-M0w"', target)
+        self.assertEqual(len(source), len(target))
+
+    def test_mixed_header_generations_are_refused(self):
+        """A 1.36 header family next to pre-1.36 siblings fails closed."""
+        pre = self.stock_bundle()
+        current = self.stock_bundle_1_36()
+        mixes = {
+            "1.36 layout only": pre.replace(MODULE.TOP_NAV_STACK, MODULE.TOP_NAV_STACK_1_36),
+            "1.36 badge only": pre.replace(
+                MODULE.AUTOMATION_BADGE_INLINE, MODULE.AUTOMATION_BADGE_1_36
+            ),
+            "1.36 label only": pre.replace(
+                self.automations_label()[0], MODULE.AUTOMATIONS_LABEL_1_36[0]
+            ),
+            "1.31 badge in 1.36": current.replace(
+                MODULE.AUTOMATION_BADGE_1_36, MODULE.AUTOMATION_NO_BADGE_1_31
+            ),
+            "old layout in 1.36": current.replace(
+                MODULE.TOP_NAV_STACK_1_36, MODULE.TOP_NAV_STACK
+            ),
+        }
+        for name, bundle in mixes.items():
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(RuntimeError, "mixed sidebar header generations"):
+                    self.patch(bundle)
+
+    def test_1_36_families_refuse_ambiguous_variants(self):
+        cases = {
+            "top navigation layout": MODULE.TOP_NAV_STACK,
+            "automation failure badge": MODULE.AUTOMATION_BADGE_INLINE,
+            "Automations label": self.automations_label()[0],
+        }
+        for family, duplicate in cases.items():
+            with self.subTest(family=family):
+                with self.assertRaisesRegex(RuntimeError, f"{family} anchor, found 2"):
+                    self.patch(self.stock_bundle_1_36() + b"|" + duplicate)
+
+    def test_1_36_badge_region_without_a_known_shape_is_rejected(self):
+        broken = self.stock_bundle_1_36().replace(
+            MODULE.AUTOMATION_BADGE_1_36, b"x" * len(MODULE.AUTOMATION_BADGE_1_36)
+        )
+        with self.assertRaisesRegex(RuntimeError, "automation failure badge anchor, found 0"):
+            self.patch(broken)
+
+    def test_real_1_36_flagged_buttons_become_icons(self):
+        """Cloud Workspaces, Projects and Usage render as icon cells like their siblings."""
+        header = self.FIXTURE_1_36.read_bytes()
+        for source in self.flagged_sources():
+            self.assertEqual(header.count(source), 1, source[:60])
+
+        patched, changes = self.patch(self.real_bundle_1_36())
+        patched_header = patched[: len(header)]
+
+        # No full-width row or visible label survives anywhere in the 1.36 header.
+        self.assertNotIn(b'className: "flex-1 text-left"', patched_header)
+        self.assertNotIn(b'"flex h-7 w-full', patched_header)
+        for button, label in MODULE.TOP_NAV_FLAGGED_VARIANTS:
+            self.assertIn(button[1], patched_header)
+            self.assertIn(label[1], patched_header)
+            self.assertIn(f"sidebar: {button[2]} icon button", changes)
+            self.assertIn(f"sidebar: {label[2]} accessible label", changes)
+
+    def test_1_36_requires_every_flagged_button(self):
+        """On 1.36 a missing flagged button or label is a structure change."""
+        for button, label in MODULE.TOP_NAV_FLAGGED_VARIANTS:
+            for kind, part in (("button", button), ("label", label)):
+                with self.subTest(anchor=f"{part[2]} {kind}"):
+                    broken = self.stock_bundle_1_36().replace(part[0], b"x" * len(part[0]))
+                    with self.assertRaisesRegex(
+                        RuntimeError, f"{part[2]} {kind} anchor, found 0"
+                    ):
+                        self.patch(broken)
+
+    def test_pre_1_36_flagged_buttons_are_optional_but_paired(self):
+        """1.25.1-1.32 lack them, 1.33-1.35 ship them; half a pair fails closed."""
+        pre = self.stock_bundle()
+        _patched, changes = self.patch(pre)
+        self.assertFalse([c for c in changes if "Usage" in c or "Projects" in c])
+
+        with_flagged = b"|".join([pre, *self.flagged_sources()])
+        patched, changes = self.patch(with_flagged)
+        for button, label in MODULE.TOP_NAV_FLAGGED_VARIANTS:
+            self.assertIn(button[1], patched)
+            self.assertIn(label[1], patched)
+        self.assertEqual(self.patch(patched)[1], [])
+
+        usage_button = MODULE.TOP_NAV_FLAGGED_VARIANTS[2][0]
+        with self.assertRaisesRegex(RuntimeError, "Usage label anchor, found 0"):
+            self.patch(pre + b"|" + usage_button[0])
+        with self.assertRaisesRegex(RuntimeError, "Usage button anchor, found 2"):
+            self.patch(with_flagged + b"|" + usage_button[0])
+
+    def test_patch_file_reverts_a_1_36_bundle_byte_for_byte(self):
+        original = self.real_bundle_1_36()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asar = root / "fixture.asar"
+            backup_dir = root / "backups"
+            asar.write_bytes(original)
+            options = {
+                "size": 6,
+                "hide_tray": True,
+                "custom_project_icons": True,
+                "keep_icon_on_hover": True,
+                "compact_sidebar": True,
+                "pinned_icon_only": False,
+            }
+
+            backup, changes = MODULE.patch_file(
+                asar, backup_dir, acknowledge_invalid_signature=False, **options
+            )
+            self.assertTrue(changes)
+            self.assertIn(MODULE.TOP_NAV_GRID_1_36, asar.read_bytes())
+            self.assertEqual(
+                MODULE.patch_file(
+                    asar, backup_dir, acknowledge_invalid_signature=False, **options
+                ),
+                (None, []),
+            )
+            MODULE.revert(asar, backup_dir)
+            self.assertEqual(asar.read_bytes(), original)
+            self.assertEqual(backup.read_bytes(), original)
+
     def test_compact_sidebar_restores_shared_hint_and_only_hides_dashboard_callsites(self):
         globally_hidden = self.stock_bundle().replace(
             MODULE.SHORTCUT_HINT_VISIBLE,
