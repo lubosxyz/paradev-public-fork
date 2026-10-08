@@ -21,6 +21,11 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
+import sys  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from live_host import live_host_only  # noqa: E402  (LIVE_HOST_ONLY, tests/live_host.py)
+
+
 class SupersetIconPatchSafetyTest(unittest.TestCase):
     """The production bundle must not lose its Apple seal implicitly."""
 
@@ -161,6 +166,7 @@ class SupersetUiPatchTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "upstream workspace indentation"):
             self.patch(malformed)
 
+    @live_host_only("anchors are checked against the Superset.app bundle installed on this host")
     def test_installed_bundle_accepts_the_full_plan(self):
         # Anchor rot against the real bundle is invisible to the synthetic
         # fixture (it is built from the constants under test), so smoke-test
@@ -1149,6 +1155,7 @@ class SupersetPinnedIconOnlyPatchTest(unittest.TestCase):
         # marquee receives `void 0` and renders the bare workspace name.
         self.assertIn(b"prefix: /*iconOnly*/0 ?", MODULE.PINNED_PREFIX_HIDDEN)
 
+    @live_host_only("anchors are checked against the Superset.app bundle installed on this host")
     def test_installed_bundle_accepts_pinned_icon_only(self):
         # Independent of the compact-sidebar families so real-anchor drift in
         # the pinned row is reported on its own.
