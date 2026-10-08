@@ -96,16 +96,143 @@ Both anchors are validated as exactly one stock-or-patched variant; drift fails
 closed and a re-run is a no-op. Without the flag the pinned rows are left as
 they are; undo with `--revert`.
 
+With `--sidebar-status-filter` (desktop-v1.36.0, `layout-*.js`) the PROJECTS
+header gets a dot button left of the search magnifier. Each click cycles the
+filter **all → needs input → review → all**:
+
+| Mode | Dot | Workspace rows shown |
+|---|---|---|
+| all | grey ring | every row (upstream behaviour) |
+| needs input | yellow | status `permission` (yellow) or `failed` (red) |
+| review | green | status `review` (green, done with a message) |
+
+The filter covers PROJECTS, SESSIONS and PINNED. A project, folder or section
+with no matching workspace disappears. The tooltip and `aria-label` name the
+active mode, and the mode survives a restart through `localStorage`
+(`ssf-sidebar-status-filter`). The status comes from the same
+`SidebarWorkspaceStatusStore` the row dots use (`StatusStoreContext`). The
+sidebar builders (`buildDashboardSidebarProjects`, `buildDashboardSidebarSessions`,
+`partitionSidebarWorkspacesByPinned`) are pure and have no status access, so
+the filter is applied at render level. A hook, `ssfUseShow(ids)`, subscribes to
+the store entries of those ids and returns `false` when none of them matches.
+Each component then returns `null`, always after all of its own hooks.
+
+The filter never hides a selected workspace, and a Shift range spans only the
+rows you can see (`ssfRange`). Upstream cuts every selection to the ids it was
+given (`applyWorkspaceSelection` → `selectedIdsInVisualOrder`). So a bulk
+delete or move can never reach a workspace the filter hides, including one
+selected before the mode changed or one whose status changed afterwards.
+
+Known limitations:
+- The collapsed icon rail is not filtered.
+- A collapsed project or folder that matches stays collapsed. Expand it to see
+  the rows.
+- Drag-and-drop reordering while a filter is active is untested: the sortable
+  lists still contain the hidden rows. Switch back to "all" before reordering.
+- Review mode works like an inbox. Upstream clears the `review` status once you
+  have seen the workspace or terminal, so a row you open leaves the filtered
+  list. Permission and failed rows stay until the agent's status changes.
+
+### Region rewrite (how ~3 KB of code fits into a length-preserving patch)
+
+The filter needs about 3 KB of new code. No single anchor can absorb that much,
+so the patch rewrites two whole regions of the same file in place
+(`STATUS_FILTER_REGIONS`):
+
+- `SortableWorkspaceItem` up to `DashboardSidebarProjectContextMenu`, 22,553 B.
+- `DashboardSidebarProjectSection` up to `GettingStartedChecklist`, 19,272 B.
+
+Each region:
+1. starts at a unique top-level `function X({` anchor and has a fixed length.
+   The end anchor must follow it immediately.
+2. has its stock and rewritten bytes pinned by SHA-256. A region that is neither
+   fails closed, and a patched region is a no-op.
+3. gets its space back by deleting the no-op comment tokens `/* @__PURE__ */ `
+   (a bundler tree-shaking hint) and `/** i18n */` (a Lingui extraction
+   marker). Neither token affects runtime, and neither contains a newline, so
+   automatic semicolon insertion is unchanged. This frees 1,449 B in the first
+   region and 1,438 B in the second.
+4. receives the new code at exact, single-match edit anchors. Three edits
+   delete whole `//` comment lines, five in all, that sit inside a
+   parenthesised `return (` or after a comma, where a line break has no
+   meaning. One edit replaces `orderedWorkspaceIds: selectableWorkspaceIds`
+   with the `ssfRange` call.
+5. is padded back to its original length with spaces at its end, which is a
+   top-level statement boundary.
+
+The helper functions are top-level declarations, so they hoist across the
+module and may live in either region. A test undoes every edit and the
+padding and checks that the result is exactly the stock region minus the
+comment tokens.
+
+**Why the archive stays valid.** An Electron ASAR is a 16-byte prefix, a JSON
+header (file offsets, sizes, and per-file `integrity` with a SHA-256 for each
+4 MiB block) and the concatenated file data. Electron can check three things:
+
+- **Header hash.** `Info.plist` `ElectronAsarIntegrity` holds the SHA-256 of the
+  header string. Every patch here, the region rewrite included, writes only
+  inside file data, at the same length. The header bytes stay identical, so the
+  hash keeps matching. Verified on 1.36.0: the header SHA-256 `765c95b7…` is
+  the same before and after the patch, and equals the plist value.
+- **Per-file block hashes.** They go stale for every patched file. That has
+  always been true: the existing anchor patches already change
+  `layout-*.js` and `dist/main/index.js`. Electron checks those hashes only when
+  the `EnableEmbeddedAsarIntegrityValidation` fuse is on. Superset 1.36.0 ships
+  it **off** (`npx @electron/fuses read --app /Applications/Superset.app`; in the
+  `Electron Framework` binary the fuse wire is `\x01\x09101100011`, and index 4
+  is `0`). `patch_file` now enforces this through
+  `require_asar_integrity_fuse_disabled()`: if the target is inside an `.app`
+  whose fuse is enabled or unreadable, nothing is written. If Superset ever
+  enables the fuse, every in-place patch has to move to a repack that rewrites
+  the header and the plist hash. That needs a separate design and is not
+  something to force.
+- **Apple seal.** It is already invalid after any patch. This is the existing
+  `--ack-invalid-apple-signature` precondition.
+
+The cost: source maps for the rest of each region shift by the removed bytes.
+That affects only DevTools and Sentry column numbers inside those two regions.
+
+Proof on a copy of the installed 1.36.0 bundle, 2026-10-08:
+- Apply, then re-run: `already patched`.
+- Archive size and header SHA-256 are unchanged.
+- `node --check` passes on the extracted `dist/main/index.js`, the
+  `layout-CAKjMJ-s.js` chunk and the `layout-PLbiDCVj.js` chunk.
+- `inspect_asar()` reports `patches_needed: 0`.
+- `--revert` restores the original SHA-256.
+
+With `--sound-only-when-waiting` (desktop-v1.36.0) the notification sound plays
+only while an agent is waiting for you (`PermissionRequest`, `PendingQuestion`).
+It no longer plays on `Stop`, i.e. when a task finishes. Notifications, ringtone
+choice, volume, mute and the Settings UI are unchanged. Two code paths play the
+sound, and both are patched:
+
+- main `NotificationManager.handleAgentLifecycle` (`dist/main/index.js`):
+  `this.deps.playSound()` becomes `isWaiting&&this.deps.playSound()`. The method
+  already computes `isWaiting`.
+- renderer v2 workspaces `handleV2AgentLifecycleEvent` (`layout-*.js`):
+  `playRingtone()` runs only for the two waiting events. That call also covers
+  custom ringtones, which go through the `ringtone.playNotification` tRPC
+  route. v2 `Failed` and `Stop` events still show their notification but play
+  no sound.
+
+No other completion sound exists in 1.36.0. The bundle has one `afplay` (main
+`playSoundFile`). Its other audio is the onboarding click and the chat
+microphone visualiser. Both anchors are single-match stock or patched
+variants, and node harness tests drive the real upstream excerpts to show that
+Stop is silent while the waiting events still ring.
+
 The approved UI set is applied in one validated atomic swap:
 
 ```bash
 python3 patch-asar.py --size 6 --hide-tray --custom-project-icons \
   --keep-icon-on-hover --compact-sidebar --pinned-icon-only \
+  --sidebar-status-filter --sound-only-when-waiting \
   --ack-invalid-apple-signature
 python3 patch-asar.py --revert
 ```
 
-`--pinned-icon-only` is not yet requested by the automated re-apply path
+`--pinned-icon-only`, `--sidebar-status-filter` and `--sound-only-when-waiting`
+are not yet requested by the automated re-apply path
 (`check-upstream-patches.py` `PATCH_OPTIONS`, the upstream-update-watch prompt,
 `/patch-superset`, "When to re-run" below): add it there only after the live
 result has been confirmed visually. Until then a routine re-apply leaves an
@@ -408,7 +535,7 @@ After a **Superset desktop update**, first refresh project icons from the
 projects' current favicons (`python3 sync-project-icons.py --fetch --check`;
 drift → `--apply`, commit/PR, then `python3 apply.py`), then re-apply bundle
 patches and run the other procedures only if their symptom appears:
-1. `python3 patch-asar.py --size 6 --hide-tray --custom-project-icons --keep-icon-on-hover --compact-sidebar --pinned-icon-only --ack-invalid-apple-signature` — re-apply the complete approved production patch set after accepting an invalid Apple seal (`--pinned-icon-only` is manual-only here — it is not yet in the automated re-apply path, see section 1 above)
+1. `python3 patch-asar.py --size 6 --hide-tray --custom-project-icons --keep-icon-on-hover --compact-sidebar --pinned-icon-only --sidebar-status-filter --sound-only-when-waiting --ack-invalid-apple-signature` — re-apply the complete approved production patch set after accepting an invalid Apple seal (`--pinned-icon-only`, `--sidebar-status-filter` and `--sound-only-when-waiting` are manual-only here — not yet in the automated re-apply path, see section 1 above)
 2. `python3 patch-tray-icon.py --ack-invalid-apple-signature` — legacy tray-only alternative; do not run it in addition to step 1
 3. `python3 apply-ui-patches.py <dist-root>` — re-apply icon source, layout
    markers and CSS (only needed when you rebuild/repack; the in-place asar

@@ -3,7 +3,8 @@
 
 The selected patches cover the compact sidebar, 24 px project icons,
 project-owned icon URLs, project icons retained on hover, icon-only pinned
-workspace rows, and no menu-bar tray icon. Every replacement has exactly the
+workspace rows, a sidebar status filter, notification sound only while an agent
+waits, and no menu-bar tray icon. Every replacement has exactly the
 same byte length as its source. That preserves ASAR offsets, but any app.asar
 mutation still invalidates Apple's resource seal and therefore requires an
 explicit production acknowledgement.
@@ -11,6 +12,7 @@ explicit production acknowledgement.
 
 import argparse
 from contextlib import contextmanager
+from dataclasses import dataclass
 import fcntl
 import hashlib
 import json
@@ -436,6 +438,336 @@ def _plan_pinned_icon_only(data) -> list[tuple[int, bytes, bytes, str]]:
     return replacements
 
 
+# --sidebar-status-filter (desktop-v1.36.0, layout-*.js). The filter needs ~3 KB
+# of new code, far more than any single anchor can absorb, so it uses a region
+# rewrite instead of anchor swaps — see patches/README.md §Region rewrite for
+# the ASAR-safety argument (header untouched, offsets preserved, the embedded
+# per-file integrity fuse is disabled; require_asar_integrity_fuse_disabled()
+# enforces that last precondition).
+#
+# A region is the exact byte range from a unique start anchor (a top-level
+# `function X({`) up to, but excluding, the next top-level function. Both the
+# stock and the rewritten bytes are pinned by SHA-256, so any upstream change
+# anywhere inside the region fails closed. The rewrite:
+#   1. deletes every JS_NOOP_COMMENTS token. `/* @__PURE__ */` is a tree-shaking
+#      hint and `/** i18n */` a Lingui extraction marker; neither changes
+#      runtime semantics and neither spans a newline, so automatic semicolon
+#      insertion cannot change. Source maps for the rest of the region shift by
+#      the removed bytes (DevTools / Sentry stack columns only);
+#   2. applies each (anchor, replacement) edit, every anchor exactly once;
+#   3. pads with spaces at the region end, a top-level statement boundary.
+# Top-level function declarations hoist across the whole module, so helpers may
+# live in either region. The filter is applied at render level: the sidebar
+# builders are pure and have no workspace-status access, while every row,
+# folder, project and section renders below DashboardSidebarWorkspaceStatusProvider
+# (StatusStoreContext). Hooks run before each early `return null`.
+JS_NOOP_COMMENTS = (b"/* @__PURE__ */ ", b"/** i18n */")
+
+
+@dataclass(frozen=True)
+class RegionRewrite:
+    """One hash-pinned byte range rewritten in place to the same length."""
+
+    label: str
+    start: bytes
+    end: bytes
+    length: int
+    stock_sha256: str
+    patched_sha256: str
+    edits: tuple[tuple[bytes, bytes], ...]
+
+
+# Shared filter state: 0 all, 1 needs input (permission + failed), 2 review.
+# A selected workspace is never hidden (ssfUseShow) and a Shift range spans only
+# visible rows (ssfRange, next to ssfMatches in region 2): every
+# applyWorkspaceSelection result is cut to orderedWorkspaceIds, so a bulk delete
+# or move can never reach a row the filter hides.
+STATUS_FILTER_STATE_JS = b'''// dev-setup-dashboard patch-asar.py --sidebar-status-filter: 0 all, 1 needs input, 2 review.
+let ssfMode = 0;
+const ssfListeners = new Set();
+try {
+  ssfMode = ["1", "2"].indexOf(localStorage.getItem("ssf-sidebar-status-filter")) + 1;
+} catch {
+}
+function ssfSubscribe(listener) {
+  ssfListeners.add(listener);
+  return () => ssfListeners.delete(listener);
+}
+function ssfCycle() {
+  ssfMode = (ssfMode + 1) % 3;
+  try {
+    localStorage.setItem("ssf-sidebar-status-filter", String(ssfMode));
+  } catch {
+  }
+  for (const listener of [...ssfListeners]) listener();
+}
+function ssfUseShow(workspaceIds) {
+  const store = reactExports.useContext(StatusStoreContext);
+  const selection = reactExports.useContext(DashboardSidebarSelectionContext);
+  const key = workspaceIds.join("\\n");
+  const subscribe = reactExports.useCallback((listener) => {
+    const offs = [ssfSubscribe(listener), ...store ? key.split("\\n").filter(Boolean).map((id) => store.subscribe(id, listener)) : []];
+    return () => offs.forEach((off) => off());
+  }, [store, key]);
+  return reactExports.useSyncExternalStore(subscribe, () => ssfMode === 0 || !store || workspaceIds.some((id) => selection?.isWorkspaceSelected(id) || ssfMatches(store.get(id).status)));
+}
+'''
+# Header button: cycles the mode; the dot colour mirrors STATUS_CONFIG
+# (StatusIndicator-*.js: permission yellow, review green). All classes already
+# exist in index-*.css.
+STATUS_FILTER_BUTTON_JS = b'''function ssfMatches(status) {
+  return ssfMode === 1 ? status === "permission" || status === "failed" : status === "review";
+}
+function ssfRange(store, workspaceIds, isSelected) {
+  return ssfMode === 0 || !store ? workspaceIds : workspaceIds.filter((id) => isSelected(id) || ssfMatches(store.get(id).status));
+}
+const SSF_LABELS = ["Status filter: all", "Status filter: needs input", "Status filter: review"];
+const SSF_DOTS = ["border border-muted-foreground", "bg-yellow-500", "bg-green-500"];
+function SsfStatusFilterButton() {
+  const mode = reactExports.useSyncExternalStore(ssfSubscribe, () => ssfMode);
+  return jsxRuntimeExports.jsxs(Tooltip, { delayDuration: 700, children: [
+    jsxRuntimeExports.jsx(TooltipTrigger, { asChild: true, children: jsxRuntimeExports.jsx("button", { type: "button", "aria-label": SSF_LABELS[mode], "aria-pressed": mode !== 0, onClick: (event) => {
+      event.stopPropagation();
+      ssfCycle();
+    }, onKeyDown: (event) => event.stopPropagation(), className: "flex size-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-fill-hover", children: jsxRuntimeExports.jsx("span", { className: cn("size-2 rounded-full", SSF_DOTS[mode]) }) }) }),
+    jsxRuntimeExports.jsx(TooltipContent, { side: "bottom", children: SSF_LABELS[mode] })
+  ] });
+}
+'''
+
+
+def _insert_after(anchor: bytes, snippet: bytes) -> tuple[bytes, bytes]:
+    """Edit that appends one snippet right after an exact anchor."""
+    return anchor, anchor + snippet
+
+
+def _insert_before(anchor: bytes, snippet: bytes) -> tuple[bytes, bytes]:
+    """Edit that inserts one snippet right before an exact anchor."""
+    return anchor, snippet + anchor
+
+
+STATUS_FILTER_REGIONS = (
+    # SortableWorkspaceItem .. DashboardSidebarPinnedSection .. folder section
+    # .. isBulkSelectable: PINNED rows, PINNED section, folders (all trees).
+    RegionRewrite(
+        label="status filter: pinned, folders and workspace rows",
+        start=b"function SortableWorkspaceItem({\n",
+        end=b"function DashboardSidebarProjectContextMenu({\n",
+        length=22553,
+        stock_sha256="af09e89f2a007d0762d4f9f8f03273ada726b8ead7ea01ab43e125b8715b17d3",
+        patched_sha256="42fef7999b59c51c15afb440f5a5a5c4368eae0e01582c9cd49c0aaf741ad4c1",
+        edits=(
+            _insert_after(
+                b", [workspace, onHoverCardOpen, shortcutLabel, isInSection, indentation, "
+                b"isSelected, onSelectionClick, pinnedContext]);\n",
+                b"  if (!ssfUseShow([workspace.id])) return null;\n",
+            ),
+            _insert_after(
+                b"  const isSectionCollapsed = useSidebarSectionsCollapseStore((s) => s.collapsed.pinned);\n",
+                b"  if (!ssfUseShow(pinnedWorkspaces.map((workspace) => workspace.id)) && !isCollapsed) return null;\n",
+            ),
+            _insert_after(
+                b"  }, [clearPendingSectionRename, pendingRenameSectionId, section.id, startRename]);\n",
+                b"  if (!ssfUseShow(section.workspaces.map((workspace) => workspace.id))) return null;\n",
+            ),
+            # Three `//` lines inside `return (`; deleting whole lines frees room
+            # for the selection guard without touching any expression.
+            (
+                b"      // -mb-3 cancels the `mt-3 first:mt-0` the next section gains once\n"
+                b"      // it is no longer the scroller's first child \xe2\x80\x94 otherwise the float\n"
+                b"      // still nudges the list by that margin.\n",
+                b"",
+            ),
+            _insert_after(
+                b"    selectWorkspaceFromEvent\n  } = useDashboardSidebarSelection();\n",
+                b"  const ssfStore = reactExports.useContext(StatusStoreContext);\n",
+            ),
+            (
+                b"orderedWorkspaceIds: selectableWorkspaceIds\n",
+                b"orderedWorkspaceIds: ssfRange(ssfStore, selectableWorkspaceIds, isWorkspaceSelected)\n",
+            ),
+            _insert_before(b"const isBulkSelectable = (workspace) =>", STATUS_FILTER_STATE_JS),
+        ),
+    ),
+    # DashboardSidebarProjectSection .. SESSIONS section .. PROJECTS header.
+    RegionRewrite(
+        label="status filter: projects, sessions and header button",
+        start=b"function DashboardSidebarProjectSection({\n",
+        end=b"function GettingStartedChecklist({\n",
+        length=19272,
+        stock_sha256="21cf2198d0a6b806fda51365aec77d3d3865a51188179f9caebdae2f3f2f6a55",
+        patched_sha256="3682ec4e3fa223751b5ce4bde728d33cef3642a36d9561f4df517ec808253be1",
+        edits=(
+            _insert_after(
+                b"  } = useDashboardSidebarProjectSectionActions({\n    project\n  });\n",
+                b"  if (!ssfUseShow(flattenedCollapsedWorkspaces.map((workspace) => workspace.id)) "
+                b"&& !isSidebarCollapsed) return null;\n",
+            ),
+            _insert_after(
+                b"  const isSectionCollapsed = useSidebarSectionsCollapseStore((s) => s.collapsed.sessions);\n",
+                b"  if (!ssfUseShow(sessionWorkspaces.map((workspace) => workspace.id)) && !isCollapsed) return null;\n",
+            ),
+            _insert_before(
+                b"    jsxRuntimeExports.jsx(DashboardSidebarProjectsFilterInput, { query: filterQuery,",
+                b"    jsxRuntimeExports.jsx(SsfStatusFilterButton, {}),\n",
+            ),
+            # Two `//` lines inside expressions (after `return (` and after a
+            # comma); deleting whole lines frees room for ssfRange.
+            (
+                b"    // biome-ignore lint/a11y/noStaticElementInteractions: stops the header row's "
+                b"collapse toggle from firing on input interaction\n",
+                b"",
+            ),
+            (b'        // Read as "on" whenever the list is not in drag order.\n', b""),
+            _insert_before(b"function DashboardSidebarProjectsFilterInput({\n", STATUS_FILTER_BUTTON_JS),
+        ),
+    ),
+)
+
+
+def rewrite_region(region: RegionRewrite, stock: bytes) -> bytes:
+    """Strip no-op comments, apply each edit once and pad back to the stock length."""
+    rewritten = stock
+    for comment in JS_NOOP_COMMENTS:
+        rewritten = rewritten.replace(comment, b"")
+    for anchor, replacement in region.edits:
+        found = rewritten.count(anchor)
+        if found != 1:
+            raise RuntimeError(f"{region.label}: edit anchor found {found} times")
+        rewritten = rewritten.replace(anchor, replacement)
+    if len(rewritten) > len(stock):
+        raise RuntimeError(f"{region.label}: rewrite exceeds the region by {len(rewritten) - len(stock)} bytes")
+    return rewritten + b" " * (len(stock) - len(rewritten))
+
+
+def _plan_region_rewrite(data, region: RegionRewrite) -> list[tuple[int, bytes, bytes, str]]:
+    """Locate one pinned region and return its rewrite, or nothing when already patched."""
+    offsets = _find_all(data, region.start)
+    if len(offsets) != 1:
+        raise RuntimeError(
+            f"expected exactly one {region.label} start anchor, found {len(offsets)}; "
+            "bundle structure may have changed"
+        )
+    offset = offsets[0]
+    stop = offset + region.length
+    if data[stop : stop + len(region.end)] != region.end:
+        raise RuntimeError(f"{region.label}: end anchor not at the pinned length; bundle structure may have changed")
+    current = bytes(data[offset:stop])
+    digest = hashlib.sha256(current).hexdigest()
+    if digest == region.patched_sha256:
+        return []
+    if digest != region.stock_sha256:
+        raise RuntimeError(f"{region.label}: region is neither stock nor patched; bundle structure may have changed")
+    rewritten = rewrite_region(region, current)
+    if hashlib.sha256(rewritten).hexdigest() != region.patched_sha256:
+        raise RuntimeError(f"internal error: {region.label} rewrite does not match its pinned digest")
+    return [(offset, current, rewritten, region.label)]
+
+
+# --sound-only-when-waiting (desktop-v1.36.0). Upstream rings on every agent
+# lifecycle notification, including Stop (task finished). Two paths play it:
+#   1. main process (dist/main/index.js) NotificationManager.handleAgentLifecycle
+#      -> deps.playSound() -> playNotificationSound (afplay of the selected
+#      ringtone; honours volume/mute). `isWaiting` (PermissionRequest or
+#      PendingQuestion) is already computed a few lines above in that method;
+#   2. renderer v2 workspaces (layout-*.js) handleV2AgentLifecycleEvent ->
+#      playRingtone(), which also covers custom ringtones (it calls the
+#      ringtone.playNotification tRPC route for them).
+# Both now play only while the agent waits for the user. Notifications, ringtone
+# choice, volume, mute and Settings are untouched. No other completion sound
+# exists in 1.36.0 (the only other audio is the onboarding click and the chat
+# microphone visualiser). Each replacement is padded with spaces at its end.
+SOUND_MAIN_ALWAYS = (
+    b"    const key = event.sessionId ?? event.paneId ?? `_anon_${this.counter++}`;\n"
+    b"    this.track(key, notification);\n"
+    b"    this.deps.playSound();\n"
+)
+SOUND_MAIN_WAITING = _pad_variant(
+    SOUND_MAIN_ALWAYS,
+    b"    const key=event.sessionId??event.paneId??`_anon_${this.counter++}`;this.track(key,notification);\n"
+    b"    isWaiting&&this.deps.playSound();\n",
+)
+SOUND_RENDERER_ALWAYS = (
+    b'  if (payload.eventType === "Start" || payload.eventType === "Attached" || payload.eventType === "Detached") {\n'
+    b"    return;\n"
+    b"  }\n"
+    b"  if (shouldSuppress(target, localPaneLayout)) return;\n"
+    b"  const ringtoneId = useRingtoneStore.getState().selectedRingtoneId;\n"
+    b"  void playRingtone({\n"
+    b"    ringtoneId,\n"
+    b"    volume,\n"
+    b"    muted\n"
+    b"  });\n"
+)
+SOUND_RENDERER_WAITING = _pad_variant(
+    SOUND_RENDERER_ALWAYS,
+    b"  const t = payload.eventType;\n"
+    b'  if (t === "Start" || t === "Attached" || t === "Detached") return;\n'
+    b"  if (shouldSuppress(target, localPaneLayout)) return;\n"
+    b'  if (t === "PermissionRequest" || t === "PendingQuestion") void playRingtone('
+    b"{ ringtoneId: useRingtoneStore.getState().selectedRingtoneId, volume, muted });\n",
+)
+
+
+def _plan_sound_only_when_waiting(data) -> list[tuple[int, bytes, bytes, str]]:
+    """Validate both notification-sound call sites and return the writes still needed."""
+    replacements = []
+    for name, source, target, label in (
+        ("main notification sound", SOUND_MAIN_ALWAYS, SOUND_MAIN_WAITING, "sound: main only when waiting"),
+        (
+            "renderer notification sound",
+            SOUND_RENDERER_ALWAYS,
+            SOUND_RENDERER_WAITING,
+            "sound: renderer only when waiting",
+        ),
+    ):
+        offset, old = _single_variant(data, name, [source, target])
+        if old != target:
+            replacements.append((offset, old, target, label))
+    return replacements
+
+
+# Electron fuse wire: sentinel, version byte, length byte, one char per fuse.
+# Fuse index 4 is EnableEmbeddedAsarIntegrityValidation ('1' enabled, '0'
+# disabled, 'r' removed). When enabled, Electron checks every file block against
+# the SHA-256 recorded in the ASAR header, so any in-place edit would brick the
+# app; with it disabled only the header hash (Info.plist ElectronAsarIntegrity)
+# matters, and length-preserving patches never touch the header.
+ELECTRON_FUSE_SENTINEL = b"dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX"
+ELECTRON_FUSE_ASAR_INTEGRITY = 4
+
+
+def require_asar_integrity_fuse_disabled(asar: Path) -> None:
+    """Refuse in-place edits when the app's Electron validates per-file ASAR integrity."""
+    contents = asar.parent.parent
+    if asar.parent.name != "Resources" or contents.name != "Contents" or contents.parent.suffix != ".app":
+        return
+    binary = contents / "Frameworks" / "Electron Framework.framework" / "Electron Framework"
+    with binary.open("rb") as stream:
+        with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            offsets = _find_all(data, ELECTRON_FUSE_SENTINEL)
+            wire = b""
+            if len(offsets) == 1:
+                start = offsets[0] + len(ELECTRON_FUSE_SENTINEL)
+                wire = data[start : start + 2 + 32]
+    if len(wire) < 2 or wire[0] != 1 or wire[1] <= ELECTRON_FUSE_ASAR_INTEGRITY:
+        raise RuntimeError(f"unrecognised Electron fuse wire in {binary}; refusing in-place ASAR edits")
+    state = wire[2 + ELECTRON_FUSE_ASAR_INTEGRITY : 3 + ELECTRON_FUSE_ASAR_INTEGRITY]
+    if state not in (b"0", b"r"):
+        raise RuntimeError(
+            "EnableEmbeddedAsarIntegrityValidation fuse is enabled; in-place ASAR edits "
+            "would fail Electron's per-file integrity check"
+        )
+
+
+def _require_disjoint(replacements: list[tuple[int, bytes, bytes, str]]) -> None:
+    """Fail closed when two planned writes would touch the same bytes."""
+    ordered = sorted(replacements, key=lambda item: item[0])
+    for before, after in zip(ordered, ordered[1:]):
+        if before[0] + len(before[1]) > after[0]:
+            raise RuntimeError(f"overlapping replacements: {before[3]} and {after[3]}")
+
+
 def require_signature_ack(asar: Path, acknowledged: bool) -> None:
     """Refuse implicit mutation of the officially signed production bundle."""
     if asar.expanduser().resolve() == DEFAULT_ASAR.resolve() and not acknowledged:
@@ -488,6 +820,8 @@ def plan_replacements(
     keep_icon_on_hover: bool,
     compact_sidebar: bool = False,
     pinned_icon_only: bool = False,
+    sidebar_status_filter: bool = False,
+    sound_only_when_waiting: bool = False,
 ) -> list[tuple[int, bytes, bytes, str]]:
     """Validate the complete bundle first, then return equal-length writes."""
     if not 4 <= size <= 9:
@@ -709,6 +1043,14 @@ def plan_replacements(
     if pinned_icon_only:
         replacements.extend(_plan_pinned_icon_only(data))
 
+    if sidebar_status_filter:
+        for region in STATUS_FILTER_REGIONS:
+            replacements.extend(_plan_region_rewrite(data, region))
+
+    if sound_only_when_waiting:
+        replacements.extend(_plan_sound_only_when_waiting(data))
+
+    _require_disjoint(replacements)
     for _offset, old, new, label in replacements:
         if len(old) != len(new):
             raise RuntimeError(f"internal error: non-length-preserving replacement for {label}")
@@ -917,6 +1259,7 @@ def patch_file(
     """Patch a bundle under the shared lock after explicit signature acknowledgement."""
     require_signature_ack(asar, acknowledge_invalid_signature)
     asar = asar.expanduser().resolve()
+    require_asar_integrity_fuse_disabled(asar)
     backup_dir = backup_dir.expanduser().resolve()
     with _patch_lock(asar):
         return _patch_file_unlocked(
@@ -995,6 +1338,16 @@ def main(argv=None):
         action="store_true",
         help="PINNED sidebar rows: drop the project-name prefix and enlarge the project icon",
     )
+    parser.add_argument(
+        "--sidebar-status-filter",
+        action="store_true",
+        help="PROJECTS header button cycling the sidebar filter: all / needs input / review",
+    )
+    parser.add_argument(
+        "--sound-only-when-waiting",
+        action="store_true",
+        help="play the notification sound only when an agent waits for input, never on Stop",
+    )
     parser.add_argument("--revert", action="store_true")
     parser.add_argument("--asar", type=Path, default=DEFAULT_ASAR)
     parser.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
@@ -1018,6 +1371,8 @@ def main(argv=None):
             keep_icon_on_hover=args.keep_icon_on_hover,
             compact_sidebar=args.compact_sidebar,
             pinned_icon_only=args.pinned_icon_only,
+            sidebar_status_filter=args.sidebar_status_filter,
+            sound_only_when_waiting=args.sound_only_when_waiting,
             acknowledge_invalid_signature=args.ack_invalid_apple_signature,
         )
     except (OSError, RuntimeError, ValueError) as exc:

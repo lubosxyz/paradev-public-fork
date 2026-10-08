@@ -714,6 +714,8 @@ class SupersetUiPatchTest(unittest.TestCase):
             keep_icon_on_hover=False,
             compact_sidebar=True,
             pinned_icon_only=False,
+            sidebar_status_filter=False,
+            sound_only_when_waiting=False,
             acknowledge_invalid_signature=False,
         )
 
@@ -1209,6 +1211,647 @@ class SupersetPinnedIconOnlyPatchTest(unittest.TestCase):
             self.assertIn(self.PATCHED_PREFIX, asar.read_bytes())
             MODULE.revert(asar, backup_dir)
             self.assertEqual(asar.read_bytes(), original)
+
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def run_node(test, source: str, suffix: str = ".mjs"):
+    """Run one generated node script and fail the test with its stderr on a non-zero exit."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        test.skipTest("node is not installed")
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp) / f"harness{suffix}"
+        script.write_text(source)
+        result = subprocess.run([node, str(script)], capture_output=True, text=True)
+    test.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+    return result.stdout
+
+
+def node_check(test, body: bytes):
+    """Parse one JavaScript module excerpt with `node --check`."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        test.skipTest("node is not installed")
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp) / "excerpt.mjs"
+        script.write_bytes(body)
+        result = subprocess.run([node, "--check", str(script)], capture_output=True, text=True)
+    test.assertEqual(result.returncode, 0, result.stderr)
+
+
+class SupersetSidebarStatusFilterPatchTest(unittest.TestCase):
+    """--sidebar-status-filter rewrites two hash-pinned layout-*.js regions in place."""
+
+    WORKSPACE_NEW_SHORTCUT = SupersetUiPatchTest.WORKSPACE_NEW_SHORTCUT
+    # Exact stock bytes of desktop-v1.36.0 layout-CAKjMJ-s.js, cut at the
+    # region boundaries (start anchor inclusive, end anchor exclusive).
+    REGION_FIXTURES = [
+        FIXTURES / "superset-1.36.0-status-filter-r1.js",
+        FIXTURES / "superset-1.36.0-status-filter-r2.js",
+    ]
+
+    def regions(self):
+        """Pair each region constant with its real stock bytes."""
+        return list(zip(MODULE.STATUS_FILTER_REGIONS, [p.read_bytes() for p in self.REGION_FIXTURES], strict=True))
+
+    def stock_bundle(self):
+        """Shared synthetic bundle plus both real regions, each followed by its end anchor."""
+        return b"|".join(
+            [SupersetUiPatchTest.stock_bundle(self)]
+            + [stock + region.end for region, stock in self.regions()]
+        )
+
+    def patch(self, data, enabled=True):
+        """Apply the approved set with the status filter toggled."""
+        return MODULE.patch_bytes(
+            data,
+            size=6,
+            hide_tray=True,
+            custom_project_icons=True,
+            keep_icon_on_hover=True,
+            compact_sidebar=True,
+            sidebar_status_filter=enabled,
+        )
+
+    def test_fixtures_are_the_pinned_real_regions(self):
+        import hashlib
+
+        for region, stock in self.regions():
+            with self.subTest(region=region.label):
+                self.assertEqual(len(stock), region.length)
+                self.assertEqual(hashlib.sha256(stock).hexdigest(), region.stock_sha256)
+                self.assertTrue(stock.startswith(region.start))
+                self.assertEqual(stock.count(region.start), 1)
+                self.assertNotIn(region.end, stock)
+
+    def test_rewrite_matches_the_pinned_patched_digest_and_length(self):
+        import hashlib
+
+        for region, stock in self.regions():
+            with self.subTest(region=region.label):
+                patched = MODULE.rewrite_region(region, stock)
+                self.assertEqual(len(patched), len(stock))
+                self.assertEqual(hashlib.sha256(patched).hexdigest(), region.patched_sha256)
+                self.assertTrue(patched.startswith(region.start))
+
+    def test_rewrite_only_strips_noop_comments_and_applies_the_edits(self):
+        # Undo every edit and the trailing pad: what remains must be the stock
+        # region minus the no-op comment tokens and the deleted `//` lines.
+        swaps = {b"orderedWorkspaceIds: selectableWorkspaceIds\n"}
+        for region, stock in self.regions():
+            with self.subTest(region=region.label):
+                patched = MODULE.rewrite_region(region, stock)
+                for comment in MODULE.JS_NOOP_COMMENTS:
+                    self.assertNotIn(comment, patched)
+                stripped = stock
+                for comment in MODULE.JS_NOOP_COMMENTS:
+                    stripped = stripped.replace(comment, b"")
+                undone = patched.rstrip(b" ")
+                for anchor, replacement in region.edits:
+                    if replacement == b"":
+                        # Deletions only ever remove whole `//` comment lines.
+                        for line in anchor.splitlines():
+                            self.assertTrue(line.lstrip().startswith(b"// "), line)
+                        self.assertEqual(stripped.count(anchor), 1)
+                        stripped = stripped.replace(anchor, b"")
+                        continue
+                    self.assertTrue(anchor in replacement or anchor in swaps, anchor)
+                    self.assertEqual(undone.count(replacement), 1)
+                    undone = undone.replace(replacement, anchor)
+                self.assertEqual(undone, stripped)
+
+    def test_noop_comments_never_span_a_line_break(self):
+        # Removing a block comment that contains a newline could change
+        # automatic semicolon insertion; both stripped tokens are single-line.
+        for comment in MODULE.JS_NOOP_COMMENTS:
+            self.assertNotIn(b"\n", comment)
+            self.assertTrue(comment.startswith(b"/*"))
+
+    def test_patched_regions_parse_as_javascript(self):
+        for region, stock in self.regions():
+            with self.subTest(region=region.label):
+                node_check(self, stock)
+                node_check(self, MODULE.rewrite_region(region, stock))
+
+    def test_bundle_is_patched_in_place_and_only_inside_the_regions(self):
+        original = self.stock_bundle()
+
+        patched, changes = self.patch(original)
+
+        self.assertEqual(len(original), len(patched))
+        self.assertEqual(
+            [c for c in changes if c.startswith("status filter")],
+            [region.label for region in MODULE.STATUS_FILTER_REGIONS],
+        )
+        prefix_end = original.index(MODULE.STATUS_FILTER_REGIONS[0].start)
+        unfiltered, _ = self.patch(original, enabled=False)
+        self.assertEqual(patched[:prefix_end], unfiltered[:prefix_end])
+        self.assertIn(b"function SsfStatusFilterButton()", patched)
+        self.assertIn(b"jsxRuntimeExports.jsx(SsfStatusFilterButton, {}),", patched)
+
+    def test_status_filter_is_idempotent(self):
+        once, _changes = self.patch(self.stock_bundle())
+
+        twice, changes = self.patch(once)
+
+        self.assertEqual(once, twice)
+        self.assertEqual(changes, [])
+
+    def test_flag_off_leaves_the_regions_untouched(self):
+        patched, changes = self.patch(self.stock_bundle(), enabled=False)
+
+        for _region, stock in self.regions():
+            self.assertIn(stock, patched)
+        self.assertFalse([c for c in changes if c.startswith("status filter")])
+
+    def test_unknown_region_bytes_fail_closed(self):
+        region, stock = self.regions()[0]
+        middle = len(stock) // 2
+        drifted = stock[:middle] + (b"X" if stock[middle:middle + 1] != b"X" else b"Y") + stock[middle + 1:]
+        bundle = self.stock_bundle().replace(stock, drifted)
+
+        with self.assertRaisesRegex(RuntimeError, "neither stock nor patched"):
+            self.patch(bundle)
+
+    def test_missing_end_anchor_fails_closed(self):
+        region, stock = self.regions()[1]
+        bundle = self.stock_bundle().replace(stock + region.end, stock + b"x" * len(region.end))
+
+        with self.assertRaisesRegex(RuntimeError, "end anchor"):
+            self.patch(bundle)
+
+    def test_missing_or_duplicate_start_anchor_fails_closed(self):
+        region, stock = self.regions()[0]
+        for name, bundle, found in (
+            ("missing", self.stock_bundle().replace(region.start, b"x" * len(region.start)), 0),
+            ("duplicate", self.stock_bundle() + b"|" + region.start, 2),
+        ):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(RuntimeError, f"found {found}"):
+                    self.patch(bundle)
+
+    # Value: protects=rewrite_region refuses to guess when an edit anchor is not unique or the rewrite outgrows the pinned region; fails_when=the count!=1 or length check is removed so a drifted anchor edits the wrong spot or shifts ASAR offsets; why_new=existing fail-closed tests stop at the hash check before rewrite_region's own guards; seam=none
+    def test_rewrite_region_fails_closed_on_ambiguous_anchor_or_overflow(self):
+        stock = b"function A({\n  one();\n  one();\n  two();\n}\n"
+
+        def region(edits):
+            return MODULE.RegionRewrite("synthetic", b"", b"", len(stock), "", "", tuple(edits))
+
+        for name, edits, pattern in (
+            ("missing", [(b"absent();", b"x();")], "found 0 times"),
+            ("duplicate", [(b"one();", b"x();")], "found 2 times"),
+            ("overflow", [(b"two();", b"two();" + b"y" * 8)], "exceeds the region"),
+        ):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(RuntimeError, pattern):
+                    MODULE.rewrite_region(region(edits), stock)
+        padded = MODULE.rewrite_region(region([(b"two();", b"t();")]), stock)
+        self.assertEqual(len(padded), len(stock))
+        self.assertTrue(padded.endswith(b" " * 2))
+
+    def test_overlapping_replacements_are_refused(self):
+        with self.assertRaisesRegex(RuntimeError, "overlapping"):
+            MODULE._require_disjoint(
+                [(0, b"abcd", b"ABCD", "first"), (2, b"cdef", b"CDEF", "second")]
+            )
+        MODULE._require_disjoint([(0, b"ab", b"AB", "first"), (2, b"cd", b"CD", "second")])
+
+    def filter_harness(self, stored: str, assertions: str, storage_stub: str | None = None) -> str:
+        """Node script: stubbed React + store around the injected filter snippets."""
+        storage_stub = storage_stub or (
+            "globalThis.localStorage = { getItem: (k) => storage.get(k) ?? null, "
+            "setItem: (k, v) => storage.set(k, String(v)) };"
+        )
+        return f"""
+import assert from "node:assert/strict";
+const storage = new Map([["ssf-sidebar-status-filter", {stored!r}]]);
+{storage_stub}
+const statuses = new Map();
+const subscribed = [];
+const store = {{
+  get: (id) => ({{ status: statuses.get(id) ?? null }}),
+  subscribe: (id, listener) => {{ subscribed.push(id); return () => subscribed.splice(subscribed.indexOf(id), 1); }},
+}};
+const StatusStoreContext = {{}};
+const DashboardSidebarSelectionContext = {{}};
+let activeStore = store;
+const selected = new Set();
+let activeSelection = {{ isWorkspaceSelected: (id) => selected.has(id) }};
+const reactExports = {{
+  useContext: (context) => (context === StatusStoreContext ? activeStore : context === DashboardSidebarSelectionContext ? activeSelection : null),
+  useCallback: (fn) => fn,
+  useSyncExternalStore: (subscribe, getSnapshot) => {{ const off = subscribe(() => {{}}); off(); return getSnapshot(); }},
+}};
+const jsxRuntimeExports = {{ jsx: (type, props) => ({{ type, props }}), jsxs: (type, props) => ({{ type, props }}) }};
+const cn = (...parts) => parts.filter(Boolean).join(" ");
+const Tooltip = "Tooltip", TooltipTrigger = "TooltipTrigger", TooltipContent = "TooltipContent";
+{MODULE.STATUS_FILTER_STATE_JS.decode()}
+{MODULE.STATUS_FILTER_BUTTON_JS.decode()}
+const button = () => SsfStatusFilterButton().props.children[0].props.children;
+const click = () => {{ let stopped = false; button().props.onClick({{ stopPropagation: () => {{ stopped = true; }} }}); assert.ok(stopped); }};
+{assertions}
+console.log("ok");
+"""
+
+    def test_injected_filter_cycles_and_matches_the_three_modes(self):
+        run_node(self, self.filter_harness("", """
+statuses.set("perm", "permission"); statuses.set("fail", "failed");
+statuses.set("rev", "review"); statuses.set("work", "working");
+const all = ["perm", "fail", "rev", "work", "idle"];
+const shown = () => all.filter((id) => ssfUseShow([id]));
+assert.deepEqual(shown(), all);
+assert.equal(button().props["aria-pressed"], false);
+assert.match(button().props.children.props.className, /border-muted-foreground/);
+click();
+assert.equal(storage.get("ssf-sidebar-status-filter"), "1");
+assert.deepEqual(shown(), ["perm", "fail"]);
+assert.equal(button().props["aria-label"], "Status filter: needs input");
+assert.match(button().props.children.props.className, /bg-yellow-500/);
+click();
+assert.deepEqual(shown(), ["rev"]);
+assert.match(button().props.children.props.className, /bg-green-500/);
+assert.equal(ssfUseShow([]), false);
+assert.equal(ssfUseShow(["work", "rev"]), true);
+click();
+assert.deepEqual(shown(), all);
+assert.equal(ssfUseShow([]), true);
+assert.deepEqual(subscribed, []);
+"""))
+
+    def test_injected_filter_restores_the_stored_mode(self):
+        run_node(self, self.filter_harness("2", """
+assert.equal(button().props["aria-label"], "Status filter: review");
+"""))
+        for stored in ("garbage", "-1", "3", "1.5"):
+            run_node(self, self.filter_harness(stored, """
+assert.equal(button().props["aria-label"], "Status filter: all");
+"""))
+
+    # Value: protects=Rules of Hooks in the five patched React components (a hook after an injected early return crashes the sidebar only when the filter flips); fails_when=an edit anchor moves so a use*() call follows `if (!ssfUseShow(...)) return null`; why_new=node --check and the digest pins cannot see hook ordering; seam=none
+    def test_injected_early_returns_come_after_every_hook(self):
+        import re
+
+        inserted = 0
+        for region, stock in self.regions():
+            lines = MODULE.rewrite_region(region, stock).decode().split("\n")
+            for index, line in enumerate(lines):
+                if not (line.startswith("  if (!ssfUseShow(") and "return null;" in line):
+                    continue
+                inserted += 1
+                for later in lines[index + 1 :]:
+                    if later == "}":
+                        break
+                    self.assertFalse(
+                        re.match(r"^  \S.*\buse[A-Z]\w*\(", later),
+                        f"hook after injected early return in {region.label}: {later.strip()[:80]}",
+                    )
+        self.assertEqual(inserted, 5)
+
+    # Value: protects=filter state survives a blocked localStorage and notifies subscribers; fails_when=ssfCycle stops notifying listeners or the try/catch around localStorage is lost; why_new=existing node tests only use a working storage and a no-op subscribe; seam=none
+    def test_injected_filter_survives_blocked_storage_and_notifies_subscribers(self):
+        blocked = (
+            'globalThis.localStorage = { getItem: () => { throw new Error("blocked"); }, '
+            'setItem: () => { throw new Error("blocked"); } };'
+        )
+        run_node(self, self.filter_harness("2", """
+assert.equal(button().props["aria-label"], "Status filter: all");
+let calls = 0;
+const off = ssfSubscribe(() => { calls++; });
+click();
+assert.equal(calls, 1);
+assert.equal(button().props["aria-label"], "Status filter: needs input");
+off();
+click();
+assert.equal(calls, 1);
+assert.equal(button().props["aria-label"], "Status filter: review");
+""", storage_stub=blocked))
+
+    # Value: protects=sidebar rows stay visible when the status provider is missing; fails_when=the `!store` guard is dropped and a filtered mode hides or crashes rows without StatusStoreContext; why_new=existing tests always provide a store; seam=none
+    def test_injected_filter_shows_everything_without_a_status_store(self):
+        run_node(self, self.filter_harness("1", """
+activeStore = null;
+assert.equal(ssfUseShow(["a", "b"]), true);
+assert.equal(ssfUseShow([]), true);
+"""))
+
+    # Value: protects=a bulk delete or move never reaches a workspace the filter hides; fails_when=ssfRange stops cutting the Shift range or ssfUseShow hides a selected row; why_new=Codex round 1 reproduced A(permission) B(working) C(permission) -> Shift range selected the hidden B; seam=upstream applyWorkspaceSelection from the 1.36.0 bundle
+    def test_hidden_workspaces_never_join_a_selection(self):
+        upstream = (FIXTURES / "superset-1.36.0-workspace-selection.js").read_text()
+        run_node(self, self.filter_harness("1", upstream + """
+statuses.set("A", "permission"); statuses.set("B", "working"); statuses.set("C", "permission");
+const rows = ["A", "B", "C"];
+assert.deepEqual(rows.filter((id) => ssfUseShow([id])), ["A", "C"]);
+const range = ssfRange(store, rows, (id) => selected.has(id));
+assert.deepEqual(range, ["A", "C"]);
+let state = applyWorkspaceSelection(EMPTY_WORKSPACE_SELECTION, { workspaceId: "A", projectId: "p", orderedWorkspaceIds: range, mode: "toggle" });
+state = applyWorkspaceSelection(state, { workspaceId: "C", projectId: "p", orderedWorkspaceIds: range, mode: "range" });
+assert.deepEqual(state.selectedIds, ["A", "C"]);
+// Selected before the filter came on, or whose status changed afterwards: still shown.
+selected.add("B");
+assert.deepEqual(rows.filter((id) => ssfUseShow([id])), ["A", "B", "C"]);
+assert.equal(ssfUseShow(["B", "missing"]), true);
+assert.deepEqual(ssfRange(store, rows, (id) => selected.has(id)), rows);
+selected.clear();
+// All mode, or no status store: upstream ids pass through untouched.
+activeStore = null;
+assert.equal(ssfRange(null, rows, () => false), rows);
+activeSelection = null;
+assert.equal(ssfUseShow(["B"]), true);
+click(); click();
+assert.equal(ssfRange(store, rows, () => false), rows);
+"""))
+
+    @live_host_only("anchors are checked against the Superset.app bundle installed on this host")
+    def test_installed_bundle_accepts_the_status_filter(self):
+        import mmap
+
+        asar = Path("/Applications/Superset.app/Contents/Resources/app.asar")
+        if not asar.exists():
+            self.skipTest("no installed Superset bundle on this machine")
+        with asar.open("rb") as stream:
+            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                for region in MODULE.STATUS_FILTER_REGIONS:
+                    MODULE._plan_region_rewrite(data, region)
+
+    def test_cli_forwards_the_new_flags_to_patch_file(self):
+        with mock.patch.object(MODULE, "patch_file", return_value=(None, [])) as patch_file:
+            result = MODULE.main(
+                [
+                    "--asar",
+                    "/tmp/fixture.asar",
+                    "--backup-dir",
+                    "/tmp/backups",
+                    "--sidebar-status-filter",
+                    "--sound-only-when-waiting",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        self.assertTrue(patch_file.call_args.kwargs["sidebar_status_filter"])
+        self.assertTrue(patch_file.call_args.kwargs["sound_only_when_waiting"])
+        self.assertFalse(patch_file.call_args.kwargs["pinned_icon_only"])
+
+    def test_patch_file_applies_and_reverts_the_status_filter(self):
+        original = self.stock_bundle()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asar = root / "fixture.asar"
+            backup_dir = root / "backups"
+            asar.write_bytes(original)
+
+            backup, changes = MODULE.patch_file(
+                asar,
+                backup_dir,
+                acknowledge_invalid_signature=False,
+                size=6,
+                hide_tray=True,
+                custom_project_icons=True,
+                keep_icon_on_hover=True,
+                compact_sidebar=True,
+                sidebar_status_filter=True,
+            )
+
+            self.assertEqual(backup.read_bytes(), original)
+            self.assertIn(MODULE.STATUS_FILTER_REGIONS[0].label, changes)
+            self.assertIn(b"function SsfStatusFilterButton()", asar.read_bytes())
+            MODULE.revert(asar, backup_dir)
+            self.assertEqual(asar.read_bytes(), original)
+
+
+class SupersetSoundOnlyWhenWaitingPatchTest(unittest.TestCase):
+    """--sound-only-when-waiting silences both completion-sound paths."""
+
+    MAIN = FIXTURES / "superset-1.36.0-notification-manager.js"
+    RENDERER = FIXTURES / "superset-1.36.0-v2-agent-lifecycle.js"
+
+    def excerpt(self):
+        """Real main-process and renderer excerpts joined into one bundle."""
+        return self.MAIN.read_bytes() + b"|" + self.RENDERER.read_bytes()
+
+    def patched_excerpt(self):
+        """Apply only the sound family to the real excerpts."""
+        data = bytearray(self.excerpt())
+        for offset, old, new, _label in MODULE._plan_sound_only_when_waiting(bytes(data)):
+            data[offset : offset + len(old)] = new
+        return bytes(data)
+
+    def test_fixtures_pin_the_real_anchors(self):
+        self.assertEqual(self.MAIN.read_bytes().count(MODULE.SOUND_MAIN_ALWAYS), 1)
+        self.assertEqual(self.RENDERER.read_bytes().count(MODULE.SOUND_RENDERER_ALWAYS), 1)
+
+    def test_replacements_are_length_preserving(self):
+        self.assertEqual(len(MODULE.SOUND_MAIN_ALWAYS), len(MODULE.SOUND_MAIN_WAITING))
+        self.assertEqual(len(MODULE.SOUND_RENDERER_ALWAYS), len(MODULE.SOUND_RENDERER_WAITING))
+
+    def test_both_paths_are_patched_and_idempotent(self):
+        patched = self.patched_excerpt()
+
+        self.assertEqual(len(patched), len(self.excerpt()))
+        self.assertIn(MODULE.SOUND_MAIN_WAITING, patched)
+        self.assertIn(MODULE.SOUND_RENDERER_WAITING, patched)
+        self.assertEqual(MODULE._plan_sound_only_when_waiting(patched), [])
+
+    def test_patched_excerpts_parse_as_javascript(self):
+        main_end = len(self.MAIN.read_bytes())
+        patched = self.patched_excerpt()
+        node_check(self, patched[:main_end])
+        node_check(self, patched[main_end + 1 :])
+
+    def test_missing_or_duplicate_path_fails_closed(self):
+        for name, data in (
+            ("main", self.RENDERER.read_bytes()),
+            ("renderer", self.MAIN.read_bytes()),
+            ("main", self.excerpt() + b"|" + MODULE.SOUND_MAIN_WAITING),
+        ):
+            with self.subTest(name=name, size=len(data)):
+                with self.assertRaisesRegex(RuntimeError, f"{name} notification sound"):
+                    MODULE._plan_sound_only_when_waiting(data)
+
+    def test_flag_is_wired_through_plan_replacements(self):
+        data = SupersetUiPatchTest.stock_bundle(SupersetSidebarStatusFilterPatchTest()) + b"|" + self.excerpt()
+        options = dict(size=6, hide_tray=True, custom_project_icons=True, keep_icon_on_hover=True, compact_sidebar=True)
+
+        _off, changes_off = MODULE.patch_bytes(data, **options)
+        patched, changes_on = MODULE.patch_bytes(data, sound_only_when_waiting=True, **options)
+
+        self.assertFalse([c for c in changes_off if c.startswith("sound")])
+        self.assertEqual([c for c in changes_on if c.startswith("sound")], ["sound: main only when waiting", "sound: renderer only when waiting"])
+        self.assertIn(MODULE.SOUND_MAIN_WAITING, patched)
+
+    def main_harness(self, source: bytes) -> str:
+        """Drive NotificationManager.handleAgentLifecycle with stubbed deps."""
+        return f"""
+import assert from "node:assert/strict";
+const i18n = {{ _: (descriptor) => descriptor.id }};
+const isPaneVisible = () => false;
+const NOTIFICATION_TTL_MS = 600000;
+const SWEEP_INTERVAL_MS = 300000;
+{source.decode()}
+const counts = {{ sound: 0, shown: 0 }};
+const manager = new NotificationManager({{
+  isSupported: () => true,
+  createNotification: () => ({{ on() {{}}, close() {{}}, show() {{ counts.shown++; }} }}),
+  playSound: () => {{ counts.sound++; }},
+  onNotificationClick() {{}},
+  getVisibilityContext: () => ({{ isFocused: false }}),
+  getWorkspaceName: () => "ws",
+  getNotificationTitle: () => "title",
+}});
+const run = (eventType) => {{
+  const before = {{ ...counts }};
+  manager.handleAgentLifecycle({{ eventType, sessionId: eventType }});
+  return [counts.sound - before.sound, counts.shown - before.shown];
+}};
+console.log(JSON.stringify(Object.fromEntries(["Stop", "PermissionRequest", "PendingQuestion", "Start"].map((t) => [t, run(t)]))));
+"""
+
+    def renderer_harness(self, source: bytes) -> str:
+        """Drive handleV2AgentLifecycleEvent with stubbed collaborators."""
+        return f"""
+const played = [];
+let shown = 0;
+const applyRememberedV2PaneSelection = (_id, layout) => layout;
+const resolveV2NotificationTarget = () => ({{ terminalId: "t" }});
+const markSeenIfTargetVisible = () => {{}};
+const shouldSuppress = () => false;
+const useRingtoneStore = {{ getState: () => ({{ selectedRingtoneId: "ping" }}) }};
+const playRingtone = (opts) => {{ played.push(opts); return Promise.resolve(); }};
+const showNativeNotification = () => {{ shown++; }};
+{source.decode()}
+const run = (eventType, muted) => {{
+  const before = shown;
+  played.length = 0;
+  handleV2AgentLifecycleEvent({{ workspaceId: "w", payload: {{ eventType }}, paneLayout: null, volume: 70, muted }});
+  const audible = played.filter((opts) => !opts.muted).length;
+  return [audible, shown - before];
+}};
+const result = {{}};
+for (const t of ["Stop", "Failed", "PermissionRequest", "PendingQuestion", "Start", "Attached"]) result[t] = run(t, false);
+result.mutedPermission = run("PermissionRequest", true);
+console.log(JSON.stringify(result));
+"""
+
+    def test_main_process_plays_only_while_waiting(self):
+        import json
+
+        main_end = len(self.MAIN.read_bytes())
+        stock = json.loads(run_node(self, self.main_harness(self.MAIN.read_bytes())))
+        patched = json.loads(run_node(self, self.main_harness(self.patched_excerpt()[:main_end])))
+
+        # [sound plays, notifications shown]: the harness reproduces upstream first.
+        self.assertEqual(stock, {"Stop": [1, 1], "PermissionRequest": [1, 1], "PendingQuestion": [1, 1], "Start": [0, 0]})
+        self.assertEqual(patched, {"Stop": [0, 1], "PermissionRequest": [1, 1], "PendingQuestion": [1, 1], "Start": [0, 0]})
+
+    def test_renderer_plays_only_while_waiting(self):
+        import json
+
+        main_end = len(self.MAIN.read_bytes())
+        stock = json.loads(run_node(self, self.renderer_harness(self.RENDERER.read_bytes())))
+        patched = json.loads(run_node(self, self.renderer_harness(self.patched_excerpt()[main_end + 1 :])))
+
+        self.assertEqual(stock["Stop"], [1, 1])
+        self.assertEqual(stock["Failed"], [1, 1])
+        self.assertEqual(
+            patched,
+            {
+                "Stop": [0, 1],
+                "Failed": [0, 1],
+                "PermissionRequest": [1, 1],
+                "PendingQuestion": [1, 1],
+                "Start": [0, 0],
+                "Attached": [0, 0],
+                "mutedPermission": [0, 1],
+            },
+        )
+
+    @live_host_only("anchors are checked against the Superset.app bundle installed on this host")
+    def test_installed_bundle_accepts_sound_only_when_waiting(self):
+        import mmap
+
+        asar = Path("/Applications/Superset.app/Contents/Resources/app.asar")
+        if not asar.exists():
+            self.skipTest("no installed Superset bundle on this machine")
+        with asar.open("rb") as stream:
+            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                MODULE._plan_sound_only_when_waiting(data)
+
+
+class SupersetAsarIntegrityFuseTest(unittest.TestCase):
+    """In-place edits are refused when Electron would validate per-file ASAR integrity."""
+
+    def fake_app(self, root: Path, wire: bytes | None) -> Path:
+        """Create App.app with an app.asar and an Electron Framework fuse wire."""
+        asar = root / "App.app" / "Contents" / "Resources" / "app.asar"
+        asar.parent.mkdir(parents=True)
+        asar.write_bytes(SupersetPinnedIconOnlyPatchTest.stock_bundle(SupersetPinnedIconOnlyPatchTest()))
+        framework = root / "App.app" / "Contents" / "Frameworks" / "Electron Framework.framework"
+        framework.mkdir(parents=True)
+        body = b"\x00" * 64 + (MODULE.ELECTRON_FUSE_SENTINEL + wire if wire is not None else b"") + b"\x00" * 64
+        (framework / "Electron Framework").write_bytes(body)
+        return asar
+
+    def test_enabled_integrity_fuse_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            asar = self.fake_app(Path(tmp), b"\x01\x09101110011")
+            with self.assertRaisesRegex(RuntimeError, "EnableEmbeddedAsarIntegrityValidation"):
+                MODULE.require_asar_integrity_fuse_disabled(asar)
+
+    def test_disabled_or_removed_fuse_is_accepted(self):
+        for wire in (b"\x01\x09101100011", b"\x01\x091011r0011"):
+            with self.subTest(wire=wire), tempfile.TemporaryDirectory() as tmp:
+                MODULE.require_asar_integrity_fuse_disabled(self.fake_app(Path(tmp), wire))
+
+    def test_unknown_fuse_wire_is_refused(self):
+        for wire in (None, b"\x02\x09101100011", b"\x01\x03101"):
+            with self.subTest(wire=wire), tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaisesRegex(RuntimeError, "fuse wire"):
+                    MODULE.require_asar_integrity_fuse_disabled(self.fake_app(Path(tmp), wire))
+
+    # Value: protects=an ambiguous Electron fuse wire is never trusted; fails_when=the single-sentinel requirement is dropped and a second (decoy) sentinel with a disabled wire masks an enabled fuse; why_new=existing wire cases never repeat the sentinel; seam=none
+    def test_duplicate_fuse_sentinel_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            asar = self.fake_app(Path(tmp), b"\x01\x09101110011")
+            binary = asar.parent.parent / "Frameworks" / "Electron Framework.framework" / "Electron Framework"
+            binary.write_bytes(binary.read_bytes() + MODULE.ELECTRON_FUSE_SENTINEL + b"\x01\x09101100011")
+            with self.assertRaisesRegex(RuntimeError, "fuse wire"):
+                MODULE.require_asar_integrity_fuse_disabled(asar)
+
+    def test_patch_file_checks_the_fuse_before_writing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            asar = self.fake_app(Path(tmp), b"\x01\x09101110011")
+            original = asar.read_bytes()
+            with self.assertRaisesRegex(RuntimeError, "EnableEmbeddedAsarIntegrityValidation"):
+                MODULE.patch_file(
+                    asar,
+                    Path(tmp) / "backups",
+                    acknowledge_invalid_signature=False,
+                    size=6,
+                    hide_tray=True,
+                    custom_project_icons=True,
+                    keep_icon_on_hover=True,
+                    compact_sidebar=True,
+                )
+            self.assertEqual(asar.read_bytes(), original)
+            self.assertFalse((Path(tmp) / "backups").exists())
+
+    def test_targets_outside_an_app_bundle_are_not_checked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            MODULE.require_asar_integrity_fuse_disabled(Path(tmp) / "fixture.asar")
+
+    @live_host_only("checks the Electron fuse of the Superset.app installed on this host")
+    def test_installed_app_has_the_integrity_fuse_disabled(self):
+        asar = Path("/Applications/Superset.app/Contents/Resources/app.asar")
+        if not asar.exists():
+            self.skipTest("no installed Superset bundle on this machine")
+        MODULE.require_asar_integrity_fuse_disabled(asar)
 
 
 if __name__ == "__main__":

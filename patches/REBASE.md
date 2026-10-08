@@ -68,6 +68,38 @@ for worked examples.
    `local_patch_state: applied`. Then `prune-asar-backups.py --apply`
    (keep-2). Effect lands after the next Superset restart.
 
+## Region rewrites (`--sidebar-status-filter`)
+
+`STATUS_FILTER_REGIONS` is not an anchor family. It pins a whole byte range by
+its start anchor, length, end anchor and the stock and patched SHA-256. Any
+upstream change inside the range is therefore a `neither stock nor patched` (or
+`end anchor`) failure, even a change unrelated to the filter. To rebase:
+
+1. Cut the new region from the real bundle, from the start anchor up to (and
+   excluding) the next top-level function, and save it as
+   `tests/fixtures/superset-<V>-status-filter-r<N>.js`.
+2. Diff the new excerpt against the old fixture. Re-derive each edit anchor in
+   `edits`. Every edit has to stay *after* the last hook call of its component,
+   because a `return null` placed before a hook breaks React's hook order. The
+   test `test_rewrite_only_strips_noop_comments_and_inserts_the_edits` and a
+   manual check of each component catch a misplaced edit.
+3. Run `rewrite_region()` on the new excerpt. If it reports `exceeds the region
+   by N bytes`, move a helper into the region with more slack, or widen the
+   region to the next top-level function. Never strip anything other than
+   `JS_NOOP_COMMENTS`.
+4. Pin the new `length`, `stock_sha256` and `patched_sha256`. Keep the old
+   values as a second release variant only while a supported bundle can still
+   present them.
+5. Run `node --check` on the patched excerpt (the test does it), re-check that
+   the injected identifiers (`StatusStoreContext`, `Tooltip*`, `cn`,
+   `reactExports`, `jsxRuntimeExports`) are still in the chunk's module scope,
+   and check that `require_asar_integrity_fuse_disabled()` still passes on the
+   new app.
+
+The sound family (`SOUND_MAIN_*`, `SOUND_RENDERER_*`) is an ordinary anchor
+pair. It rebases with the procedure above, and its node harness tests have to
+reproduce upstream's behaviour on the stock excerpt first.
+
 ## When NOT to rebase mechanically
 
 - Upstream **adopted** the behavior → retire the patch (keep the verify-only
@@ -76,6 +108,9 @@ for worked examples.
   and its tests.
 - The anchor region became **ambiguous** (cannot construct a globally unique
   anchor) → stop; this needs a human design decision, not a forced match.
+- The Electron `EnableEmbeddedAsarIntegrityValidation` fuse is **enabled**:
+  `patch_file` refuses every in-place edit. Stop. The fix is a repack design
+  that rewrites the header and the `Info.plist` hash, not a rebase.
 
 ## Worked example: 1.30.2 → 1.31.0/1.33.0 (2026-10-01)
 
