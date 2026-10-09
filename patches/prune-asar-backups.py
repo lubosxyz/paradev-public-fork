@@ -14,7 +14,13 @@ change with it — the two files carry cross-pointing comments.
 
 Hard guard: a set whose manifest `patched_sha256` equals the sha256 of the
 live --asar bundle is NEVER deleted, even beyond the keep quota — it is the
-one backup patch-asar.py --revert can restore from.
+one backup patch-asar.py --revert can restore from. The guard follows the
+manifests further (each set's `backup_sha256` is the previous step's
+`patched_sha256`) and keeps every set on the chain back to the unpatched
+release, which patch-asar.py stock_snapshot() and the LIVE_HOST_ONLY anchor
+tests read (LUBOS-1923). The walk reads manifests only, never hashes backups.
+--legacy never deletes a chain link's manifest or sidecars either, even for
+a symlinked backup that collect() does not list.
 
 --legacy additionally deletes every OTHER `app.asar.backup-*` entry — names
 revert() never accepts: obsolete-era prefixes, manifest-less crash orphans,
@@ -45,7 +51,7 @@ import shutil
 import sys
 from pathlib import Path
 
-# Mirrors patch-asar.py latest_backup()/revert() glob patterns — keep in sync.
+# Mirrors patch-asar.py REVERT_BACKUP_GLOBS (revert(), stock_snapshot()) — keep in sync.
 PROTECTED_RES = (
     re.compile(r"^app\.asar\.backup-pre-ui-patch-(\d{8}-\d{6})(?:-(\d+))?$"),
     re.compile(r"^app\.asar\.backup-pre-tray-hide-(\d{8}-\d{6})(?:-(\d+))?$"),
@@ -162,17 +168,38 @@ def sha256_file(path, chunk=1 << 20):
         return None
 
 
-def reverts_live_asar(backup, live_digest):
-    """True when the set's manifest says it restores the live bundle."""
-    if live_digest is None:
-        return False
+def _manifest_digests(backup):
+    """Return (patched_sha256, backup_sha256) from the set's manifest, or (None, None)."""
     m = manifest_of(backup)
     if m is None:
-        return False
+        return None, None
     try:
-        return json.loads(m.read_text()).get("patched_sha256") == live_digest
+        record = json.loads(m.read_text())
     except (OSError, ValueError):
-        return False
+        return None, None
+    if not isinstance(record, dict):
+        return None, None
+    return tuple(value if isinstance(value, str) else None
+                 for value in (record.get("patched_sha256"), record.get("backup_sha256")))
+
+
+def chain_to_stock(backups, live_digest):
+    """Return the sets whose manifests link the live bundle back to stock.
+
+    Mirrors patch-asar.py stock_snapshot() on manifests alone; a cycle or a
+    missing step simply ends the walk.
+    """
+    if live_digest is None:
+        return set()
+    digests = {b: _manifest_digests(b) for b in backups}
+    chain, frontier, seen = set(), {live_digest}, set()
+    while frontier:
+        seen |= frontier
+        step = {b for b, (patched, _) in digests.items()
+                if patched in frontier and b not in chain}
+        chain |= step
+        frontier = {digests[b][1] for b in step if digests[b][1]} - seen
+    return chain
 
 
 def delete(path):
@@ -233,12 +260,27 @@ def _prune_locked(dir_path, args):
     """Plan and (with --apply) execute the deletion under the held lock."""
     verified, legacy = collect(dir_path)
     surplus = verified[:-args.keep] if len(verified) > args.keep else []
-    live_digest = sha256_file(Path(args.asar).expanduser()) if surplus else None
+    live_digest = (sha256_file(Path(args.asar).expanduser())
+                   if surplus or args.legacy else None)
 
+    # walk every set stock_snapshot() could follow (unsortable names and
+    # symlinked backups included), not only the keep-quota candidates
+    chain = chain_to_stock(
+        [p for p in dir_path.iterdir()
+         if revert_candidate(p.name) and p.is_file() and manifest_of(p) is not None],
+        live_digest)
+    # collect() never sees a symlinked backup, so its manifest and .unpacked
+    # look like orphans to --legacy; a chain link keeps all of them (#438)
+    chain_names = {n for b in chain
+                   for n in (b.name.lower(), b.name.lower() + ".json",
+                             b.name.lower() + ".unpacked")}
+    legacy = [f for f in legacy if f.name.lower() not in chain_names]
     doomed = []
     for backup in surplus:
-        if reverts_live_asar(backup, live_digest):
-            print(f"  kept (reverts live asar): {backup.name}")
+        if backup in chain:
+            reverts_live = _manifest_digests(backup)[0] == live_digest
+            print(f"  kept ({'reverts live asar' if reverts_live else 'on the chain to stock'}): "
+                  f"{backup.name}")
             continue
         # sidecars first, base marked dependent: an interrupted or failed
         # sidecar delete keeps the base, so collect() still finds the set

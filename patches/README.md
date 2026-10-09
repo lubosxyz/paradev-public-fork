@@ -289,6 +289,25 @@ microphone visualiser. Both anchors are single-match stock or patched
 variants, and node harness tests drive the real upstream excerpts to show that
 Stop is silent while the waiting events still ring.
 
+The `LIVE_HOST_ONLY` anchor tests (`test_installed_bundle_accepts_*`) read the
+installed release's stock bytes, not the live file. `stock_snapshot()` follows
+the verified backup manifests (`backup_sha256` → `patched_sha256`, each backup
+re-hashed) back to the bundle that no manifest records as a patch result. An
+unpatched install is its own snapshot. Background: on 2026-10-09 the then
+unmerged LUBOS-1921 worktree (later #435) applied its work-in-progress
+status-filter generation to `/Applications` for a visual check. The hash-pinned regions then matched no
+revision on `main`, and every full gate on M5 failed although 1.36.0 itself
+was unchanged (LUBOS-1923). The tests now print one `LIVE_HOST_ONLY: … is
+patched` line naming the snapshot, so a green gate still shows that the live
+file is patched. `test_installed_release_repatch_is_a_no_op` applies the
+approved set to a copy-on-write map of the stock bytes and proves a second
+plan is empty, so main still recognises its own output on the real release.
+The patcher itself still refuses a foreign generation. `--revert` undoes one
+step (the newest backup whose `patched_sha256` is the live digest); repeat it
+until the patcher accepts the bundle. `prune-asar-backups.py` keeps every set
+on the manifest chain from the live bundle back to stock, so the snapshot
+stays reachable after a routine prune.
+
 The approved UI set is applied in one validated atomic swap:
 
 ```bash
@@ -662,7 +681,8 @@ attempts per version before raising that signal instead of relaunching
 forever. After a verified re-apply the worker also runs
 `prune-asar-backups.py --apply` (keep-2 retention of VERIFIED revert sets —
 protected name per patch-asar's revert glob + `.json` manifest present; a set
-whose manifest `patched_sha256` matches the live bundle is never deleted, and
+whose manifest `patched_sha256` matches the live bundle is never deleted, nor
+is any set on the manifest chain from it back to stock, and
 the run holds patch-asar's per-asar flock so it cannot race a patch/revert.
 Dry run without `--apply`; `--legacy` sweeps obsolete prefixes, crash orphans
 and orphaned sidecars, and is never used by the automation). Standing user authorization for the resulting Apple

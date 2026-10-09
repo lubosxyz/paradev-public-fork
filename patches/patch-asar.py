@@ -1191,7 +1191,7 @@ def _backup_path(backup_dir: Path) -> Path:
     """Allocate a timestamped, collision-resistant backup destination.
 
     Naming/glob contract shared with prune-asar-backups.py (PROTECTED_RES)
-    and latest_backup()/revert() below — change all of them together.
+    and REVERT_BACKUP_GLOBS/_verified_backup_for() below — change all of them together.
     """
     stamp = time.strftime("%Y%m%d-%H%M%S") + f"-{time.time_ns() % 1_000_000_000:09d}"
     return backup_dir / f"app.asar.backup-pre-ui-patch-{stamp}"
@@ -1388,17 +1388,59 @@ def patch_file(
         )
 
 
-def latest_backup(backup_dir: Path) -> Path | None:
-    """Return the newest manifest-backed backup, if one exists."""
-    backups = sorted(
-        candidate
-        for pattern in ("app.asar.backup-pre-ui-patch-*", "app.asar.backup-pre-tray-hide-*")
-        for candidate in backup_dir.glob(pattern)
-        if candidate.is_file()
-        and candidate.suffix != ".json"
-        and _manifest_path(candidate).is_file()
-    )
-    return backups[-1] if backups else None
+# Naming/glob contract shared with _backup_path() and prune-asar-backups.py PROTECTED_RES.
+REVERT_BACKUP_GLOBS = ("app.asar.backup-pre-ui-patch-*", "app.asar.backup-pre-tray-hide-*")
+
+
+def _verified_backup_for(patched_digest: str, backup_dir: Path) -> tuple[Path, dict] | None:
+    """Return the newest intact backup whose manifest records this patched digest."""
+    for candidate in reversed(
+        sorted(
+            path
+            for pattern in REVERT_BACKUP_GLOBS
+            for path in backup_dir.glob(pattern)
+            if path.is_file() and path.suffix != ".json" and _manifest_path(path).is_file()
+        )
+    ):
+        try:
+            manifest = json.loads(_manifest_path(candidate).read_text())
+            # Cheap checks first: only the matching candidate pays a 1+ GB hash.
+            valid = (
+                isinstance(manifest, dict)
+                and manifest.get("format") == 1
+                and patched_digest == manifest.get("patched_sha256")
+                and candidate.stat().st_size == manifest.get("size")
+                and _sha256(candidate) == manifest.get("backup_sha256")
+            )
+        except (OSError, ValueError):  # JSONDecodeError and UnicodeDecodeError are ValueErrors
+            valid = False
+        if valid:
+            return candidate, manifest
+    return None
+
+
+def stock_snapshot(asar: Path, backup_dir: Path = DEFAULT_BACKUP_DIR) -> Path:
+    """Follow verified patch manifests from one bundle back to the unpatched release it came from.
+
+    An unpatched bundle (no manifest records its digest) is its own snapshot.
+    A pruned or corrupted step ends the walk early, so the result is then the
+    oldest patched bundle still provable; prune-asar-backups.py protects the
+    whole chain from the live bundle to stock for this reason. Live anchor
+    tests (tests/test_superset_icon_patch.py installed_stock_snapshot) use this
+    so a patch generation applied from an unmerged worktree cannot hide or
+    fake upstream drift (LUBOS-1923, README.md "stock snapshot").
+    """
+    current = asar.expanduser().resolve()
+    backup_dir = backup_dir.expanduser().resolve()
+    digest = _sha256(current)
+    seen = {digest}
+    while (found := _verified_backup_for(digest, backup_dir)) is not None:
+        current, manifest = found
+        digest = manifest["backup_sha256"]
+        if digest in seen:
+            raise RuntimeError(f"backup manifests form a cycle at {current}")
+        seen.add(digest)
+    return current
 
 
 def revert(asar: Path, backup_dir: Path) -> None:
@@ -1407,31 +1449,10 @@ def revert(asar: Path, backup_dir: Path) -> None:
     backup_dir = backup_dir.expanduser().resolve()
     with _patch_lock(asar):
         current_digest = _sha256(asar)
-        backup = None
-        for candidate in reversed(
-            sorted(
-                path
-                for pattern in ("app.asar.backup-pre-ui-patch-*", "app.asar.backup-pre-tray-hide-*")
-                for path in backup_dir.glob(pattern)
-                if path.is_file() and path.suffix != ".json" and _manifest_path(path).is_file()
-            )
-        ):
-            try:
-                manifest = json.loads(_manifest_path(candidate).read_text())
-                valid = (
-                    isinstance(manifest, dict)
-                    and manifest.get("format") == 1
-                    and candidate.stat().st_size == manifest.get("size")
-                    and _sha256(candidate) == manifest.get("backup_sha256")
-                    and current_digest == manifest.get("patched_sha256")
-                )
-            except (OSError, json.JSONDecodeError):
-                valid = False
-            if valid:
-                backup = candidate
-                break
-        if backup is None:
+        found = _verified_backup_for(current_digest, backup_dir)
+        if found is None:
             raise RuntimeError("no verified backup matches the current ASAR")
+        backup, manifest = found
         _restore_snapshot(
             backup,
             asar,

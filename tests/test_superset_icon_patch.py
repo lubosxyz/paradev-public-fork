@@ -1,5 +1,7 @@
 """Tests for the transactional, length-preserving Superset UI patch."""
 
+import functools
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -25,6 +27,27 @@ SPEC.loader.exec_module(MODULE)
 import sys  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from live_host import live_host_only  # noqa: E402  (LIVE_HOST_ONLY, tests/live_host.py)
+
+
+@functools.lru_cache(maxsize=1)
+def installed_stock_snapshot() -> Path | None:
+    """Unpatched bytes of the Superset release installed on this host, or None without one.
+
+    Live anchor tests guard against upstream drift, so they read the stock
+    snapshot behind the verified patch manifests (MODULE.stock_snapshot), not
+    whichever patch generation a local worktree last applied (LUBOS-1923).
+    """
+    if not MODULE.DEFAULT_ASAR.exists():
+        return None
+    snapshot = MODULE.stock_snapshot(MODULE.DEFAULT_ASAR)
+    if snapshot != MODULE.DEFAULT_ASAR.resolve():
+        # A green gate must not hide that the live bundle is patched (possibly by
+        # an unmerged worktree): say which bytes the anchors were checked on.
+        print(
+            f"LIVE_HOST_ONLY: {MODULE.DEFAULT_ASAR} is patched; anchors checked on its stock snapshot {snapshot}",
+            file=sys.stderr,
+        )
+    return snapshot
 
 
 class SupersetIconPatchSafetyTest(unittest.TestCase):
@@ -171,11 +194,11 @@ class SupersetUiPatchTest(unittest.TestCase):
     def test_installed_bundle_accepts_the_full_plan(self):
         # Anchor rot against the real bundle is invisible to the synthetic
         # fixture (it is built from the constants under test), so smoke-test
-        # the installed ASAR when this machine has one.
+        # the installed release's stock snapshot when this machine has one.
         import mmap
 
-        asar = Path("/Applications/Superset.app/Contents/Resources/app.asar")
-        if not asar.exists():
+        asar = installed_stock_snapshot()
+        if asar is None:
             self.skipTest("no installed Superset bundle on this machine")
         with asar.open("rb") as stream:
             with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
@@ -188,6 +211,34 @@ class SupersetUiPatchTest(unittest.TestCase):
                     compact_sidebar=True,
                     pinned_icon_only=True,
                 )
+
+    @live_host_only("anchors are checked against the Superset.app bundle installed on this host")
+    def test_installed_release_repatch_is_a_no_op(self):
+        """The approved set applied to the real stock bytes recognises its own output."""
+        # Live tests read stock bytes, so prove idempotency on a private
+        # copy-on-write map instead of on whatever generation is installed.
+        import mmap
+
+        asar = installed_stock_snapshot()
+        if asar is None:
+            self.skipTest("no installed Superset bundle on this machine")
+        options = dict(
+            size=6,
+            hide_tray=True,
+            custom_project_icons=True,
+            keep_icon_on_hover=True,
+            compact_sidebar=True,
+            pinned_icon_only=True,
+            sidebar_status_filter=True,
+            sound_only_when_waiting=True,
+        )
+        with asar.open("rb") as stream:
+            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_COPY) as data:
+                writes = MODULE.plan_replacements(data, **options)
+                self.assertTrue(writes)
+                for offset, _old, new, _label in writes:
+                    data[offset : offset + len(new)] = new
+                self.assertEqual([], MODULE.plan_replacements(data, **options))
 
     # Preserve the 1.27 button variant while accepting the exact 1.30 callback name.
     def test_new_workspace_button_1_30_variant_is_patchable(self):
@@ -957,6 +1008,201 @@ class SupersetUiPatchTest(unittest.TestCase):
 
             self.assertEqual(asar.read_bytes(), patched)
 
+    def test_stock_snapshot_follows_verified_manifests_to_the_unpatched_bundle(self):
+        # LUBOS-1923: live anchor tests read the installed release's stock bytes,
+        # whatever patch generation a local worktree last applied on top.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asar = root / "fixture.asar"
+            backup_dir = root / "backups"
+            original = self.stock_bundle()
+            asar.write_bytes(original)
+
+            self.assertEqual(asar.resolve(), MODULE.stock_snapshot(asar, backup_dir))
+
+            options = dict(acknowledge_invalid_signature=False, size=6, hide_tray=True, keep_icon_on_hover=False)
+            first, _changes = MODULE.patch_file(asar, backup_dir, **options, custom_project_icons=False)
+            second, _changes = MODULE.patch_file(asar, backup_dir, **options, custom_project_icons=True)
+            self.assertNotEqual(first, second)
+            self.assertNotEqual(original, second.read_bytes())
+
+            snapshot = MODULE.stock_snapshot(asar, backup_dir)
+
+            self.assertEqual(first, snapshot)
+            self.assertEqual(original, snapshot.read_bytes())
+
+    def test_stock_snapshot_ignores_a_corrupted_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asar = root / "fixture.asar"
+            backup_dir = root / "backups"
+            asar.write_bytes(self.stock_bundle())
+            backup, _changes = MODULE.patch_file(
+                asar,
+                backup_dir,
+                acknowledge_invalid_signature=False,
+                size=6,
+                hide_tray=True,
+                custom_project_icons=False,
+                keep_icon_on_hover=False,
+            )
+            backup.write_bytes(b"corrupt")
+
+            self.assertEqual(asar.resolve(), MODULE.stock_snapshot(asar, backup_dir))
+
+    def test_stock_snapshot_refuses_a_manifest_cycle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asar = root / "fixture.asar"
+            backup_dir = root / "backups"
+            backup_dir.mkdir()
+            asar.write_bytes(b"A")
+            backup = backup_dir / "app.asar.backup-pre-ui-patch-20260101-000000-000000000"
+            backup.write_bytes(b"A")
+            digest = MODULE._sha256(asar)
+            MODULE._write_manifest(
+                backup, {"format": 1, "backup_sha256": digest, "patched_sha256": digest, "size": 1}
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "cycle"):
+                MODULE.stock_snapshot(asar, backup_dir)
+
+    def test_stock_snapshot_refuses_a_two_step_manifest_cycle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asar = root / "fixture.asar"
+            backup_dir = root / "backups"
+            backup_dir.mkdir()
+            asar.write_bytes(b"A")
+            digests = {name: hashlib.sha256(name).hexdigest() for name in (b"A", b"B")}
+            for stamp, content, patched in (("20260101", b"B", b"A"), ("20260202", b"A", b"B")):
+                backup = backup_dir / f"app.asar.backup-pre-ui-patch-{stamp}-000000-000000000"
+                backup.write_bytes(content)
+                MODULE._write_manifest(
+                    backup,
+                    {"format": 1, "backup_sha256": digests[content], "patched_sha256": digests[patched], "size": 1},
+                )
+
+            with self.assertRaisesRegex(RuntimeError, "cycle"):
+                MODULE.stock_snapshot(asar, backup_dir)
+
+    def test_stock_snapshot_stops_at_the_oldest_provable_step(self):
+        # A pruned or corrupted stock backup ends the walk on the intermediate
+        # patched bundle; prune-asar-backups.py keeps the chain to avoid this.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asar = root / "fixture.asar"
+            backup_dir = root / "backups"
+            asar.write_bytes(self.stock_bundle())
+            options = dict(acknowledge_invalid_signature=False, size=6, hide_tray=True, keep_icon_on_hover=False)
+            first, _changes = MODULE.patch_file(asar, backup_dir, **options, custom_project_icons=False)
+            second, _changes = MODULE.patch_file(asar, backup_dir, **options, custom_project_icons=True)
+            first.write_bytes(b"corrupt")
+
+            self.assertEqual(second, MODULE.stock_snapshot(asar, backup_dir))
+
+    def test_installed_stock_snapshot_names_a_patched_live_bundle(self):
+        import contextlib
+        import io
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asar = root / "app.asar"
+            backup_dir = root / "backups"
+            asar.write_bytes(self.stock_bundle())
+            backup, _changes = MODULE.patch_file(
+                asar,
+                backup_dir,
+                acknowledge_invalid_signature=False,
+                size=6,
+                hide_tray=True,
+                custom_project_icons=False,
+                keep_icon_on_hover=False,
+            )
+            real_snapshot = MODULE.stock_snapshot
+            # __wrapped__ bypasses the cache the live tests share on this host.
+            uncached = installed_stock_snapshot.__wrapped__
+            stderr = io.StringIO()
+            with mock.patch.object(MODULE, "DEFAULT_ASAR", asar), mock.patch.object(
+                MODULE, "stock_snapshot", lambda path: real_snapshot(path, backup_dir)
+            ), contextlib.redirect_stderr(stderr):
+                self.assertEqual(backup, uncached())
+            self.assertIn(f"stock snapshot {backup}", stderr.getvalue())
+
+            with mock.patch.object(MODULE, "DEFAULT_ASAR", root / "missing.asar"):
+                self.assertIsNone(uncached())
+
+    # Value: protects=each integrity check in _verified_backup_for (format, patched digest, size, same-size backup hash, JSON, unreadable manifest) so revert/stock_snapshot never trust a tampered backup; fails_when=any single check is dropped or reordered so a bad candidate is accepted; why_new=existing revert tests only hit non-object manifest, bundle mismatch and a different-size corrupt backup (size check masks the hash check); seam=none
+    def test_verified_backup_for_rejects_every_integrity_failure(self):
+        import os
+
+        patched = b"patched bundle"
+        patched_digest = hashlib.sha256(patched).hexdigest()
+        backup_bytes = b"stock bytes!!!"
+
+        def write(backup_dir, **overrides):
+            backup = backup_dir / "app.asar.backup-pre-ui-patch-20260101-000000-000000000"
+            backup.write_bytes(backup_bytes)
+            manifest = {
+                "format": 1,
+                "backup_sha256": hashlib.sha256(backup_bytes).hexdigest(),
+                "patched_sha256": patched_digest,
+                "size": len(backup_bytes),
+            }
+            manifest.update(overrides)
+            MODULE._write_manifest(backup, manifest)
+            return backup
+
+        cases = {
+            "wrong format": lambda d: write(d, format=2),
+            "other patched digest": lambda d: write(d, patched_sha256="0" * 64),
+            "size mismatch": lambda d: write(d, size=len(backup_bytes) + 1),
+            "backup hash mismatch": lambda d: write(d, backup_sha256="0" * 64),
+            "same-size corrupted backup": lambda d: write(d).write_bytes(b"x" * len(backup_bytes)),
+            "malformed json": lambda d: MODULE._manifest_path(write(d)).write_text("{not json"),
+            "non-utf8 manifest": lambda d: MODULE._manifest_path(write(d)).write_bytes(b"\xff\xfe{"),
+        }
+        if os.geteuid() != 0:
+            cases["unreadable manifest"] = lambda d: os.chmod(MODULE._manifest_path(write(d)), 0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            control = Path(tmp) / "control"
+            control.mkdir()
+            expected = write(control)
+            found = MODULE._verified_backup_for(patched_digest, control)
+            self.assertEqual(expected, found[0])
+            self.assertIsNone(MODULE._verified_backup_for("f" * 64, control))
+
+            for label, build in cases.items():
+                with self.subTest(case=label):
+                    backup_dir = Path(tmp) / label.replace(" ", "-")
+                    backup_dir.mkdir()
+                    build(backup_dir)
+                    # A mode-0 manifest needs no chmod back: unlinking it only needs the directory.
+                    self.assertIsNone(MODULE._verified_backup_for(patched_digest, backup_dir))
+
+    # Value: protects=newest-first selection when several intact backups match one patched digest; fails_when=the sort is not reversed so revert/stock_snapshot pick the oldest backup; why_new=the existing older-valid-backup test passes with either order because the newer one is invalid; seam=none
+    def test_verified_backup_for_prefers_the_newest_intact_backup(self):
+        patched_digest = hashlib.sha256(b"patched").hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp)
+            for stamp in ("20260101-000000-000000000", "20260202-000000-000000000"):
+                backup = backup_dir / f"app.asar.backup-pre-ui-patch-{stamp}"
+                backup.write_bytes(stamp.encode())
+                MODULE._write_manifest(
+                    backup,
+                    {
+                        "format": 1,
+                        "backup_sha256": hashlib.sha256(stamp.encode()).hexdigest(),
+                        "patched_sha256": patched_digest,
+                        "size": len(stamp),
+                    },
+                )
+
+            found = MODULE._verified_backup_for(patched_digest, backup_dir)
+
+            self.assertEqual("app.asar.backup-pre-ui-patch-20260202-000000-000000000", found[0].name)
+
     def test_revert_skips_non_object_manifest_and_uses_older_valid_backup(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1164,8 +1410,8 @@ class SupersetPinnedIconOnlyPatchTest(unittest.TestCase):
         # the pinned row is reported on its own.
         import mmap
 
-        asar = Path("/Applications/Superset.app/Contents/Resources/app.asar")
-        if not asar.exists():
+        asar = installed_stock_snapshot()
+        if asar is None:
             self.skipTest("no installed Superset bundle on this machine")
         with asar.open("rb") as stream:
             with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
@@ -1255,6 +1501,8 @@ class SupersetSidebarStatusFilterPatchTest(unittest.TestCase):
     # Exact stock bytes of desktop-v1.36.0 layout-CAKjMJ-s.js, cut at the
     # region boundaries (start anchor inclusive, end anchor exclusive).
     REGION_FIXTURES = [FIXTURES / f"superset-1.36.0-status-filter-r{n}.js" for n in (1, 2, 3, 4, 5)]
+    # The same regions after --sidebar-status-filter (pinned patched_sha256).
+    PATCHED_FIXTURES = [FIXTURES / f"superset-1.36.0-status-filter-r{n}.patched.js" for n in (1, 2, 3, 4, 5)]
 
     def regions(self):
         """Pair each region constant with its real stock bytes."""
@@ -1289,6 +1537,23 @@ class SupersetSidebarStatusFilterPatchTest(unittest.TestCase):
                 self.assertTrue(stock.startswith(region.start))
                 self.assertEqual(stock.count(region.start), 1)
                 self.assertNotIn(region.end, stock)
+
+    def test_plan_recognises_the_real_stock_and_patched_regions(self):
+        # Byte-exact patched fixtures (LUBOS-1923): a stock region yields its
+        # rewrite, the already-patched region is a no-op, anything else fails.
+        for (region, stock), path in zip(self.regions(), self.PATCHED_FIXTURES, strict=True):
+            with self.subTest(region=region.label):
+                patched = path.read_bytes()
+                self.assertEqual([(0, stock, patched, region.label)], MODULE._plan_region_rewrite(stock + region.end, region))
+                self.assertEqual([], MODULE._plan_region_rewrite(patched + region.end, region))
+                # One changed byte past the start anchor: another generation, independent of identifiers.
+                foreign = bytearray(patched)
+                middle = len(region.start) + (len(patched) - len(region.start)) // 2
+                foreign[middle] = ord("x") if foreign[middle] != ord("x") else ord("y")
+                foreign = bytes(foreign)
+                self.assertTrue(foreign.startswith(region.start))
+                with self.assertRaisesRegex(RuntimeError, "neither stock nor patched"):
+                    MODULE._plan_region_rewrite(foreign + region.end, region)
 
     def test_rewrite_matches_the_pinned_patched_digest_and_length(self):
         import hashlib
@@ -1796,8 +2061,8 @@ assert.equal(ssfRange(store, rows, () => false, byId), rows);
     def test_installed_bundle_accepts_the_status_filter(self):
         import mmap
 
-        asar = Path("/Applications/Superset.app/Contents/Resources/app.asar")
-        if not asar.exists():
+        asar = installed_stock_snapshot()
+        if asar is None:
             self.skipTest("no installed Superset bundle on this machine")
         with asar.open("rb") as stream:
             with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
@@ -2072,8 +2337,8 @@ console.log(JSON.stringify(result));
     def test_installed_bundle_accepts_sound_only_when_waiting(self):
         import mmap
 
-        asar = Path("/Applications/Superset.app/Contents/Resources/app.asar")
-        if not asar.exists():
+        asar = installed_stock_snapshot()
+        if asar is None:
             self.skipTest("no installed Superset bundle on this machine")
         with asar.open("rb") as stream:
             with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:

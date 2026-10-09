@@ -4,7 +4,8 @@ The script prunes `app.asar.backup-*` entries in a directory (default
 ~/.superset). Only VERIFIED sets — protected name (`pre-ui-patch` /
 `pre-tray-hide`, mirroring patch-asar.py revert()) + regular file + `.json`
 manifest — count toward --keep (default 2). A set whose manifest
-`patched_sha256` equals the live --asar digest is never deleted. Everything
+`patched_sha256` equals the live --asar digest is never deleted, nor is any
+set on the manifest chain from there back to stock. Everything
 else matching the backup prefix (crash orphans without manifests, obsolete
 prefixes, orphaned sidecars, odd directories) is legacy and only swept with
 --legacy. Dry run is the default; the run serializes on patch-asar's per-asar
@@ -25,13 +26,15 @@ SCRIPT = REPO_ROOT / "setup" / "superset" / "patches" / "prune-asar-backups.py"
 
 
 def mkset(dir_, ts, prefix="pre-ui-patch", manifest=True, unpacked=False,
-          content=b"x", patched_sha256="0" * 64):
+          content=b"x", patched_sha256="0" * 64, backup_sha256=None):
     """Create a backup set with the given timestamp suffix and sidecars."""
     base = dir_ / f"app.asar.backup-{prefix}-{ts}"
     base.write_bytes(content)
     if manifest:
-        (dir_ / (base.name + ".json")).write_text(
-            json.dumps({"format": 1, "patched_sha256": patched_sha256}))
+        record = {"format": 1, "patched_sha256": patched_sha256}
+        if backup_sha256 is not None:
+            record["backup_sha256"] = backup_sha256
+        (dir_ / (base.name + ".json")).write_text(json.dumps(record))
     if unpacked:
         d = dir_ / (base.name + ".unpacked")
         d.mkdir()
@@ -136,6 +139,128 @@ class PruneAsarBackupsTest(unittest.TestCase):
         self.assertIn("app.asar.backup-pre-ui-patch-20260601-000000.json", kept)
         self.assertNotIn("app.asar.backup-pre-ui-patch-20260702-000000", kept)
         self.assertIn("app.asar.backup-pre-ui-patch-20260803-000000", kept)
+
+    def test_digest_guard_keeps_the_whole_chain_back_to_stock(self):
+        # patch-asar.py stock_snapshot() walks every step from the live
+        # bundle to the unpatched release; pruning the oldest step would make
+        # the LIVE_HOST_ONLY anchor tests read patched bytes (LUBOS-1923)
+        live = self.live_digest()
+        stock = mkset(self.dir, "20260601-000000", content=b"stock",
+                      patched_sha256="a" * 64,
+                      backup_sha256=hashlib.sha256(b"stock").hexdigest())
+        middle = mkset(self.dir, "20260702-000000", content=b"middle",
+                       patched_sha256=live,
+                       backup_sha256="a" * 64)
+        unrelated = mkset(self.dir, "20260703-000000")
+        newest = mkset(self.dir, "20260803-000000")
+        # the chain link is the manifest pair: stock's patched digest is the
+        # middle backup's own bytes
+        stock.with_name(stock.name + ".json").write_text(json.dumps({
+            "format": 1, "backup_sha256": hashlib.sha256(b"stock").hexdigest(),
+            "patched_sha256": hashlib.sha256(b"middle").hexdigest()}))
+        middle.with_name(middle.name + ".json").write_text(json.dumps({
+            "format": 1, "backup_sha256": hashlib.sha256(b"middle").hexdigest(),
+            "patched_sha256": live}))
+        r = self.run_script(["--apply", "--keep", "1"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        kept = self.names()
+        self.assertIn(stock.name, kept)
+        self.assertIn(stock.name + ".json", kept)
+        self.assertIn(middle.name, kept)
+        self.assertNotIn(unrelated.name, kept)
+        self.assertIn(newest.name, kept)
+        self.assertIn(f"kept (on the chain to stock): {stock.name}", r.stdout)
+        self.assertIn(f"kept (reverts live asar): {middle.name}", r.stdout)
+
+    def test_chain_guard_walks_through_an_unsortable_set(self):
+        # stock_snapshot() follows any revert-glob name, so a hand-renamed
+        # middle step must not end the walk and doom the stock set behind it
+        live = self.live_digest()
+        stock = mkset(self.dir, "20260601-000000", content=b"stock")
+        middle = self.dir / "app.asar.backup-pre-ui-patch-restored"
+        middle.write_bytes(b"middle")
+        mkset(self.dir, "20260702-000000")
+        mkset(self.dir, "20260803-000000")
+        stock.with_name(stock.name + ".json").write_text(json.dumps({
+            "format": 1, "backup_sha256": hashlib.sha256(b"stock").hexdigest(),
+            "patched_sha256": hashlib.sha256(b"middle").hexdigest()}))
+        middle.with_name(middle.name + ".json").write_text(json.dumps({
+            "format": 1, "backup_sha256": hashlib.sha256(b"middle").hexdigest(),
+            "patched_sha256": live}))
+        r = self.run_script(["--apply", "--keep", "1"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(stock.name, self.names())
+        self.assertIn(middle.name, self.names())
+
+    def _symlinked_chain(self):
+        """Build stock <- symlinked middle step -> live; return (stock, middle)."""
+        live = self.live_digest()
+        stock = mkset(self.dir, "20260601-000000", content=b"stock")
+        target = pathlib.Path(self.asar_tmp.name) / "middle.bin"
+        target.write_bytes(b"middle")
+        middle = self.dir / "app.asar.backup-pre-ui-patch-20260702-000000"
+        middle.symlink_to(target)
+        unpacked = self.dir / (middle.name + ".unpacked")
+        unpacked.mkdir()
+        (unpacked / "f.bin").write_bytes(b"y")
+        stock.with_name(stock.name + ".json").write_text(json.dumps({
+            "format": 1, "backup_sha256": hashlib.sha256(b"stock").hexdigest(),
+            "patched_sha256": hashlib.sha256(b"middle").hexdigest()}))
+        middle.with_name(middle.name + ".json").write_text(json.dumps({
+            "format": 1, "backup_sha256": hashlib.sha256(b"middle").hexdigest(),
+            "patched_sha256": live}))
+        return stock, middle
+
+    def test_legacy_never_deletes_a_symlinked_chain_link_sidecars(self):
+        # collect() skips symlinked backups, so their manifest looked like an
+        # orphan sidecar; --legacy deleted it and cut the chain to stock
+        stock, middle = self._symlinked_chain()
+        mkset(self.dir, "20260803-000000")
+        r = self.run_script(["--apply", "--legacy", "--keep", "1"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        kept = self.names()
+        for name in (stock.name, stock.name + ".json", middle.name,
+                     middle.name + ".json", middle.name + ".unpacked"):
+            self.assertIn(name, kept)
+
+    def test_legacy_without_surplus_still_protects_the_chain(self):
+        # with nothing over the keep quota the live digest must still be read
+        stock, middle = self._symlinked_chain()
+        r = self.run_script(["--apply", "--legacy", "--keep", "5"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        kept = self.names()
+        for name in (stock.name, stock.name + ".json",
+                     middle.name + ".json", middle.name + ".unpacked"):
+            self.assertIn(name, kept)
+
+    def test_chain_guard_ignores_non_string_digests(self):
+        # a list or object digest must neither crash the walk nor protect a set
+        odd = mkset(self.dir, "20260601-000000")
+        odd.with_name(odd.name + ".json").write_text(json.dumps({
+            "format": 1, "patched_sha256": [], "backup_sha256": {}}))
+        mkset(self.dir, "20260702-000000", patched_sha256=self.live_digest(),
+              backup_sha256=["x"])
+        mkset(self.dir, "20260803-000000")
+        r = self.run_script(["--apply", "--keep", "1"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        kept = self.names()
+        self.assertNotIn(odd.name, kept)
+        self.assertIn("app.asar.backup-pre-ui-patch-20260702-000000", kept)
+
+    def test_chain_guard_survives_a_manifest_cycle(self):
+        # two manifests pointing at each other must neither hang nor crash
+        live = self.live_digest()
+        a = mkset(self.dir, "20260601-000000", content=b"a")
+        b = mkset(self.dir, "20260702-000000", content=b"b")
+        mkset(self.dir, "20260803-000000")
+        a.with_name(a.name + ".json").write_text(json.dumps({
+            "format": 1, "backup_sha256": "b" * 64, "patched_sha256": live}))
+        b.with_name(b.name + ".json").write_text(json.dumps({
+            "format": 1, "backup_sha256": live, "patched_sha256": "b" * 64}))
+        r = self.run_script(["--apply", "--keep", "1"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(a.name, self.names())
+        self.assertIn(b.name, self.names())
 
     def test_nanosecond_suffix_sorts_and_pairs_manifest(self):
         mkset(self.dir, "20260817-143258")
