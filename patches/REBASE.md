@@ -76,24 +76,40 @@ upstream change inside the range is therefore a `neither stock nor patched` (or
 `end anchor`) failure, even a change unrelated to the filter. To rebase:
 
 1. Cut the new region from the real bundle, from the start anchor up to (and
-   excluding) the next top-level function, and save it as
+   excluding) the next top-level statement, and save it as
    `tests/fixtures/superset-<V>-status-filter-r<N>.js`.
 2. Diff the new excerpt against the old fixture. Re-derive each edit anchor in
    `edits`. Every edit has to stay *after* the last hook call of its component,
    because a `return null` placed before a hook breaks React's hook order. The
    test `test_rewrite_only_strips_noop_comments_and_inserts_the_edits` and a
    manual check of each component catch a misplaced edit.
+   The project-section guard must keep naming the dialog and rename state
+   (`isDeleteDialogOpen`, `importableWorktrees`, `isRenaming`);
+   `test_project_section_stays_while_a_dialog_or_rename_is_open` checks it.
 3. Run `rewrite_region()` on the new excerpt. If it reports `exceeds the region
-   by N bytes`, move a helper into the region with more slack, or widen the
-   region to the next top-level function. Never strip anything other than
-   `JS_NOOP_COMMENTS`.
+   by N bytes`, move a helper snippet (`STATUS_FILTER_STATE_JS`, `_BITS_JS`,
+   `_MATCH_JS`, `_CHIPS_JS`, `_CHIP_JS`) into a region with more trailing
+   padding (region 5 has the most), widen a region to the next top-level
+   statement, or add a room-only region like regions 4 and 5 (rank the chunk's top-level functions by the bytes of
+   `JS_NOOP_COMMENTS` they hold and skip any that contain another family's
+   anchor). Never strip anything other than `JS_NOOP_COMMENTS` and whole `//`
+   lines.
 4. Pin the new `length`, `stock_sha256` and `patched_sha256`. Keep the old
    values as a second release variant only while a supported bundle can still
-   present them.
+   present them. When the injected code itself changes (a new filter
+   generation), move the previous `patched_sha256` into `legacy_sha256`, so a
+   host that still runs it gets the `--revert` hint instead of `neither stock
+   nor patched`.
 5. Run `node --check` on the patched excerpt (the test does it), re-check that
-   the injected identifiers (`StatusStoreContext`, `Tooltip*`, `cn`,
-   `reactExports`, `jsxRuntimeExports`) are still in the chunk's module scope,
-   and check that `require_asar_integrity_fuse_disabled()` still passes on the
+   the injected identifiers (`StatusStoreContext`,
+   `DashboardSidebarSelectionContext`, `getProjectChildrenWorkspaces`,
+   `Tooltip*`, `cn`, `reactExports`, `jsxRuntimeExports`, `LuGitPullRequest`,
+   `LuGitMerge`, `PR_COLOR_BY_STATE`) are still in the chunk's module scope,
+   that `workspacesById` is still in scope at the `ssfRange` call site and that
+   `decorateSidebarWorkspace` still sets `pullRequest` (with `.state`), that
+   region 3 still renders `DashboardSidebarHeader` right before the scrolling
+   `OverflowFadeContainer` (test
+   `test_chip_row_sits_between_the_header_and_the_scroller`), and check that `require_asar_integrity_fuse_disabled()` still passes on the
    new app.
 
 The sound family (`SOUND_MAIN_*`, `SOUND_RENDERER_*`) is an ordinary anchor

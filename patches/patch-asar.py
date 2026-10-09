@@ -3,7 +3,7 @@
 
 The selected patches cover the compact sidebar, 24 px project icons,
 project-owned icon URLs, project icons retained on hover, icon-only pinned
-workspace rows, a sidebar status filter, notification sound only while an agent
+workspace rows, sidebar status filter chips, notification sound only while an agent
 waits, and no menu-bar tray icon. Every replacement has exactly the
 same byte length as its source. That preserves ASAR offsets, but any app.asar
 mutation still invalidates Apple's resource seal and therefore requires an
@@ -438,15 +438,15 @@ def _plan_pinned_icon_only(data) -> list[tuple[int, bytes, bytes, str]]:
     return replacements
 
 
-# --sidebar-status-filter (desktop-v1.36.0, layout-*.js). The filter needs ~3 KB
-# of new code, far more than any single anchor can absorb, so it uses a region
+# --sidebar-status-filter (desktop-v1.36.0, layout-*.js). The filter (v2: a sticky
+# row of six status chips) needs ~5.7 KB of new code, far more than any single anchor can absorb, so it uses a region
 # rewrite instead of anchor swaps — see patches/README.md §Region rewrite for
 # the ASAR-safety argument (header untouched, offsets preserved, the embedded
 # per-file integrity fuse is disabled; require_asar_integrity_fuse_disabled()
 # enforces that last precondition).
 #
 # A region is the exact byte range from a unique start anchor (a top-level
-# `function X({`) up to, but excluding, the next top-level function. Both the
+# `function X({`) up to, but excluding, the next top-level statement. Both the
 # stock and the rewritten bytes are pinned by SHA-256, so any upstream change
 # anywhere inside the region fails closed. The rewrite:
 #   1. deletes every JS_NOOP_COMMENTS token. `/* @__PURE__ */` is a tree-shaking
@@ -456,8 +456,9 @@ def _plan_pinned_icon_only(data) -> list[tuple[int, bytes, bytes, str]]:
 #      the removed bytes (DevTools / Sentry stack columns only);
 #   2. applies each (anchor, replacement) edit, every anchor exactly once;
 #   3. pads with spaces at the region end, a top-level statement boundary.
-# Top-level function declarations hoist across the whole module, so helpers may
-# live in either region. The filter is applied at render level: the sidebar
+# Top-level function declarations hoist across the whole module and the `let` /
+# `const` bindings are only read at render time, so helpers may live in any
+# region; regions 4 and 5 exist only for room. The filter is applied at render level: the sidebar
 # builders are pure and have no workspace-status access, while every row,
 # folder, project and section renders below DashboardSidebarWorkspaceStatusProvider
 # (StatusStoreContext). Hooks run before each early `return null`.
@@ -475,62 +476,122 @@ class RegionRewrite:
     stock_sha256: str
     patched_sha256: str
     edits: tuple[tuple[bytes, bytes], ...]
+    # Digests of earlier patch generations of this region (v1 header button):
+    # recognised so the error says how to upgrade instead of "unknown bytes".
+    legacy_sha256: tuple[str, ...] = ()
 
 
-# Shared filter state: 0 all, 1 needs input (permission + failed), 2 review.
-# A selected workspace is never hidden (ssfUseShow) and a Shift range spans only
-# visible rows (ssfRange, next to ssfMatches in region 2): every
-# applyWorkspaceSelection result is cut to orderedWorkspaceIds, so a bulk delete
-# or move can never reach a row the filter hides.
-STATUS_FILTER_STATE_JS = b'''// dev-setup-dashboard patch-asar.py --sidebar-status-filter: 0 all, 1 needs input, 2 review.
-let ssfMode = 0;
+# Shared filter state: a bitmask of the active chips, 0 = no filter. Agent
+# status from the row-dot store: 1 permission, 2 failed, 4 review, 8 working
+# (the AsciiSpinner rows). Pull request from the decorated workspace
+# (`workspace.pullRequest`, the same data as the row icon, no extra GitHub
+# query): 16 open / draft / queued, 32 merged; closed matches nothing. A row
+# shows when its bits meet the mask (union). A selected workspace is never
+# hidden (ssfUseShow) and a Shift range spans only visible rows (ssfRange, in
+# region 5): every applyWorkspaceSelection result is cut to
+# orderedWorkspaceIds, so a bulk delete or move can never reach a row the
+# filter hides. The v1 key `ssf-sidebar-status-filter` (1 needs input, 2
+# review) migrates to the matching mask once and is removed; any unreadable
+# value means no filter.
+STATUS_FILTER_STATE_JS = b'''// patch-asar.py --sidebar-status-filter v2
+let ssfMask = 0;
 const ssfListeners = new Set();
 try {
-  ssfMode = ["1", "2"].indexOf(localStorage.getItem("ssf-sidebar-status-filter")) + 1;
+  const stored = localStorage.getItem("ssf-sidebar-status-chips") ?? String([0, 3, 4][["1", "2"].indexOf(localStorage.getItem("ssf-sidebar-status-filter")) + 1]);
+  ssfMask = /^\\d\\d?$/.test(stored) && stored < 64 ? Number(stored) : 0;
+  localStorage.setItem("ssf-sidebar-status-chips", String(ssfMask));
+  localStorage.removeItem("ssf-sidebar-status-filter");
 } catch {
 }
-function ssfSubscribe(listener) {
-  ssfListeners.add(listener);
-  return () => ssfListeners.delete(listener);
-}
-function ssfCycle() {
-  ssfMode = (ssfMode + 1) % 3;
+function ssfToggle(bit, solo) {
+  ssfMask = solo ? ssfMask === bit ? 0 : bit : ssfMask ^ bit;
   try {
-    localStorage.setItem("ssf-sidebar-status-filter", String(ssfMode));
+    localStorage.setItem("ssf-sidebar-status-chips", String(ssfMask));
   } catch {
   }
   for (const listener of [...ssfListeners]) listener();
 }
-function ssfUseShow(workspaceIds) {
+function ssfUseShow(workspaces) {
   const store = reactExports.useContext(StatusStoreContext);
   const selection = reactExports.useContext(DashboardSidebarSelectionContext);
-  const key = workspaceIds.join("\\n");
+  const key = workspaces.map((workspace) => workspace.id).join("\\n");
   const subscribe = reactExports.useCallback((listener) => {
     const offs = [ssfSubscribe(listener), ...store ? key.split("\\n").filter(Boolean).map((id) => store.subscribe(id, listener)) : []];
     return () => offs.forEach((off) => off());
   }, [store, key]);
-  return reactExports.useSyncExternalStore(subscribe, () => ssfMode === 0 || !store || workspaceIds.some((id) => selection?.isWorkspaceSelected(id) || ssfMatches(store.get(id).status)));
+  return reactExports.useSyncExternalStore(subscribe, () => ssfMask === 0 || !store || workspaces.some((workspace) => selection?.isWorkspaceSelected(workspace.id) || ssfMatches(store, workspace)));
 }
 '''
-# Header button: cycles the mode; the dot colour mirrors STATUS_CONFIG
-# (StatusIndicator-*.js: permission yellow, review green). All classes already
-# exist in index-*.css.
-STATUS_FILTER_BUTTON_JS = b'''function ssfMatches(status) {
-  return ssfMode === 1 ? status === "permission" || status === "failed" : status === "review";
+# The chip list and the bits of one workspace. Agent status comes from the
+# row-dot store, the pull request state from the decorated workspace.
+STATUS_FILTER_BITS_JS = b'''const SSF_CHIPS = [[1, "Needs input", "yellow"], [2, "Failed", "red"], [4, "Review", "green"], [8, "Working", "amber"], [16, "Open PR", "emerald", "open"], [32, "Merged", "purple", "merged"]];
+function ssfBits(status, pr) {
+  return (status === "permission" ? 1 : status === "failed" ? 2 : status === "review" ? 4 : status === "working" ? 8 : 0) | (pr === "merged" ? 32 : pr === "open" || pr === "draft" || pr === "queued" ? 16 : 0);
 }
-function ssfRange(store, workspaceIds, isSelected) {
-  return ssfMode === 0 || !store ? workspaceIds : workspaceIds.filter((id) => isSelected(id) || ssfMatches(store.get(id).status));
+'''
+# Subscription, matching, the Shift-range cut (workspacesById supplies the
+# pull request of each id) and the chip label (here because region 2 has no
+# room left).
+STATUS_FILTER_MATCH_JS = b'''function ssfSubscribe(listener) {
+  ssfListeners.add(listener);
+  return () => ssfListeners.delete(listener);
 }
-const SSF_LABELS = ["Status filter: all", "Status filter: needs input", "Status filter: review"];
-const SSF_DOTS = ["border border-muted-foreground", "bg-yellow-500", "bg-green-500"];
-function SsfStatusFilterButton() {
-  const mode = reactExports.useSyncExternalStore(ssfSubscribe, () => ssfMode);
-  return jsxRuntimeExports.jsxs(Tooltip, { delayDuration: 700, children: [
-    jsxRuntimeExports.jsx(TooltipTrigger, { asChild: true, children: jsxRuntimeExports.jsx("button", { type: "button", "aria-label": SSF_LABELS[mode], "aria-pressed": mode !== 0, onClick: (event) => {
-      event.stopPropagation();
-      ssfCycle();
-    }, onKeyDown: (event) => event.stopPropagation(), className: "flex size-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-fill-hover", children: jsxRuntimeExports.jsx("span", { className: cn("size-2 rounded-full", SSF_DOTS[mode]) }) }) }),
-    jsxRuntimeExports.jsx(TooltipContent, { side: "bottom", children: SSF_LABELS[mode] })
+function ssfMatches(store, workspace) {
+  return (ssfMask & ssfBits(store.get(workspace.id).status, workspace.pullRequest?.state)) !== 0;
+}
+function ssfRange(store, workspaceIds, isSelected, workspacesById) {
+  return ssfMask === 0 || !store ? workspaceIds : workspaceIds.filter((id) => isSelected(id) || ssfMatches(store, workspacesById.get(id) ?? { id }));
+}
+function ssfLabel(name, count, mask, bit) {
+  return `${name}: ${count} workspace${count === 1 ? "" : "s"}. Click to ${mask === bit ? "show all" : mask & bit ? "stop showing them" : "show them"}, \\u2325-click to ${mask === bit ? "show all" : "show only these"}.`;
+}
+'''
+# Sticky chip row between DashboardSidebarHeader and the scroller. Counts use
+# the same sources as the filter, over PINNED + SESSIONS + PROJECTS, each
+# workspace once (the `groups` prop excludes hidden projects). Click toggles a
+# chip, Option-click solos it (or clears the filter when it is already the only
+# one). Colours are the Tailwind theme variables, so no new CSS class is
+# needed; grid-cols-6 and tabular-nums keep the row width independent of the
+# counts.
+STATUS_FILTER_CHIPS_JS = b'''function SsfStatusChips({
+  pinnedWorkspaces,
+  sessionWorkspaces,
+  groups
+}) {
+  const store = reactExports.useContext(StatusStoreContext);
+  const workspaces = reactExports.useMemo(() => [...new Map([...pinnedWorkspaces, ...sessionWorkspaces, ...groups.flatMap((project) => getProjectChildrenWorkspaces(project.children))].map((workspace) => [workspace.id, workspace])).values()], [pinnedWorkspaces, sessionWorkspaces, groups]);
+  const subscribe = reactExports.useCallback((listener) => {
+    const offs = [ssfSubscribe(listener), ...store ? workspaces.map((workspace) => store.subscribe(workspace.id, listener)) : []];
+    return () => offs.forEach((off) => off());
+  }, [store, workspaces]);
+  const [mask, ...counts] = reactExports.useSyncExternalStore(subscribe, () => {
+    const bits = workspaces.map((workspace) => ssfBits(store?.get(workspace.id).status, workspace.pullRequest?.state));
+    return [ssfMask, ...SSF_CHIPS.map(([bit]) => bits.filter((value) => value & bit).length)].join();
+  }).split(",").map(Number);
+  return jsxRuntimeExports.jsx("div", { role: "group", "aria-label": "Workspace status filter", className: "grid shrink-0 grid-cols-6 gap-1 px-2 pb-2", children: SSF_CHIPS.map(([bit, name, hue, pr], index) => jsxRuntimeExports.jsx(SsfStatusChip, { bit, name, hue, pr, mask, count: counts[index] }, bit)) });
+}
+'''
+# One chip: a full-colour fill when active, a coloured outline otherwise, dimmed
+# at zero but still clickable. Agent chips show a dot in the STATUS_CONFIG
+# colour; pull request chips show the row's PR icon in its PR_COLOR_BY_STATE
+# colour, so they read as PR state, not agent status.
+STATUS_FILTER_CHIP_JS = b'''function SsfStatusChip({
+  bit,
+  name,
+  hue,
+  pr,
+  mask,
+  count
+}) {
+  const active = (mask & bit) !== 0;
+  const color = `var(--color-${hue}-500)`;
+  const label = ssfLabel(name, count, mask, bit);
+  return jsxRuntimeExports.jsxs(Tooltip, { delayDuration: 500, children: [
+    jsxRuntimeExports.jsx(TooltipTrigger, { asChild: true, children: jsxRuntimeExports.jsxs("button", { type: "button", "aria-pressed": active, "aria-label": label, onClick: (event) => ssfToggle(bit, event.altKey), style: active ? { backgroundColor: color, borderColor: color, color: "black" } : { borderColor: color }, className: cn("flex h-6 min-w-0 items-center justify-center gap-1 overflow-hidden rounded-full border text-xs font-medium tabular-nums transition-colors", !active && "text-muted-foreground hover:bg-fill-hover", count === 0 && "opacity-40"), children: [
+      pr ? jsxRuntimeExports.jsx(pr === "merged" ? LuGitMerge : LuGitPullRequest, { className: cn("size-3 shrink-0", !active && PR_COLOR_BY_STATE[pr]), strokeWidth: 2 }) : jsxRuntimeExports.jsx("span", { className: "size-1.5 shrink-0 rounded-full", style: { backgroundColor: active ? "currentColor" : color } }),
+      count
+    ] }) }),
+    jsxRuntimeExports.jsx(TooltipContent, { side: "bottom", children: label })
   ] });
 }
 '''
@@ -555,20 +616,20 @@ STATUS_FILTER_REGIONS = (
         end=b"function DashboardSidebarProjectContextMenu({\n",
         length=22553,
         stock_sha256="af09e89f2a007d0762d4f9f8f03273ada726b8ead7ea01ab43e125b8715b17d3",
-        patched_sha256="42fef7999b59c51c15afb440f5a5a5c4368eae0e01582c9cd49c0aaf741ad4c1",
+        patched_sha256="8383a30eaff0a0f282da74b8b79954a1cf5165941c98a1234a19ef1a16839101",
         edits=(
             _insert_after(
                 b", [workspace, onHoverCardOpen, shortcutLabel, isInSection, indentation, "
                 b"isSelected, onSelectionClick, pinnedContext]);\n",
-                b"  if (!ssfUseShow([workspace.id])) return null;\n",
+                b"  if (!ssfUseShow([workspace])) return null;\n",
             ),
             _insert_after(
                 b"  const isSectionCollapsed = useSidebarSectionsCollapseStore((s) => s.collapsed.pinned);\n",
-                b"  if (!ssfUseShow(pinnedWorkspaces.map((workspace) => workspace.id)) && !isCollapsed) return null;\n",
+                b"  if (!ssfUseShow(pinnedWorkspaces) && !isCollapsed) return null;\n",
             ),
             _insert_after(
                 b"  }, [clearPendingSectionRename, pendingRenameSectionId, section.id, startRename]);\n",
-                b"  if (!ssfUseShow(section.workspaces.map((workspace) => workspace.id))) return null;\n",
+                b"  if (!ssfUseShow(section.workspaces)) return null;\n",
             ),
             # Three `//` lines inside `return (`; deleting whole lines frees room
             # for the selection guard without touching any expression.
@@ -584,43 +645,96 @@ STATUS_FILTER_REGIONS = (
             ),
             (
                 b"orderedWorkspaceIds: selectableWorkspaceIds\n",
-                b"orderedWorkspaceIds: ssfRange(ssfStore, selectableWorkspaceIds, isWorkspaceSelected)\n",
+                b"orderedWorkspaceIds: ssfRange(ssfStore, selectableWorkspaceIds, isWorkspaceSelected, workspacesById)\n",
             ),
-            _insert_before(b"const isBulkSelectable = (workspace) =>", STATUS_FILTER_STATE_JS),
+            _insert_before(b"const isBulkSelectable = (workspace) =>", STATUS_FILTER_CHIPS_JS),
         ),
+        legacy_sha256=("42fef7999b59c51c15afb440f5a5a5c4368eae0e01582c9cd49c0aaf741ad4c1",),
     ),
-    # DashboardSidebarProjectSection .. SESSIONS section .. PROJECTS header.
+    # DashboardSidebarProjectSection .. SESSIONS section (row guards + SsfStatusChip).
     RegionRewrite(
-        label="status filter: projects, sessions and header button",
+        label="status filter: projects and sessions",
         start=b"function DashboardSidebarProjectSection({\n",
         end=b"function GettingStartedChecklist({\n",
         length=19272,
         stock_sha256="21cf2198d0a6b806fda51365aec77d3d3865a51188179f9caebdae2f3f2f6a55",
-        patched_sha256="3682ec4e3fa223751b5ce4bde728d33cef3642a36d9561f4df517ec808253be1",
+        patched_sha256="ef99ad348ad4d3e31d9a7cd7c67f1e9c0437e3e03259b4f8c182a2a73dcad0e7",
         edits=(
             _insert_after(
                 b"  } = useDashboardSidebarProjectSectionActions({\n    project\n  });\n",
-                b"  if (!ssfUseShow(flattenedCollapsedWorkspaces.map((workspace) => workspace.id)) "
-                b"&& !isSidebarCollapsed) return null;\n",
+                # An open delete or import dialog or a project rename keeps the
+                # section mounted, so a status change cannot drop it mid-confirm.
+                b"  if (!ssfUseShow(flattenedCollapsedWorkspaces) && !isSidebarCollapsed && !isDeleteDialogOpen && !importableWorktrees && !isRenaming) return null;\n",
             ),
             _insert_after(
                 b"  const isSectionCollapsed = useSidebarSectionsCollapseStore((s) => s.collapsed.sessions);\n",
-                b"  if (!ssfUseShow(sessionWorkspaces.map((workspace) => workspace.id)) && !isCollapsed) return null;\n",
-            ),
-            _insert_before(
-                b"    jsxRuntimeExports.jsx(DashboardSidebarProjectsFilterInput, { query: filterQuery,",
-                b"    jsxRuntimeExports.jsx(SsfStatusFilterButton, {}),\n",
+                b"  if (!ssfUseShow(sessionWorkspaces) && !isCollapsed) return null;\n",
             ),
             # Two `//` lines inside expressions (after `return (` and after a
-            # comma); deleting whole lines frees room for ssfRange.
+            # comma); deleting whole lines frees room for the helpers.
             (
                 b"    // biome-ignore lint/a11y/noStaticElementInteractions: stops the header row's "
                 b"collapse toggle from firing on input interaction\n",
                 b"",
             ),
             (b'        // Read as "on" whenever the list is not in drag order.\n', b""),
-            _insert_before(b"function DashboardSidebarProjectsFilterInput({\n", STATUS_FILTER_BUTTON_JS),
+            _insert_before(
+                b"function DashboardSidebarProjectsFilterInput({\n",
+                STATUS_FILTER_CHIP_JS,
+            ),
         ),
+        # v1 header button; the first v2 build (its plain-click label said
+        # "stop showing them" also for the only active chip); the second v2
+        # build (label inline, a section hid under an open dialog).
+        legacy_sha256=(
+            "3682ec4e3fa223751b5ce4bde728d33cef3642a36d9561f4df517ec808253be1",
+            "9fc647b8e6c3dc47e9204b09e0c0a382bb60b4943743c25b4214b87c4818acb4",
+            "348275748426b01857310056fe9870b5834aa2a3be040763e9d5ac4bfd88c363",
+        ),
+    ),
+    # DashboardSidebar: the sticky chip row goes between DashboardSidebarHeader
+    # (the --compact-sidebar grid) and the scrolling OverflowFadeContainer, below
+    # DashboardSidebarWorkspaceStatusProvider. Expanded sidebar only.
+    RegionRewrite(
+        label="status filter: sticky chip row",
+        start=b"function DashboardSidebar({\n",
+        end=b'const SEED_FLAG_KEY = "superset:dev:v2-sidebar-seeded";\n',
+        length=12134,
+        stock_sha256="ab4fb1849a1df56f41ee66de3a965e0bf4566c383247e11ba05e193780e30239",
+        patched_sha256="51557750a5b6afcd93bc3e1e47ee619d4bfaf0081231d5e6b4ec98033b6f4a0e",
+        edits=(
+            _insert_after(
+                b"      jsxRuntimeExports.jsx(DashboardSidebarHeader, { isCollapsed }),\n",
+                b"      !isCollapsed && jsxRuntimeExports.jsx(SsfStatusChips, "
+                b"{ pinnedWorkspaces, sessionWorkspaces, groups: orderedGroups }),\n",
+            ),
+            _insert_after(b"    ] }) }) }) }) }) })\n  ] });\n}\n", STATUS_FILTER_BITS_JS),
+        ),
+    ),
+    # DashboardSidebarCloudContextMenu: no edit of its own, only room (1,446 B
+    # of no-op comments) for the shared filter state.
+    RegionRewrite(
+        label="status filter: shared state",
+        start=b"function DashboardSidebarCloudContextMenu({\n",
+        end=b"function DashboardSidebarCloudPortsButton({\n",
+        length=8643,
+        stock_sha256="4fbd96c26c429f92ebc0219b9aa01d98ed1510990ba0aa4502ff7c7f8a26be83",
+        patched_sha256="f7f02ea166cf516cb9a0b4aa269a37bfe603dc598ae79124f3a8a5b8b5f88aba",
+        edits=(_insert_before(b"const MAX_BADGE_COUNT = 9;\n", STATUS_FILTER_STATE_JS),),
+    ),
+    # DashboardSidebarWorkspaceContextMenu: no edit of its own, only room
+    # (1,350 B of no-op comments) for subscription, matching, the Shift-range
+    # cut and the chip label.
+    RegionRewrite(
+        label="status filter: matching",
+        start=b"function DashboardSidebarWorkspaceContextMenu({\n",
+        end=b"function useDashboardSidebarWorkspaceItemActions({\n",
+        length=9227,
+        stock_sha256="7167a1331345ee26b1d7594826a0669e2bab76976b418009e16280d3e0518c39",
+        patched_sha256="98f21f27a7848b4a85f55f43190715f187b5e62525f6e5f1eca343680559d2b5",
+        edits=(_insert_after(b"    ] })\n  ] });\n}\n", STATUS_FILTER_MATCH_JS),),
+        # The first and second v2 builds, before the chip label moved here.
+        legacy_sha256=("1c17da8dba0b8fd2bf26c01a29a678e8231059b89c93dfad4008f442f1adacc9",),
     ),
 )
 
@@ -656,6 +770,11 @@ def _plan_region_rewrite(data, region: RegionRewrite) -> list[tuple[int, bytes, 
     digest = hashlib.sha256(current).hexdigest()
     if digest == region.patched_sha256:
         return []
+    if digest in region.legacy_sha256:
+        raise RuntimeError(
+            f"{region.label}: an older --sidebar-status-filter generation is applied; "
+            "run --revert to the pre-filter backup first, then re-apply"
+        )
     if digest != region.stock_sha256:
         raise RuntimeError(f"{region.label}: region is neither stock nor patched; bundle structure may have changed")
     rewritten = rewrite_region(region, current)
@@ -1341,7 +1460,7 @@ def main(argv=None):
     parser.add_argument(
         "--sidebar-status-filter",
         action="store_true",
-        help="PROJECTS header button cycling the sidebar filter: all / needs input / review",
+        help="sticky sidebar row of needs-input / failed / review / working / open PR / merged chips that filter the workspace list",
     )
     parser.add_argument(
         "--sound-only-when-waiting",

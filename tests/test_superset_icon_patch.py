@@ -1,6 +1,7 @@
 """Tests for the transactional, length-preserving Superset UI patch."""
 
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -1248,22 +1249,19 @@ def node_check(test, body: bytes):
 
 
 class SupersetSidebarStatusFilterPatchTest(unittest.TestCase):
-    """--sidebar-status-filter rewrites two hash-pinned layout-*.js regions in place."""
+    """--sidebar-status-filter rewrites five hash-pinned layout-*.js regions in place."""
 
     WORKSPACE_NEW_SHORTCUT = SupersetUiPatchTest.WORKSPACE_NEW_SHORTCUT
     # Exact stock bytes of desktop-v1.36.0 layout-CAKjMJ-s.js, cut at the
     # region boundaries (start anchor inclusive, end anchor exclusive).
-    REGION_FIXTURES = [
-        FIXTURES / "superset-1.36.0-status-filter-r1.js",
-        FIXTURES / "superset-1.36.0-status-filter-r2.js",
-    ]
+    REGION_FIXTURES = [FIXTURES / f"superset-1.36.0-status-filter-r{n}.js" for n in (1, 2, 3, 4, 5)]
 
     def regions(self):
         """Pair each region constant with its real stock bytes."""
         return list(zip(MODULE.STATUS_FILTER_REGIONS, [p.read_bytes() for p in self.REGION_FIXTURES], strict=True))
 
     def stock_bundle(self):
-        """Shared synthetic bundle plus both real regions, each followed by its end anchor."""
+        """Shared synthetic bundle plus every real region, each followed by its end anchor."""
         return b"|".join(
             [SupersetUiPatchTest.stock_bundle(self)]
             + [stock + region.end for region, stock in self.regions()]
@@ -1354,8 +1352,11 @@ class SupersetSidebarStatusFilterPatchTest(unittest.TestCase):
         prefix_end = original.index(MODULE.STATUS_FILTER_REGIONS[0].start)
         unfiltered, _ = self.patch(original, enabled=False)
         self.assertEqual(patched[:prefix_end], unfiltered[:prefix_end])
-        self.assertIn(b"function SsfStatusFilterButton()", patched)
-        self.assertIn(b"jsxRuntimeExports.jsx(SsfStatusFilterButton, {}),", patched)
+        self.assertIn(b"function SsfStatusChips({", patched)
+        self.assertIn(b"jsxRuntimeExports.jsx(SsfStatusChips, ", patched)
+        # v2 drops the v1 PROJECTS header button entirely.
+        self.assertNotIn(b"SsfStatusFilterButton", patched)
+        self.assertNotIn(b"ssfCycle", patched)
 
     def test_status_filter_is_idempotent(self):
         once, _changes = self.patch(self.stock_bundle())
@@ -1424,21 +1425,31 @@ class SupersetSidebarStatusFilterPatchTest(unittest.TestCase):
             )
         MODULE._require_disjoint([(0, b"ab", b"AB", "first"), (2, b"cd", b"CD", "second")])
 
-    def filter_harness(self, stored: str, assertions: str, storage_stub: str | None = None) -> str:
-        """Node script: stubbed React + store around the injected filter snippets."""
+    def filter_harness(self, assertions: str, stored: dict | None = None, storage_stub: str | None = None) -> str:
+        """Node script: stubbed React, store and localStorage around the injected v2 snippets."""
         storage_stub = storage_stub or (
             "globalThis.localStorage = { getItem: (k) => storage.get(k) ?? null, "
-            "setItem: (k, v) => storage.set(k, String(v)) };"
+            "setItem: (k, v) => storage.set(k, String(v)), removeItem: (k) => storage.delete(k) };"
         )
+        snippets = b"".join(
+            [
+                MODULE.STATUS_FILTER_STATE_JS,
+                MODULE.STATUS_FILTER_BITS_JS,
+                MODULE.STATUS_FILTER_MATCH_JS,
+                MODULE.STATUS_FILTER_CHIPS_JS,
+                MODULE.STATUS_FILTER_CHIP_JS,
+            ]
+        ).decode()
         return f"""
 import assert from "node:assert/strict";
-const storage = new Map([["ssf-sidebar-status-filter", {stored!r}]]);
+const storage = new Map(Object.entries({json.dumps(stored or {})}));
 {storage_stub}
 const statuses = new Map();
 const subscribed = [];
+const everSubscribed = [];
 const store = {{
   get: (id) => ({{ status: statuses.get(id) ?? null }}),
-  subscribe: (id, listener) => {{ subscribed.push(id); return () => subscribed.splice(subscribed.indexOf(id), 1); }},
+  subscribe: (id, listener) => {{ subscribed.push(id); everSubscribed.push(id); return () => subscribed.splice(subscribed.indexOf(id), 1); }},
 }};
 const StatusStoreContext = {{}};
 const DashboardSidebarSelectionContext = {{}};
@@ -1448,52 +1459,185 @@ let activeSelection = {{ isWorkspaceSelected: (id) => selected.has(id) }};
 const reactExports = {{
   useContext: (context) => (context === StatusStoreContext ? activeStore : context === DashboardSidebarSelectionContext ? activeSelection : null),
   useCallback: (fn) => fn,
+  useMemo: (fn) => fn(),
   useSyncExternalStore: (subscribe, getSnapshot) => {{ const off = subscribe(() => {{}}); off(); return getSnapshot(); }},
 }};
-const jsxRuntimeExports = {{ jsx: (type, props) => ({{ type, props }}), jsxs: (type, props) => ({{ type, props }}) }};
+const jsxRuntimeExports = {{ jsx: (type, props, key) => ({{ type, props, key }}), jsxs: (type, props, key) => ({{ type, props, key }}) }};
 const cn = (...parts) => parts.filter(Boolean).join(" ");
 const Tooltip = "Tooltip", TooltipTrigger = "TooltipTrigger", TooltipContent = "TooltipContent";
-{MODULE.STATUS_FILTER_STATE_JS.decode()}
-{MODULE.STATUS_FILTER_BUTTON_JS.decode()}
-const button = () => SsfStatusFilterButton().props.children[0].props.children;
-const click = () => {{ let stopped = false; button().props.onClick({{ stopPropagation: () => {{ stopped = true; }} }}); assert.ok(stopped); }};
+const LuGitMerge = "LuGitMerge", LuGitPullRequest = "LuGitPullRequest";
+const PR_COLOR_BY_STATE = {{ open: "text-emerald-500", merged: "text-purple-500", closed: "text-destructive", draft: "text-muted-foreground", queued: "text-amber-500" }};
+function getProjectChildrenWorkspaces(children) {{
+  return children.flatMap((child) => child.type === "workspace" ? [child.workspace] : child.section.workspaces);
+}}
+{snippets}
+const ws = (id, pr = null) => ({{ id, pullRequest: pr ? {{ state: pr }} : null }});
+let sidebar = {{ pinnedWorkspaces: [], sessionWorkspaces: [], groups: [] }};
+const row = () => SsfStatusChips(sidebar);
+const chips = () => row().props.children.map((element) => {{
+  assert.equal(element.type, SsfStatusChip);
+  const tooltip = SsfStatusChip(element.props);
+  const button = tooltip.props.children[0].props.children;
+  assert.equal(tooltip.props.children[1].props.children, button.props["aria-label"]);
+  return button;
+}});
+const counts = () => chips().map((button) => button.props.children[1]);
+const pressed = () => chips().map((button) => button.props["aria-pressed"]);
+const click = (index, altKey = false) => chips()[index].props.onClick({{ altKey }});
 {assertions}
 console.log("ok");
 """
 
-    def test_injected_filter_cycles_and_matches_the_three_modes(self):
-        run_node(self, self.filter_harness("", """
+    # Value: protects=chip counts read the same sources as the row icons (status store for agent chips, the decorated workspace.pullRequest for PR chips) over PINNED + SESSIONS + PROJECTS (folders included, each workspace once); fails_when=a source is dropped, folder workspaces are skipped, a duplicate id is counted twice, a status or PR state maps to the wrong chip, or closed PRs count; why_new=v2 adds counts and the Working / Open PR / Merged chips; seam=none
+    def test_chips_count_each_status_across_pinned_sessions_and_projects(self):
+        run_node(self, self.filter_harness("""
+statuses.set("p1", "permission"); statuses.set("p2", "permission"); statuses.set("f1", "failed");
+statuses.set("r1", "review"); statuses.set("w1", "working");
+const p1 = ws("p1", "open");
+sidebar = {
+  pinnedWorkspaces: [p1, ws("r1", "merged")],
+  sessionWorkspaces: [ws("f1", "draft"), ws("idle", "closed")],
+  groups: [{ children: [{ type: "workspace", workspace: ws("w1", "queued") }, { type: "section", section: { workspaces: [ws("p2"), p1] } }] }],
+};
+assert.deepEqual(counts(), [2, 1, 1, 1, 3, 1]);
+assert.deepEqual(pressed(), [false, false, false, false, false, false]);
+assert.deepEqual(new Set(subscribed), new Set());
+// Live refresh: the chips subscribe to every listed workspace, each once per render.
+everSubscribed.length = 0;
+row();
+assert.deepEqual(everSubscribed.sort(), ["f1", "idle", "p1", "p2", "r1", "w1"]);
+everSubscribed.length = 0;
+ssfUseShow([ws("a"), ws("b")]);
+assert.deepEqual(everSubscribed, ["a", "b"]);
+statuses.set("w1", "failed");
+assert.deepEqual(counts(), [2, 2, 1, 0, 3, 1]);
+activeStore = null;
+assert.deepEqual(counts(), [0, 0, 0, 0, 3, 1]);
+"""))
+
+    # Value: protects=click toggles one chip (multi-select union across agent and PR chips), Option-click solos, Option-click on the only active chip clears; Working matches the spinner rows, Open PR matches open / draft / queued, Merged matches merged and closed matches nothing; fails_when=ssfToggle stops XOR-ing, solo keeps other chips, the solo-off branch is lost or a PR state maps to the wrong chip; why_new=v2 interaction model replaces the v1 three-state cycle; seam=none
+    def test_chip_click_toggles_and_option_click_solos(self):
+        run_node(self, self.filter_harness("""
 statuses.set("perm", "permission"); statuses.set("fail", "failed");
 statuses.set("rev", "review"); statuses.set("work", "working");
-const all = ["perm", "fail", "rev", "work", "idle"];
-const shown = () => all.filter((id) => ssfUseShow([id]));
+const byId = new Map([["perm"], ["fail"], ["rev", "merged"], ["work"], ["idle"], ["open", "open"], ["draft", "draft"], ["queued", "queued"], ["merged", "merged"], ["closed", "closed"]].map(([id, pr]) => [id, ws(id, pr)]));
+const all = [...byId.keys()];
+sidebar = { pinnedWorkspaces: [...byId.values()], sessionWorkspaces: [], groups: [] };
+const shown = () => all.filter((id) => ssfUseShow([byId.get(id)]));
 assert.deepEqual(shown(), all);
-assert.equal(button().props["aria-pressed"], false);
-assert.match(button().props.children.props.className, /border-muted-foreground/);
-click();
-assert.equal(storage.get("ssf-sidebar-status-filter"), "1");
-assert.deepEqual(shown(), ["perm", "fail"]);
-assert.equal(button().props["aria-label"], "Status filter: needs input");
-assert.match(button().props.children.props.className, /bg-yellow-500/);
-click();
-assert.deepEqual(shown(), ["rev"]);
-assert.match(button().props.children.props.className, /bg-green-500/);
-assert.equal(ssfUseShow([]), false);
-assert.equal(ssfUseShow(["work", "rev"]), true);
-click();
+click(0);
+assert.deepEqual(pressed(), [true, false, false, false, false, false]);
+assert.deepEqual(shown(), ["perm"]);
+assert.equal(storage.get("ssf-sidebar-status-chips"), "1");
+click(2);
+assert.deepEqual(pressed(), [true, false, true, false, false, false]);
+assert.deepEqual(shown(), ["perm", "rev"]);
+click(1, true);
+assert.deepEqual(pressed(), [false, true, false, false, false, false]);
+assert.deepEqual(shown(), ["fail"]);
+assert.equal(storage.get("ssf-sidebar-status-chips"), "2");
+assert.match(chips()[1].props["aria-label"], /show all/);
+click(1, true);
+assert.deepEqual(pressed(), [false, false, false, false, false, false]);
 assert.deepEqual(shown(), all);
+click(0); click(0);
+assert.deepEqual(shown(), all);
+assert.equal(storage.get("ssf-sidebar-status-chips"), "0");
 assert.equal(ssfUseShow([]), true);
+click(2);
+assert.equal(ssfUseShow([]), false);
+assert.equal(ssfUseShow([byId.get("work"), byId.get("rev")]), true);
+// Working, Open PR and Merged follow the same interaction and union.
+click(3, true);
+assert.deepEqual(pressed(), [false, false, false, true, false, false]);
+assert.deepEqual(shown(), ["work"]);
+assert.equal(storage.get("ssf-sidebar-status-chips"), "8");
+click(4);
+assert.deepEqual(shown(), ["work", "open", "draft", "queued"]);
+click(5);
+assert.deepEqual(shown(), ["rev", "work", "open", "draft", "queued", "merged"]);
+assert.equal(storage.get("ssf-sidebar-status-chips"), "56");
+click(3);
+assert.deepEqual(shown(), ["rev", "open", "draft", "queued", "merged"]);
+click(5, true);
+assert.deepEqual(pressed(), [false, false, false, false, false, true]);
+assert.deepEqual(shown(), ["rev", "merged"]);
+click(0);
+assert.deepEqual(shown(), ["perm", "rev", "merged"]);
+assert.deepEqual(counts(), [1, 1, 1, 1, 3, 2]);
 assert.deepEqual(subscribed, []);
 """))
 
-    def test_injected_filter_restores_the_stored_mode(self):
-        run_node(self, self.filter_harness("2", """
-assert.equal(button().props["aria-label"], "Status filter: review");
+    # Value: protects=chip a11y and stable layout: aria-pressed, a label with name, count and the Option-click hint, dimmed but clickable at zero, fixed six-column grid with tabular digits; fails_when=a chip loses aria-pressed or its label, a zero chip becomes disabled or the row width follows the counts; why_new=v2 chip rendering contract; seam=none
+    def test_chips_expose_state_and_keep_a_stable_layout(self):
+        run_node(self, self.filter_harness("""
+statuses.set("a", "permission"); statuses.set("b", "review"); statuses.set("c", "review");
+sidebar = { pinnedWorkspaces: [ws("a", "open"), ws("b", "merged"), ws("c")], sessionWorkspaces: [], groups: [] };
+assert.match(row().props.className, /grid-cols-6/);
+assert.equal(row().props.role, "group");
+assert.equal(chips().length, 6);
+const [needs, failed, review, working, openPr, merged] = chips();
+assert.equal(needs.props["aria-label"], "Needs input: 1 workspace. Click to show them, \\u2325-click to show only these.");
+assert.equal(review.props["aria-label"], "Review: 2 workspaces. Click to show them, \\u2325-click to show only these.");
+assert.match(failed.props["aria-label"], /^Failed: 0 workspaces\\./);
+assert.match(working.props["aria-label"], /^Working: 0 workspaces\\./);
+assert.equal(openPr.props["aria-label"], "Open PR: 1 workspace. Click to show them, \\u2325-click to show only these.");
+assert.match(merged.props["aria-label"], /^Merged: 1 workspace\\./);
+// Agent chips show a dot; PR chips show the row's PR icon in its PR_COLOR_BY_STATE colour.
+for (const chip of [needs, failed, review, working]) assert.equal(chip.props.children[0].type, "span");
+assert.deepEqual(needs.props.children[0].props.style, { backgroundColor: "var(--color-yellow-500)" });
+assert.equal(openPr.props.children[0].type, "LuGitPullRequest");
+assert.match(openPr.props.children[0].props.className, /text-emerald-500/);
+assert.equal(merged.props.children[0].type, "LuGitMerge");
+assert.match(merged.props.children[0].props.className, /text-purple-500/);
+assert.deepEqual(working.props.style, { borderColor: "var(--color-amber-500)" });
+for (const chip of chips()) {
+  assert.equal(chip.type, "button");
+  assert.equal(chip.props.disabled, undefined);
+  assert.match(chip.props.className, /tabular-nums/);
+}
+assert.match(failed.props.className, /opacity-40/);
+assert.doesNotMatch(needs.props.className, /opacity-40/);
+assert.deepEqual(failed.props.style, { borderColor: "var(--color-red-500)" });
+click(1);
+const active = chips()[1];
+assert.equal(active.props["aria-pressed"], true);
+assert.deepEqual(active.props.style, { backgroundColor: "var(--color-red-500)", borderColor: "var(--color-red-500)", color: "black" });
+// The only active chip: a plain click and an Option-click both clear the filter.
+assert.equal(active.props["aria-label"], "Failed: 0 workspaces. Click to show all, \\u2325-click to show all.");
+assert.deepEqual(active.props.children[0].props.style, { backgroundColor: "currentColor" });
+click(5);
+assert.equal(chips()[1].props["aria-label"], "Failed: 0 workspaces. Click to stop showing them, \\u2325-click to show only these.");
+const activeMerged = chips()[5];
+assert.deepEqual(activeMerged.props.style, { backgroundColor: "var(--color-purple-500)", borderColor: "var(--color-purple-500)", color: "black" });
+assert.doesNotMatch(activeMerged.props.children[0].props.className, /text-purple-500/);
 """))
-        for stored in ("garbage", "-1", "3", "1.5"):
-            run_node(self, self.filter_harness(stored, """
-assert.equal(button().props["aria-label"], "Status filter: all");
-"""))
+
+    # Value: protects=the stored chip mask survives a restart and the v1 key migrates once without a crash; fails_when=the v1 mode is ignored or mis-mapped, the v1 key is left behind, a garbage value enables a filter, or the v2 key loses to the v1 key; why_new=v2 changes the storage key and format; seam=none
+    def test_stored_mask_restores_and_the_v1_key_migrates(self):
+        for stored, expected_mask in (
+            ({"ssf-sidebar-status-chips": "5"}, "5"),
+            ({"ssf-sidebar-status-chips": "56"}, "56"),
+            ({"ssf-sidebar-status-chips": "63"}, "63"),
+            ({"ssf-sidebar-status-filter": "1"}, "3"),
+            ({"ssf-sidebar-status-filter": "2"}, "4"),
+            ({"ssf-sidebar-status-filter": "garbage"}, "0"),
+            ({"ssf-sidebar-status-filter": "3"}, "0"),
+            ({"ssf-sidebar-status-filter": "-1"}, "0"),
+            ({"ssf-sidebar-status-filter": "1.5"}, "0"),
+            ({"ssf-sidebar-status-chips": "6", "ssf-sidebar-status-filter": "1"}, "6"),
+            ({"ssf-sidebar-status-chips": "64"}, "0"),
+            ({"ssf-sidebar-status-chips": "128"}, "0"),
+            ({"ssf-sidebar-status-chips": "-1"}, "0"),
+            ({"ssf-sidebar-status-chips": "1.5"}, "0"),
+            ({}, "0"),
+        ):
+            with self.subTest(stored=stored):
+                run_node(self, self.filter_harness(f"""
+assert.deepEqual(pressed(), [1, 2, 4, 8, 16, 32].map((bit) => ({expected_mask} & bit) !== 0));
+assert.equal(storage.get("ssf-sidebar-status-chips"), "{expected_mask}");
+assert.equal(storage.has("ssf-sidebar-status-filter"), false);
+""", stored=stored))
 
     # Value: protects=Rules of Hooks in the five patched React components (a hook after an injected early return crashes the sidebar only when the filter flips); fails_when=an edit anchor moves so a use*() call follows `if (!ssfUseShow(...)) return null`; why_new=node --check and the digest pins cannot see hook ordering; seam=none
     def test_injected_early_returns_come_after_every_hook(self):
@@ -1515,59 +1659,138 @@ assert.equal(button().props["aria-label"], "Status filter: all");
                     )
         self.assertEqual(inserted, 5)
 
-    # Value: protects=filter state survives a blocked localStorage and notifies subscribers; fails_when=ssfCycle stops notifying listeners or the try/catch around localStorage is lost; why_new=existing node tests only use a working storage and a no-op subscribe; seam=none
+    # Value: protects=filter state survives a blocked localStorage and notifies subscribers; fails_when=ssfToggle stops notifying listeners or a try/catch around localStorage is lost; why_new=existing node tests only use a working storage and a no-op subscribe; seam=none
     def test_injected_filter_survives_blocked_storage_and_notifies_subscribers(self):
         blocked = (
             'globalThis.localStorage = { getItem: () => { throw new Error("blocked"); }, '
-            'setItem: () => { throw new Error("blocked"); } };'
+            'setItem: () => { throw new Error("blocked"); }, removeItem: () => { throw new Error("blocked"); } };'
         )
-        run_node(self, self.filter_harness("2", """
-assert.equal(button().props["aria-label"], "Status filter: all");
+        run_node(self, self.filter_harness("""
+assert.deepEqual(pressed(), [false, false, false, false, false, false]);
 let calls = 0;
 const off = ssfSubscribe(() => { calls++; });
-click();
+click(0);
 assert.equal(calls, 1);
-assert.equal(button().props["aria-label"], "Status filter: needs input");
+assert.deepEqual(pressed(), [true, false, false, false, false, false]);
 off();
-click();
+click(4, true);
 assert.equal(calls, 1);
-assert.equal(button().props["aria-label"], "Status filter: review");
-""", storage_stub=blocked))
+assert.deepEqual(pressed(), [false, false, false, false, true, false]);
+""", stored={"ssf-sidebar-status-chips": "4"}, storage_stub=blocked))
+
+    # Value: protects=a read-only localStorage still applies the migrated v1 mode for this session; fails_when=the mask is assigned only after the migration write, so a throwing setItem or removeItem drops the v1 filter; why_new=the blocked-storage test throws already on getItem and never reaches the migration write; seam=none
+    def test_v1_mode_applies_when_storage_writes_are_blocked(self):
+        read_only = (
+            "globalThis.localStorage = { getItem: (k) => storage.get(k) ?? null, "
+            'setItem: () => { throw new Error("blocked"); }, removeItem: () => { throw new Error("blocked"); } };'
+        )
+        run_node(self, self.filter_harness("""
+assert.deepEqual(pressed(), [true, true, false, false, false, false]);
+assert.equal(storage.get("ssf-sidebar-status-filter"), "1");
+click(2);
+assert.deepEqual(pressed(), [true, true, true, false, false, false]);
+""", stored={"ssf-sidebar-status-filter": "1"}, storage_stub=read_only))
 
     # Value: protects=sidebar rows stay visible when the status provider is missing; fails_when=the `!store` guard is dropped and a filtered mode hides or crashes rows without StatusStoreContext; why_new=existing tests always provide a store; seam=none
     def test_injected_filter_shows_everything_without_a_status_store(self):
-        run_node(self, self.filter_harness("1", """
+        run_node(self, self.filter_harness("""
 activeStore = null;
-assert.equal(ssfUseShow(["a", "b"]), true);
+assert.equal(ssfUseShow([ws("a"), ws("b")]), true);
 assert.equal(ssfUseShow([]), true);
-"""))
+""", stored={"ssf-sidebar-status-chips": "3"}))
 
-    # Value: protects=a bulk delete or move never reaches a workspace the filter hides; fails_when=ssfRange stops cutting the Shift range or ssfUseShow hides a selected row; why_new=Codex round 1 reproduced A(permission) B(working) C(permission) -> Shift range selected the hidden B; seam=upstream applyWorkspaceSelection from the 1.36.0 bundle
+    # Value: protects=a bulk delete or move never reaches a workspace the filter hides; fails_when=ssfRange stops cutting the Shift range or ssfUseShow hides a selected row; why_new=Codex round 1 of LUBOS-1916 reproduced A(permission) B(working) C(permission) -> Shift range selected the hidden B; seam=upstream applyWorkspaceSelection from the 1.36.0 bundle
     def test_hidden_workspaces_never_join_a_selection(self):
         upstream = (FIXTURES / "superset-1.36.0-workspace-selection.js").read_text()
-        run_node(self, self.filter_harness("1", upstream + """
-statuses.set("A", "permission"); statuses.set("B", "working"); statuses.set("C", "permission");
+        run_node(self, self.filter_harness(upstream + """
+statuses.set("A", "permission"); statuses.set("B", "working"); statuses.set("C", "failed");
 const rows = ["A", "B", "C"];
-assert.deepEqual(rows.filter((id) => ssfUseShow([id])), ["A", "C"]);
-const range = ssfRange(store, rows, (id) => selected.has(id));
+const byId = new Map([ws("A"), ws("B", "open"), ws("C", "merged")].map((workspace) => [workspace.id, workspace]));
+const shown = () => rows.filter((id) => ssfUseShow([byId.get(id)]));
+const isSelected = (id) => selected.has(id);
+assert.deepEqual(shown(), ["A", "C"]);
+const range = ssfRange(store, rows, isSelected, byId);
 assert.deepEqual(range, ["A", "C"]);
 let state = applyWorkspaceSelection(EMPTY_WORKSPACE_SELECTION, { workspaceId: "A", projectId: "p", orderedWorkspaceIds: range, mode: "toggle" });
 state = applyWorkspaceSelection(state, { workspaceId: "C", projectId: "p", orderedWorkspaceIds: range, mode: "range" });
 assert.deepEqual(state.selectedIds, ["A", "C"]);
 // Selected before the filter came on, or whose status changed afterwards: still shown.
 selected.add("B");
-assert.deepEqual(rows.filter((id) => ssfUseShow([id])), ["A", "B", "C"]);
-assert.equal(ssfUseShow(["B", "missing"]), true);
-assert.deepEqual(ssfRange(store, rows, (id) => selected.has(id)), rows);
+assert.deepEqual(shown(), ["A", "B", "C"]);
+assert.equal(ssfUseShow([byId.get("B"), ws("missing")]), true);
+assert.deepEqual(ssfRange(store, rows, isSelected, byId), rows);
 selected.clear();
-// All mode, or no status store: upstream ids pass through untouched.
+// PR chips cut the range by the decorated pull request; an id missing from workspacesById has no PR.
+click(4, true);
+assert.deepEqual(shown(), ["B"]);
+assert.deepEqual(ssfRange(store, [...rows, "X"], isSelected, byId), ["B"]);
+click(4, true);
+click(0); click(1);
+// No status store, no selection context, or no active chip: upstream ids pass through untouched.
 activeStore = null;
-assert.equal(ssfRange(null, rows, () => false), rows);
+assert.equal(ssfRange(null, rows, () => false, byId), rows);
 activeSelection = null;
-assert.equal(ssfUseShow(["B"]), true);
-click(); click();
-assert.equal(ssfRange(store, rows, () => false), rows);
-"""))
+assert.equal(ssfUseShow([byId.get("B")]), true);
+activeStore = store;
+click(0); click(1);
+assert.deepEqual(pressed(), [false, false, false, false, false, false]);
+assert.equal(ssfRange(store, rows, () => false, byId), rows);
+""", stored={"ssf-sidebar-status-chips": "3"}))
+
+    # Value: protects=the chip row is sticky (outside the scroller) and can read the status store; fails_when=the r3 anchor moves the row into OverflowFadeContainer or above DashboardSidebarWorkspaceStatusProvider; why_new=v2 moves the control from the PROJECTS header to the top of the sidebar; seam=none
+    def test_chip_row_sits_between_the_header_and_the_scroller(self):
+        region, stock = self.regions()[2]
+        patched = MODULE.rewrite_region(region, stock)
+        provider = patched.index(b"jsxRuntimeExports.jsx(DashboardSidebarWorkspaceStatusProvider, ")
+        header = patched.index(b"jsxRuntimeExports.jsx(DashboardSidebarHeader, { isCollapsed }),\n")
+        row = patched.index(b"!isCollapsed && jsxRuntimeExports.jsx(SsfStatusChips, ")
+        scroller = patched.index(b"jsxRuntimeExports.jsxs(OverflowFadeContainer, ")
+        self.assertLess(provider, header)
+        self.assertLess(header, row)
+        self.assertLess(row, scroller)
+        self.assertIn(b"groups: orderedGroups", patched[row:scroller])
+
+    # Value: protects=a project section with an open delete or import dialog or a rename stays mounted, and its guard runs after every hook and before the dialogs are built; fails_when=the guard drops a dialog condition or moves above the actions hook, so a status change unmounts DeleteProjectDialog mid-confirm and onDeleted never leaves the deleted project; why_new=adversarial review found the section returned null under an open dialog; seam=none
+    def test_project_section_stays_while_a_dialog_or_rename_is_open(self):
+        region, stock = self.regions()[1]
+        patched = MODULE.rewrite_region(region, stock)
+        actions = patched.index(b"} = useDashboardSidebarProjectSectionActions({\n    project\n  });\n")
+        guard = patched.index(b"  if (!ssfUseShow(flattenedCollapsedWorkspaces) ")
+        line = patched[guard : patched.index(b"\n", guard)]
+        for name in (b"isDeleteDialogOpen", b"importableWorktrees", b"isRenaming"):
+            with self.subTest(name=name):
+                self.assertIn(b"&& !" + name, line)
+                self.assertLess(patched.index(b"    " + name + b",\n"), actions)
+        self.assertLess(actions, guard)
+        self.assertLess(guard, patched.index(b"const deleteProjectDialog = "))
+        # ssfUseShow is the leftmost operand, so the hook runs on every render.
+        self.assertTrue(line.startswith(b"  if (!ssfUseShow("))
+
+    # Value: protects=an installed v1 filter is reported as an upgrade step, never patched over or called unknown; fails_when=legacy digests are dropped or checked after the stock comparison; why_new=v2 changes the patched digests of regions that v1 already rewrote on the live host; seam=none
+    def test_legacy_generation_asks_for_a_revert_first(self):
+        import hashlib
+
+        self.assertEqual(
+            [r.legacy_sha256 for r in MODULE.STATUS_FILTER_REGIONS],
+            [
+                ("42fef7999b59c51c15afb440f5a5a5c4368eae0e01582c9cd49c0aaf741ad4c1",),
+                (
+                    "3682ec4e3fa223751b5ce4bde728d33cef3642a36d9561f4df517ec808253be1",
+                    "9fc647b8e6c3dc47e9204b09e0c0a382bb60b4943743c25b4214b87c4818acb4",
+                    "348275748426b01857310056fe9870b5834aa2a3be040763e9d5ac4bfd88c363",
+                ),
+                (),
+                (),
+                ("1c17da8dba0b8fd2bf26c01a29a678e8231059b89c93dfad4008f442f1adacc9",),
+            ],
+        )
+        legacy = b"function Old({\n}\n"
+        region = MODULE.RegionRewrite(
+            "synthetic", b"function Old({\n", b"function Next({\n", len(legacy), "0" * 64, "1" * 64, (),
+            legacy_sha256=(hashlib.sha256(legacy).hexdigest(),),
+        )
+        with self.assertRaisesRegex(RuntimeError, "older --sidebar-status-filter generation.*--revert"):
+            MODULE._plan_region_rewrite(legacy + b"function Next({\n", region)
 
     @live_host_only("anchors are checked against the Superset.app bundle installed on this host")
     def test_installed_bundle_accepts_the_status_filter(self):
@@ -1579,7 +1802,80 @@ assert.equal(ssfRange(store, rows, () => false), rows);
         with asar.open("rb") as stream:
             with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
                 for region in MODULE.STATUS_FILTER_REGIONS:
-                    MODULE._plan_region_rewrite(data, region)
+                    with self.subTest(region=region.label):
+                        try:
+                            MODULE._plan_region_rewrite(data, region)
+                        except RuntimeError as exc:
+                            # An older filter generation is recognised, but its
+                            # stock bytes cannot be checked until it is reverted.
+                            if "older --sidebar-status-filter generation" not in str(exc):
+                                raise
+                            self.skipTest(f"{region.label}: older generation installed; revert and re-apply to check it")
+
+    # Value: protects=the injected code finds every name it uses outside the pinned regions, and all five regions share one module; fails_when=an upstream release renames or moves PR_COLOR_BY_STATE, an icon, a context or a helper, or splits a region into another chunk while the region digests still match, so the sidebar throws a ReferenceError instead of failing closed; why_new=the node harness stubs these names and the digests cover only the regions; seam=installed bundle
+    @live_host_only("identifiers are checked against the Superset.app bundle installed on this host")
+    def test_installed_bundle_defines_the_names_the_status_filter_uses(self):
+        import json
+        import mmap
+        import re
+        import struct
+
+        asar = Path("/Applications/Superset.app/Contents/Resources/app.asar")
+        if not asar.exists():
+            self.skipTest("no installed Superset bundle on this machine")
+        with asar.open("rb") as stream:
+            _, header_size, _, json_size = struct.unpack("<4I", stream.read(16))
+            header = json.loads(stream.read(json_size))
+            base = 8 + header_size
+
+            def files(node, prefix=""):
+                for name, child in node.get("files", {}).items():
+                    path = f"{prefix}/{name}" if prefix else name
+                    if "files" in child:
+                        yield from files(child, path)
+                    elif "offset" in child:
+                        yield path, base + int(child["offset"]), child["size"]
+
+            entries = list(files(header))
+            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                containing = set()
+                for region in MODULE.STATUS_FILTER_REGIONS:
+                    offsets = MODULE._find_all(data, region.start)
+                    self.assertEqual(len(offsets), 1, region.label)
+                    containing |= {path for path, start, size in entries if start <= offsets[0] < start + size}
+                self.assertEqual(len(containing), 1, f"regions span several files: {sorted(containing)}")
+                path = containing.pop()
+                start, size = next((start, size) for name, start, size in entries if name == path)
+                chunk = data[start : start + size]
+                css = b"".join(
+                    data[start : start + size]
+                    for name, start, size in entries
+                    if re.fullmatch(r"dist/renderer/assets/index-[^/]+\.css", name)
+                )
+        imported = r"\bas {name}[,\s}}]"
+        defined = r"(?:const|function) {name}\b"
+        for name in (
+            "jsxRuntimeExports", "reactExports", "cn", "Tooltip", "TooltipTrigger", "TooltipContent",
+            "LuGitMerge", "LuGitPullRequest",
+        ):
+            with self.subTest(name=name):
+                self.assertIsNotNone(re.search(imported.format(name=name).encode(), chunk), f"{name} is not imported by {path}")
+        for name in ("StatusStoreContext", "DashboardSidebarSelectionContext", "PR_COLOR_BY_STATE", "getProjectChildrenWorkspaces"):
+            with self.subTest(name=name):
+                self.assertIsNotNone(re.search(defined.format(name=name).encode(), chunk), f"{name} is not defined in {path}")
+        # The values the chips compare against: the status the row spinner
+        # checks, the PR states of the row icon, an empty entry for an id the
+        # store has not seen, and the theme colours the chips paint with.
+        for value in (
+            rb'workspaceStatus === "working"',
+            rb'const PR_COLOR_BY_STATE = \{\s*open: "[^"]+",\s*merged: "[^"]+",\s*closed: "[^"]+",\s*draft: "[^"]+",\s*queued: "[^"]+"\s*\}',
+            rb"get\(workspaceId\) \{\s*return this\.entries\.get\(workspaceId\) \?\? EMPTY_ENTRY;",
+        ):
+            with self.subTest(value=value):
+                self.assertIsNotNone(re.search(value, chunk), f"{value!r} is not in {path}")
+        for hue in ("yellow", "red", "green", "amber", "emerald", "purple"):
+            with self.subTest(hue=hue):
+                self.assertIn(f"--color-{hue}-500:".encode(), css)
 
     def test_cli_forwards_the_new_flags_to_patch_file(self):
         with mock.patch.object(MODULE, "patch_file", return_value=(None, [])) as patch_file:
@@ -1621,7 +1917,7 @@ assert.equal(ssfRange(store, rows, () => false), rows);
 
             self.assertEqual(backup.read_bytes(), original)
             self.assertIn(MODULE.STATUS_FILTER_REGIONS[0].label, changes)
-            self.assertIn(b"function SsfStatusFilterButton()", asar.read_bytes())
+            self.assertIn(b"function SsfStatusChips({", asar.read_bytes())
             MODULE.revert(asar, backup_dir)
             self.assertEqual(asar.read_bytes(), original)
 

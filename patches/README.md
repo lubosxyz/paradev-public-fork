@@ -96,62 +96,128 @@ Both anchors are validated as exactly one stock-or-patched variant; drift fails
 closed and a re-run is a no-op. Without the flag the pinned rows are left as
 they are; undo with `--revert`.
 
-With `--sidebar-status-filter` (desktop-v1.36.0, `layout-*.js`) the PROJECTS
-header gets a dot button left of the search magnifier. Each click cycles the
-filter **all → needs input → review → all**:
+With `--sidebar-status-filter` (desktop-v1.36.0, `layout-*.js`) the expanded
+sidebar gets a row of six status chips at the very top, right below the
+`--compact-sidebar` navigation grid. The row sits outside the scrolling list,
+so it stays in place while the workspaces scroll and does not jump when
+sections expand or collapse (v1 put a single cycling button into the PROJECTS
+header; v2 removes it).
 
-| Mode | Dot | Workspace rows shown |
-|---|---|---|
-| all | grey ring | every row (upstream behaviour) |
-| needs input | yellow | status `permission` (yellow) or `failed` (red) |
-| review | green | status `review` (green, done with a message) |
+| Chip | Colour | Status | Meaning |
+|---|---|---|---|
+| Needs input | yellow | `permission` | the agent waits for you |
+| Failed | red | `failed` | the agent failed |
+| Review | green | `review` | done, with a message to read |
+| Working | amber | `working` | the agent is running (the spinner rows) |
+| Open PR | emerald, PR icon | pull request `open`, `draft` or `queued` | the workspace has a pull request in flight |
+| Merged | purple, merge icon | pull request `merged` | the pull request landed |
+
+The first four chips are agent status and show a dot. The two pull request
+chips show the row's own PR icon in its `PR_COLOR_BY_STATE` colour, so they do
+not read as agent status. A closed pull request matches no chip.
+
+- Each chip shows how many workspaces are in that status right now. Agent
+  chips use the same `SidebarWorkspaceStatusStore` as the row dots
+  (`StatusStoreContext`). Pull request chips use the same data as the row's PR
+  icon: `workspace.pullRequest` on the decorated sidebar workspace
+  (`pullRequestsByWorkspaceId`), so they make no extra GitHub query. The count
+  covers the workspaces in PINNED, SESSIONS and
+  PROJECTS (folders included, each workspace once). Hidden projects and the
+  cloud section are not counted.
+- Click toggles a chip, and several chips can be on at once: the list shows the
+  union of the active statuses, agent and pull request chips alike. Option-click solos a chip (only this one on).
+  Option-click on the chip that is already the only active one clears the
+  filter. No active chip means no filter.
+- An active chip is filled with its colour; an inactive one is a coloured
+  outline. A chip at 0 is dimmed but still clickable. The row is a fixed
+  six-column grid with tabular digits, so a count change never moves it.
+- Each chip has `aria-pressed` and a tooltip / `aria-label` with the status
+  name, the count and the Option-click hint.
+- The active set survives a restart through `localStorage`
+  (`ssf-sidebar-status-chips`, a bitmask: 1 needs input, 2 failed, 4 review,
+  8 working, 16 open PR, 32 merged).
+  The v1 key `ssf-sidebar-status-filter` migrates once (needs input → needs
+  input + failed, review → review) and is removed. Any unreadable value means
+  no filter.
 
 The filter covers PROJECTS, SESSIONS and PINNED. A project, folder or section
-with no matching workspace disappears. The tooltip and `aria-label` name the
-active mode, and the mode survives a restart through `localStorage`
-(`ssf-sidebar-status-filter`). The status comes from the same
-`SidebarWorkspaceStatusStore` the row dots use (`StatusStoreContext`). The
-sidebar builders (`buildDashboardSidebarProjects`, `buildDashboardSidebarSessions`,
+with no matching workspace disappears. The sidebar builders
+(`buildDashboardSidebarProjects`, `buildDashboardSidebarSessions`,
 `partitionSidebarWorkspacesByPinned`) are pure and have no status access, so
-the filter is applied at render level. A hook, `ssfUseShow(ids)`, subscribes to
-the store entries of those ids and returns `false` when none of them matches.
-Each component then returns `null`, always after all of its own hooks.
+the filter is applied at render level. A hook, `ssfUseShow(workspaces)`,
+subscribes to the store entries of those workspaces and returns `false` when
+none of them matches.
+Each component then returns `null`, always after all of its own hooks. A
+project section stays while its delete or import dialog or its rename is open,
+so a status change cannot close a dialog mid-confirm.
 
 The filter never hides a selected workspace, and a Shift range spans only the
-rows you can see (`ssfRange`). Upstream cuts every selection to the ids it was
+rows you can see (`ssfRange`, which reads each id's pull request from
+`workspacesById`). Upstream cuts every selection to the ids it was
 given (`applyWorkspaceSelection` → `selectedIdsInVisualOrder`). So a bulk
 delete or move can never reach a workspace the filter hides, including one
-selected before the mode changed or one whose status changed afterwards.
+selected before the filter changed or one whose status changed afterwards.
 
 Known limitations:
-- The collapsed icon rail is not filtered.
+- The collapsed icon rail shows no chips and is not filtered.
 - A collapsed project or folder that matches stays collapsed. Expand it to see
   the rows.
 - Drag-and-drop reordering while a filter is active is untested: the sortable
-  lists still contain the hidden rows. Switch back to "all" before reordering.
-- Review mode works like an inbox. Upstream clears the `review` status once you
+  lists still contain the hidden rows. Turn the chips off before reordering.
+- Workspace keyboard shortcuts still number every row, hidden ones included
+  (upstream builds them from the unfiltered groups), so the visible rows can
+  show gaps and a shortcut can open a workspace the chips hide.
+- A workspace row or folder still hides while its context menu or inline
+  rename is open, when its status leaves the active chips. The menu closes and
+  the rename is dropped. The workspace you have open hides the same way; it
+  stays open in the main pane.
+- Review works like an inbox. Upstream clears the `review` status once you
   have seen the workspace or terminal, so a row you open leaves the filtered
-  list. Permission and failed rows stay until the agent's status changes.
+  list and the green count drops. Needs-input and failed rows stay until the
+  agent's status changes.
 
-### Region rewrite (how ~3 KB of code fits into a length-preserving patch)
+Upgrading a host that still runs v1 or an earlier v2 build: their digests of
+regions 1, 2 and 5 are recognised (`legacy_sha256`), and the patch stops with "an
+older --sidebar-status-filter generation is applied". Run `--revert`, then the
+full command again. `--revert` undoes only the last apply (it restores the
+newest backup whose manifest matches the current bundle); if a later run of
+other flags followed the old filter, repeat `--revert` until the error is gone.
 
-The filter needs about 3 KB of new code. No single anchor can absorb that much,
-so the patch rewrites two whole regions of the same file in place
+### Region rewrite (how ~5.7 KB of code fits into a length-preserving patch)
+
+The filter needs about 5.7 KB of new code. No single anchor can absorb that
+much, so the patch rewrites five whole regions of the same file in place
 (`STATUS_FILTER_REGIONS`):
 
-- `SortableWorkspaceItem` up to `DashboardSidebarProjectContextMenu`, 22,553 B.
-- `DashboardSidebarProjectSection` up to `GettingStartedChecklist`, 19,272 B.
+| # | Region | Size | Room freed | Holds |
+|---|---|---|---|---|
+| 1 | `SortableWorkspaceItem` → `DashboardSidebarProjectContextMenu` | 22,553 B | 1,449 B + 3 `//` lines | row, PINNED and folder guards, `ssfRange` call, `SsfStatusChips` |
+| 2 | `DashboardSidebarProjectSection` → `GettingStartedChecklist` | 19,272 B | 1,438 B + 2 `//` lines | project and SESSIONS guards, `SsfStatusChip` |
+| 3 | `DashboardSidebar` → `const SEED_FLAG_KEY` | 12,134 B | 588 B | the chip row itself, `SSF_CHIPS` / `ssfBits` |
+| 4 | `DashboardSidebarCloudContextMenu` → `DashboardSidebarCloudPortsButton` | 8,643 B | 1,446 B | shared state (`ssfMask`, `ssfToggle`, `ssfUseShow`) |
+| 5 | `DashboardSidebarWorkspaceContextMenu` → `useDashboardSidebarWorkspaceItemActions` | 9,227 B | 1,350 B | `ssfSubscribe` / `ssfMatches` / `ssfRange` / `ssfLabel` |
+
+Regions 1 and 2 are the v1 regions. Region 3 is where the row has to be
+rendered: in `DashboardSidebar`, between `DashboardSidebarHeader` and the
+scrolling `OverflowFadeContainer`, inside
+`DashboardSidebarWorkspaceStatusProvider`. Its own no-op comments free only
+588 B, so regions 4 and 5 were added purely for room (the three-chip draft
+fitted into four regions; the Working / Open PR / Merged chips needed the
+fifth). They were picked as the functions with the most strippable comments in
+the chunk that no other patch family touches (`DashboardSidebarProjectContextMenu`,
+600 B, was the runner-up). The chip label lives in region 5 because region 2
+had no room left for the dialog guard. After the rewrite the regions keep 21,
+140, 27, 21 and 611 B of trailing padding.
 
 Each region:
-1. starts at a unique top-level `function X({` anchor and has a fixed length.
-   The end anchor must follow it immediately.
+1. starts at a unique top-level anchor and has a fixed length. The end anchor
+   must follow it immediately.
 2. has its stock and rewritten bytes pinned by SHA-256. A region that is neither
    fails closed, and a patched region is a no-op.
 3. gets its space back by deleting the no-op comment tokens `/* @__PURE__ */ `
    (a bundler tree-shaking hint) and `/** i18n */` (a Lingui extraction
    marker). Neither token affects runtime, and neither contains a newline, so
-   automatic semicolon insertion is unchanged. This frees 1,449 B in the first
-   region and 1,438 B in the second.
+   automatic semicolon insertion is unchanged.
 4. receives the new code at exact, single-match edit anchors. Three edits
    delete whole `//` comment lines, five in all, that sit inside a
    parenthesised `return (` or after a comma, where a line break has no
@@ -160,8 +226,9 @@ Each region:
 5. is padded back to its original length with spaces at its end, which is a
    top-level statement boundary.
 
-The helper functions are top-level declarations, so they hoist across the
-module and may live in either region. A test undoes every edit and the
+The helpers are top-level declarations, so they hoist across the module and
+may live in any region; the `let` / `const` bindings are read only at render
+time, after the module has evaluated. A test undoes every edit and the
 padding and checks that the result is exactly the stock region minus the
 comment tokens.
 
@@ -190,9 +257,10 @@ header (file offsets, sizes, and per-file `integrity` with a SHA-256 for each
   `--ack-invalid-apple-signature` precondition.
 
 The cost: source maps for the rest of each region shift by the removed bytes.
-That affects only DevTools and Sentry column numbers inside those two regions.
+That affects only DevTools and Sentry column numbers inside those five regions.
 
-Proof on a copy of the installed 1.36.0 bundle, 2026-10-08:
+Proof on a copy of the installed 1.36.0 bundle (v1 on 2026-10-08, v2 on the
+pre-v1 backup `b1a1ad1c…` the same evening):
 - Apply, then re-run: `already patched`.
 - Archive size and header SHA-256 are unchanged.
 - `node --check` passes on the extracted `dist/main/index.js`, the
