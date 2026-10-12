@@ -2873,6 +2873,41 @@ class SupersetStatusFilterNamesTest(unittest.TestCase):
         self.assertIsNone(MODULE.require_status_filter_names(b"no asar header here"))
         self.patch(self.chunk())
 
+    # Value: protects=a real bundle whose ASAR header no longer parses is refused instead of silently skipping the name check; fails_when=_asar_entries maps an ASAR-shaped but unreadable header to "not an ASAR"; why_new=adversarial review 2026-10-13, the guard failed open; seam=none
+    def test_unreadable_asar_header_fails_closed(self):
+        real = self.asar(("layout-a.js", self.chunk() + self.NAMES))
+        for broken in (
+            real[:16] + b"{not json" + real[25:],
+            (4).to_bytes(4, "little") + (10**9).to_bytes(4, "little") + real[8:],
+            real.replace(b'"size": ', b'"bytes": ', 1),
+        ):
+            with self.subTest(prefix=broken[:20]):
+                with self.assertRaisesRegex(RuntimeError, "ASAR header"):
+                    MODULE.require_status_filter_names(broken)
+
+    # Value: protects=only module-level declarations and real imports satisfy the check; fails_when=a nested `function matches` inside another function or an `export { x as cn }` alias passes while the top-level binding is gone; why_new=adversarial review 2026-10-13; seam=none
+    def test_nested_definitions_and_export_aliases_do_not_count(self):
+        nested = self.NAMES.replace(b"function matches() {}\n", b"function outer() {\n  function matches() {}\n}\n")
+        exported = self.NAMES.replace(b"c as cn, ", b"") + b"export { q as cn };\n"
+        for name, names in (("matches", nested), ("cn", exported)):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(RuntimeError, f"{name} is not available"):
+                    MODULE.require_status_filter_names(self.asar(("layout-a.js", self.chunk() + names)))
+
+    # Value: protects=only a region's declared `shared` pairs are folded into its rewrite; fails_when=any other family's write inside a region is folded silently, so the first run passes and the next run sees "neither stock nor patched"; why_new=adversarial review 2026-10-13; seam=none
+    def test_only_shared_pairs_fold_into_a_region(self):
+        region = MODULE.STATUS_FILTER_REGIONS[2]
+        host = (0, b"x" + MODULE.SIDEBAR_FOOTER + b"y", b"X" + MODULE.SIDEBAR_FOOTER + b"Y", region.label)
+        footer = (1, MODULE.SIDEBAR_FOOTER, MODULE.SIDEBAR_FOOTER_HIDDEN, "sidebar: footer hidden")
+        stray = (1, MODULE.SIDEBAR_FOOTER[:8], b"Z" * 8, "compact: stray")
+        folded = MODULE._fold_into_regions([host, footer])
+        self.assertEqual([item[3] for item in folded], [region.label])
+        self.assertIn(MODULE.SIDEBAR_FOOTER_HIDDEN, folded[0][2])
+        kept = MODULE._fold_into_regions([host, stray])
+        self.assertIn(stray, kept)
+        with self.assertRaisesRegex(RuntimeError, "overlapping replacements"):
+            MODULE._require_disjoint(kept)
+
 
 class SupersetAsarIntegrityFuseTest(unittest.TestCase):
     """In-place edits are refused when Electron would validate per-file ASAR integrity."""

@@ -987,28 +987,32 @@ STATUS_FILTER_DEFINED_NAMES = (
 
 
 def _asar_entries(data) -> list[tuple[str, int, int]] | None:
-    """Return (path, absolute offset, size) of every packed file, or None when data has no ASAR header."""
-    if len(data) < 16:
+    """Return (path, absolute offset, size) of every packed file, or None when data has no ASAR header.
+
+    Data that starts like an ASAR pickle (first u32 = 4) but cannot be read
+    raises instead, so a changed header format never skips the name check.
+    """
+    if len(data) < 16 or struct.unpack("<I", data[:4])[0] != 4:
         return None
-    pickle_size, header_size, _, json_size = struct.unpack("<4I", data[:16])
-    if pickle_size != 4 or json_size + 8 > header_size or 16 + json_size > len(data):
-        return None
+    _, header_size, _, json_size = struct.unpack("<4I", data[:16])
     try:
+        if json_size + 8 > header_size or 8 + header_size > len(data):
+            raise ValueError("header sizes out of range")
         header = json.loads(bytes(data[16 : 16 + json_size]))
-    except ValueError:
-        return None
-    base = 8 + header_size
-    entries = []
+        base = 8 + header_size
+        entries = []
 
-    def walk(node, prefix):
-        for name, child in node.get("files", {}).items():
-            path = f"{prefix}/{name}" if prefix else name
-            if "files" in child:
-                walk(child, path)
-            elif "offset" in child:
-                entries.append((path, base + int(child["offset"]), int(child["size"])))
+        def walk(node, prefix):
+            for name, child in node.get("files", {}).items():
+                path = f"{prefix}/{name}" if prefix else name
+                if "files" in child:
+                    walk(child, path)
+                elif "offset" in child:
+                    entries.append((path, base + int(child["offset"]), int(child["size"])))
 
-    walk(header, "")
+        walk(header, "")
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise RuntimeError(f"status filter: unreadable ASAR header ({exc}); bundle structure may have changed") from exc
     return entries
 
 
@@ -1026,11 +1030,13 @@ def require_status_filter_names(data) -> None:
     if any(region.start not in chunk for region in STATUS_FILTER_REGIONS):
         raise RuntimeError(f"status filter: regions span several files, not only {path}; bundle structure may have changed")
     for names, pattern in (
-        (STATUS_FILTER_IMPORTED_NAMES, r"\bas {name}[,\s}}]"),
-        (STATUS_FILTER_DEFINED_NAMES, r"(?:const|function) {name}\b(?!\$)"),
+        # Rollup emits imports as `import { a as X, … } from` and module-scope
+        # declarations at column 0; a nested or exported alias binds nothing here.
+        (STATUS_FILTER_IMPORTED_NAMES, r"^import\s*\{{[^}}]*\bas {name}\b[^}}]*\}}\s*from"),
+        (STATUS_FILTER_DEFINED_NAMES, r"^(?:const|let|function) {name}\b(?!\$)"),
     ):
         for name in names:
-            if not re.search(pattern.format(name=re.escape(name)).encode(), chunk):
+            if not re.search(pattern.format(name=re.escape(name)).encode(), chunk, re.M):
                 raise RuntimeError(f"status filter: {name} is not available in {path}; bundle structure may have changed")
 
 
@@ -1108,14 +1114,21 @@ def _fold_into_regions(replacements: list[tuple[int, bytes, bytes, str]]) -> lis
     A region rewrite strips comments, so the inner write is matched by its
     bytes, not its offset; it has to occur exactly once in the rewrite.
     """
-    labels = {region.label for region in (*STATUS_FILTER_REGIONS, *STATUS_FILTER_REGION_VARIANTS)}
-    hosts = [list(item) for item in replacements if item[3] in labels]
+    shared = {}
+    for region in (*STATUS_FILTER_REGIONS, *STATUS_FILTER_REGION_VARIANTS):
+        shared.setdefault(region.label, set()).update(region.shared)
+    hosts = [list(item) for item in replacements if item[3] in shared]
     rest = []
     for item in replacements:
         offset, old, new, label = item
-        if label in labels:
+        if label in shared:
             continue
-        host = next((h for h in hosts if h[0] <= offset and offset + len(old) <= h[0] + len(h[1])), None)
+        # Only a region's declared shared pairs fold; any other write inside a
+        # region stays separate so _require_disjoint refuses it.
+        host = next(
+            (h for h in hosts if h[0] <= offset and offset + len(old) <= h[0] + len(h[1]) and (old, new) in shared[h[3]]),
+            None,
+        )
         if host is None:
             rest.append(item)
         else:

@@ -217,6 +217,15 @@ regardless of selection.
 
 Known limitations:
 - The collapsed icon rail shows no chips or search and is not filtered.
+- An active chip does not open a collapsed PROJECTS section, and PINNED renders
+  only below it: with PROJECTS collapsed a chip can count rows you do not see.
+  Typing into the search expands PROJECTS once by toggling its stored state.
+- The search matches PINNED and SESSIONS rows by the names of visible projects
+  only; a row whose project is hidden matches by its own name alone.
+- The hidden nav buttons and the hidden footer are sticky. A patcher that
+  predates them (an old watcher snapshot, or this code rolled back) reports the
+  bundle as `patch_plan_incompatible`, so run `--revert` before rolling the
+  patcher back.
 - Drag-and-drop reordering while a filter is active is untested: the sortable
   lists still contain the hidden rows. Turn the chips off and clear the search
   before reordering.
