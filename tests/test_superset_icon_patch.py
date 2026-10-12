@@ -2069,7 +2069,7 @@ assert.equal(ssfRange(store, rows, () => false, byId), rows);
                 for region in MODULE.STATUS_FILTER_REGIONS:
                     with self.subTest(region=region.label):
                         try:
-                            MODULE._plan_region_rewrite(data, region)
+                            MODULE._plan_region_rewrite(data, region, MODULE.STATUS_FILTER_REGION_VARIANTS)
                         except RuntimeError as exc:
                             # An older filter generation is recognised, but its
                             # stock bytes cannot be checked until it is reverted.
@@ -2343,6 +2343,75 @@ console.log(JSON.stringify(result));
         with asar.open("rb") as stream:
             with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
                 MODULE._plan_sound_only_when_waiting(data)
+
+
+class Superset137OptionalPatchTest(unittest.TestCase):
+    """Real 1.37 excerpts preserve the filter and both notification layouts."""
+
+    REGION = FIXTURES / "superset-1.37.0-status-filter-r3.js"
+    RENDERER = FIXTURES / "superset-1.37.0-v2-agent-lifecycle.js"
+
+    def region_plan(self, data):
+        """Plan the shared sticky-row family against either supported release."""
+        return MODULE._plan_region_rewrite(
+            data, MODULE.STATUS_FILTER_REGIONS[2], MODULE.STATUS_FILTER_REGION_VARIANTS
+        )
+
+    def test_real_sticky_region_is_pinned_idempotent_and_parseable(self):
+        """The exact new wrapper retains the switcher and the sticky chip position."""
+        stock = self.REGION.read_bytes()
+        end = MODULE.STATUS_FILTER_REGIONS[2].end
+        [(offset, old, patched, label)] = self.region_plan(stock + end)
+        self.assertEqual(offset, 0)
+        self.assertEqual(old, stock)
+        self.assertEqual(patched, (FIXTURES / "superset-1.37.0-status-filter-r3.patched.js").read_bytes())
+        self.assertEqual(len(patched), len(stock))
+        self.assertEqual(self.region_plan(patched + end), [])
+        self.assertIn(b"DashboardSidebarActiveWorkspaceSwitcher", patched)
+        self.assertLess(patched.index(b"DashboardSidebarWorkspaceStatusProvider"), patched.index(b"SsfStatusChips"))
+        self.assertLess(patched.index(b"DashboardSidebarHeader, { isCollapsed }"), patched.index(b"SsfStatusChips"))
+        self.assertLess(patched.index(b"SsfStatusChips"), patched.index(b"jsxRuntimeExports.jsxs(OverflowFadeContainer"))
+        node_check(self, patched)
+
+    def test_sticky_family_rejects_unknown_bytes_and_duplicate_starts(self):
+        """A new length never permits an unpinned or ambiguous region."""
+        stock = self.REGION.read_bytes()
+        end = MODULE.STATUS_FILTER_REGIONS[2].end
+        broken = stock.replace(b"switcherWorkspaces", b"switcherWorkspaceX", 1)
+        for data in (broken + end, stock[:-1] + end, stock + end + stock + end):
+            with self.subTest(size=len(data)):
+                with self.assertRaises(RuntimeError):
+                    self.region_plan(data)
+
+    def test_renderer_sound_preserves_layout_suppression_and_notifications(self):
+        """Both panes still suppress visible events while only waiting events ring."""
+        renderer = self.RENDERER.read_bytes()
+        main = SupersetSoundOnlyWhenWaitingPatchTest.MAIN.read_bytes()
+        stock = main + b"|" + renderer
+        patched = bytearray(stock)
+        for offset, old, new, _label in MODULE._plan_sound_only_when_waiting(stock):
+            patched[offset:offset + len(old)] = new
+        self.assertEqual(len(patched), len(stock))
+        self.assertEqual(MODULE._plan_sound_only_when_waiting(bytes(patched)), [])
+        patched_renderer = bytes(patched[len(main) + 1:])
+        node_check(self, patched_renderer)
+        harness = SupersetSoundOnlyWhenWaitingPatchTest.renderer_harness(self, renderer)
+        harness = harness.replace("let shown = 0;", "let shown = 0; let suppressed = false;")
+        harness = harness.replace("const shouldSuppress = () => false;", "const shouldSuppress = (_target, layouts) => { if (layouts.rightPaneLayout !== 'right') throw Error('lost right pane'); return suppressed; };\nconst getLocalPaneLayouts = (layouts) => layouts;")
+        harness = harness.replace("paneLayout: null, volume", "paneLayout: null, rightPaneLayout: 'right', volume")
+        harness = harness.replace("console.log(JSON.stringify(result));", "suppressed = true; result.suppressedPermission = run('PermissionRequest', false); console.log(JSON.stringify(result));")
+        upstream = json.loads(run_node(self, harness))
+        actual = json.loads(run_node(self, harness.replace(renderer.decode(), patched_renderer.decode())))
+        self.assertEqual(upstream["Stop"], [1, 1])
+        self.assertEqual(upstream["Failed"], [1, 1])
+        expected = dict(upstream, Stop=[0, 1], Failed=[0, 1])
+        self.assertEqual(actual, expected)
+        self.assertEqual(actual["PermissionRequest"], [1, 1])
+        self.assertEqual(actual["PendingQuestion"], [1, 1])
+        self.assertEqual(actual["suppressedPermission"], [0, 0])
+        self.assertEqual(actual["mutedPermission"], [0, 1])
+        with self.assertRaisesRegex(RuntimeError, "renderer notification sound"):
+            MODULE._plan_sound_only_when_waiting(stock + MODULE.SOUND_RENDERER_ALWAYS)
 
 
 class SupersetAsarIntegrityFuseTest(unittest.TestCase):

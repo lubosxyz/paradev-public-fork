@@ -438,7 +438,7 @@ def _plan_pinned_icon_only(data) -> list[tuple[int, bytes, bytes, str]]:
     return replacements
 
 
-# --sidebar-status-filter (desktop-v1.36.0, layout-*.js). The filter (v2: a sticky
+# --sidebar-status-filter (desktop-v1.36.0–v1.37.0, layout-*.js). The filter (v2: a sticky
 # row of six status chips) needs ~5.7 KB of new code, far more than any single anchor can absorb, so it uses a region
 # rewrite instead of anchor swaps — see patches/README.md §Region rewrite for
 # the ASAR-safety argument (header untouched, offsets preserved, the embedded
@@ -739,6 +739,29 @@ STATUS_FILTER_REGIONS = (
 )
 
 
+# 1.37 adds an active-workspace switcher under the status provider, changing
+# only the sticky-row region; the other four regions remain byte-identical.
+# Keep the 1.36 pins above for rollback; see REBASE.md and real fixture r3.
+STATUS_FILTER_REGION_VARIANTS = (
+    RegionRewrite(
+        label="status filter: sticky chip row",
+        start=STATUS_FILTER_REGIONS[2].start,
+        end=STATUS_FILTER_REGIONS[2].end,
+        length=13413,
+        stock_sha256="900b4f6260154132b79bfa163f5d3e66f4f8e751ac476459703fbe596c5bb54e",
+        patched_sha256="e77b3309f341457b692581f147766ce6c3ed0a993d804ed199e8e969025af73a",
+        edits=(
+            _insert_after(
+                b'        jsxRuntimeExports.jsx(DashboardSidebarHeader, { isCollapsed }),\n',
+                b"        !isCollapsed && jsxRuntimeExports.jsx(SsfStatusChips, "
+                b"{ pinnedWorkspaces, sessionWorkspaces, groups: orderedGroups }),\n",
+            ),
+            _insert_after(b'    ] }) }) })\n  ] });\n}\n', STATUS_FILTER_BITS_JS),
+        ),
+    ),
+)
+
+
 def rewrite_region(region: RegionRewrite, stock: bytes) -> bytes:
     """Strip no-op comments, apply each edit once and pad back to the stock length."""
     rewritten = stock
@@ -754,7 +777,9 @@ def rewrite_region(region: RegionRewrite, stock: bytes) -> bytes:
     return rewritten + b" " * (len(stock) - len(rewritten))
 
 
-def _plan_region_rewrite(data, region: RegionRewrite) -> list[tuple[int, bytes, bytes, str]]:
+def _plan_region_rewrite(
+    data, region: RegionRewrite, variants: tuple[RegionRewrite, ...] = (),
+) -> list[tuple[int, bytes, bytes, str]]:
     """Locate one pinned region and return its rewrite, or nothing when already patched."""
     offsets = _find_all(data, region.start)
     if len(offsets) != 1:
@@ -763,9 +788,16 @@ def _plan_region_rewrite(data, region: RegionRewrite) -> list[tuple[int, bytes, 
             "bundle structure may have changed"
         )
     offset = offsets[0]
-    stop = offset + region.length
-    if data[stop : stop + len(region.end)] != region.end:
+    # Select only explicit sibling shapes; no variable-length or fuzzy slicing.
+    candidates = [
+        candidate for candidate in (region, *variants)
+        if candidate.start == region.start and candidate.end == region.end
+        and data[offset + candidate.length : offset + candidate.length + len(candidate.end)] == candidate.end
+    ]
+    if len(candidates) != 1:
         raise RuntimeError(f"{region.label}: end anchor not at the pinned length; bundle structure may have changed")
+    region = candidates[0]
+    stop = offset + region.length
     current = bytes(data[offset:stop])
     digest = hashlib.sha256(current).hexdigest()
     if digest == region.patched_sha256:
@@ -783,7 +815,7 @@ def _plan_region_rewrite(data, region: RegionRewrite) -> list[tuple[int, bytes, 
     return [(offset, current, rewritten, region.label)]
 
 
-# --sound-only-when-waiting (desktop-v1.36.0). Upstream rings on every agent
+# --sound-only-when-waiting (desktop-v1.36.0–v1.37.0). Upstream rings on every agent
 # lifecycle notification, including Stop (task finished). Two paths play it:
 #   1. main process (dist/main/index.js) NotificationManager.handleAgentLifecycle
 #      -> deps.playSound() -> playNotificationSound (afplay of the selected
@@ -828,21 +860,45 @@ SOUND_RENDERER_WAITING = _pad_variant(
 )
 
 
+# 1.37 passes both local panes through layouts; preserve visibility suppression.
+SOUND_RENDERER_ALWAYS_1_37 = (
+    b'  if (payload.eventType === "Start" || payload.eventType === "Attached" || payload.eventType === "Detached") {\n'
+    b'    return;\n'
+    b'  }\n'
+    b'  if (shouldSuppress(target, layouts)) return;\n'
+    b'  const ringtoneId = useRingtoneStore.getState().selectedRingtoneId;\n'
+    b'  void playRingtone({\n'
+    b'    ringtoneId,\n'
+    b'    volume,\n'
+    b'    muted\n'
+    b'  });\n'
+)
+SOUND_RENDERER_WAITING_1_37 = _pad_variant(
+    SOUND_RENDERER_ALWAYS_1_37,
+    b'  const t = payload.eventType;\n'
+    b'  if (t === "Start" || t === "Attached" || t === "Detached") return;\n'
+    b'  if (shouldSuppress(target, layouts)) return;\n'
+    b'  if (t === "PermissionRequest" || t === "PendingQuestion") void playRingtone({ ringtoneId: useRingtoneStore.getState().selectedRingtoneId, volume, muted });\n'
+)
+
+
+
 def _plan_sound_only_when_waiting(data) -> list[tuple[int, bytes, bytes, str]]:
     """Validate both notification-sound call sites and return the writes still needed."""
     replacements = []
-    for name, source, target, label in (
-        ("main notification sound", SOUND_MAIN_ALWAYS, SOUND_MAIN_WAITING, "sound: main only when waiting"),
+    for name, pairs, label in (
+        ("main notification sound", ((SOUND_MAIN_ALWAYS, SOUND_MAIN_WAITING),), "sound: main only when waiting"),
         (
             "renderer notification sound",
-            SOUND_RENDERER_ALWAYS,
-            SOUND_RENDERER_WAITING,
+            ((SOUND_RENDERER_ALWAYS, SOUND_RENDERER_WAITING),
+             (SOUND_RENDERER_ALWAYS_1_37, SOUND_RENDERER_WAITING_1_37)),
             "sound: renderer only when waiting",
         ),
     ):
-        offset, old = _single_variant(data, name, [source, target])
-        if old != target:
-            replacements.append((offset, old, target, label))
+        offset, old = _single_variant(data, name, [part for pair in pairs for part in pair])
+        targets = dict(pairs)
+        if old in targets:
+            replacements.append((offset, old, targets[old], label))
     return replacements
 
 
@@ -1164,7 +1220,7 @@ def plan_replacements(
 
     if sidebar_status_filter:
         for region in STATUS_FILTER_REGIONS:
-            replacements.extend(_plan_region_rewrite(data, region))
+            replacements.extend(_plan_region_rewrite(data, region, STATUS_FILTER_REGION_VARIANTS))
 
     if sound_only_when_waiting:
         replacements.extend(_plan_sound_only_when_waiting(data))

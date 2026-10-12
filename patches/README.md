@@ -96,7 +96,7 @@ Both anchors are validated as exactly one stock-or-patched variant; drift fails
 closed and a re-run is a no-op. Without the flag the pinned rows are left as
 they are; undo with `--revert`.
 
-With `--sidebar-status-filter` (desktop-v1.36.0, `layout-*.js`) the expanded
+With `--sidebar-status-filter` (desktop-v1.36.0–v1.37.0, `layout-*.js`) the expanded
 sidebar gets a row of six status chips at the very top, right below the
 `--compact-sidebar` navigation grid. The row sits outside the scrolling list,
 so it stays in place while the workspaces scroll and does not jump when
@@ -268,7 +268,7 @@ pre-v1 backup `b1a1ad1c…` the same evening):
 - `inspect_asar()` reports `patches_needed: 0`.
 - `--revert` restores the original SHA-256.
 
-With `--sound-only-when-waiting` (desktop-v1.36.0) the notification sound plays
+With `--sound-only-when-waiting` (desktop-v1.36.0–v1.37.0) the notification sound plays
 only while an agent is waiting for you (`PermissionRequest`, `PendingQuestion`).
 It no longer plays on `Stop`, i.e. when a task finishes. Notifications, ringtone
 choice, volume, mute and the Settings UI are unchanged. Two code paths play the
@@ -288,6 +288,16 @@ No other completion sound exists in 1.36.0. The bundle has one `afplay` (main
 microphone visualiser. Both anchors are single-match stock or patched
 variants, and node harness tests drive the real upstream excerpts to show that
 Stop is silent while the waiting events still ring.
+
+Desktop 1.37.0 adds an active-workspace switcher below the status provider.
+Only sticky-row region 3 changes (12,134 → 13,413 bytes); its separate stock
+and patched SHA-256 pins retain the 1.36 variant. The chips remain between
+`DashboardSidebarHeader` and the scroller, inside the same status provider.
+The renderer sound handler now passes `layouts` for both panes to
+`shouldSuppress`; its separate exact-byte pair preserves that suppression.
+The main sound anchor and the other four filter regions are unchanged.
+Real 1.37 fixtures and Node behavior tests cover these variants; the 1.36
+fixtures remain. Automated `PATCH_OPTIONS` remain unchanged.
 
 The `LIVE_HOST_ONLY` anchor tests (`test_installed_bundle_accepts_*`) read the
 installed release's stock bytes, not the live file. `stock_snapshot()` follows

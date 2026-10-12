@@ -116,6 +116,14 @@ The sound family (`SOUND_MAIN_*`, `SOUND_RENDERER_*`) is an ordinary anchor
 pair. It rebases with the procedure above, and its node harness tests have to
 reproduce upstream's behaviour on the stock excerpt first.
 
+## Worker handoff before live verification
+
+When a parent applies a candidate while the worker continues editing, hand off
+a new immutable 0600 patcher copy outside the disposable worktree and record
+its SHA-256. Never point the parent at the mutable source path. Keep the copy
+unchanged until the parent returns its live hash, backup, timestamp and GUI
+evidence; only then write the operational audit entry.
+
 ## When NOT to rebase mechanically
 
 - Upstream **adopted** the behavior → retire the patch (keep the verify-only
@@ -152,3 +160,20 @@ exact header excerpt cut from the real bundle, so these anchors cannot rot
 silently the way the synthetic fixture can. Proof on a copy:
 `patch-asar.py --asar <copy> --backup-dir <tmp> …` twice (second run
 `already patched`), `--revert` back to the stock SHA-256.
+
+## Worked example: optional flags 1.36.0 → 1.37.0 (2026-10-12)
+
+The base patch set and `--pinned-icon-only` still match. The status filter's
+region 3 grew to 13,413 bytes because the status provider now also contains
+`DashboardSidebarActiveWorkspaceSwitcher`. Its header/scroller indentation
+and closing wrapper changed. `STATUS_FILTER_REGION_VARIANTS` adds the exact
+new range and hashes alongside the retained 1.36 pins; all four other regions
+are byte-identical. Region selection requires one start, exactly one explicit
+length/end boundary and the matching stock/patched digest, before any write.
+
+The renderer sound anchor changes `localPaneLayout` to `layouts`. Both
+`SOUND_RENDERER_*_1_37` bytes are pinned as a separate pair; a duplicate old/new
+call site fails closed. Real Node harnesses cover waiting vs Stop/Failed,
+muting, visible-pane suppression and the right-pane layout. The main sound
+anchor is unchanged. Fixtures come from the installed 1.37 stock snapshot,
+not from constants, and 1.36 fixtures remain in the targeted tests.
