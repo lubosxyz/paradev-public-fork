@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import re
 import tempfile
 import unittest
 from unittest import mock
@@ -222,18 +223,13 @@ class SupersetUiPatchTest(unittest.TestCase):
         asar = installed_stock_snapshot()
         if asar is None:
             self.skipTest("no installed Superset bundle on this machine")
-        options = dict(
-            size=6,
-            hide_tray=True,
-            custom_project_icons=True,
-            keep_icon_on_hover=True,
-            compact_sidebar=True,
-            pinned_icon_only=True,
-            sidebar_status_filter=True,
-            sound_only_when_waiting=True,
-            hide_nav_buttons=True,
-            hide_sidebar_footer=True,
+        # The checker's set is the production set the re-apply paths pass.
+        checker_spec = importlib.util.spec_from_file_location(
+            "check_upstream_patches_live", MODULE_PATH.parents[1] / "check-upstream-patches.py"
         )
+        checker = importlib.util.module_from_spec(checker_spec)
+        checker_spec.loader.exec_module(checker)
+        options = dict(checker.PATCH_OPTIONS)
         with asar.open("rb") as stream:
             with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_COPY) as data:
                 writes = MODULE.plan_replacements(data, **options)
@@ -2766,6 +2762,116 @@ class Superset137OptionalPatchTest(unittest.TestCase):
         self.assertEqual(actual["mutedPermission"], [0, 1])
         with self.assertRaisesRegex(RuntimeError, "renderer notification sound"):
             MODULE._plan_sound_only_when_waiting(stock + MODULE.SOUND_RENDERER_ALWAYS)
+
+
+class SupersetStatusFilterGenerationsTest(unittest.TestCase):
+    """Older filter generations and the 1.37 sticky-row variant stay recognised end to end."""
+
+    # Value: protects=a 1.36 host still on the v2 chips gets the --revert hint for every region, not "neither stock nor patched"; fails_when=a v2 digest drops out of legacy_sha256 or a region's v2 bytes drift from the registered digest; why_new=v3 overwrote the v2 patched fixtures, so nothing fed real v2 bytes to the plan; seam=real v2 fixtures
+    def test_v2_generation_on_136_asks_for_revert(self):
+        for n, region in enumerate(MODULE.STATUS_FILTER_REGIONS[:5], 1):
+            v2 = (FIXTURES / f"superset-1.36.0-status-filter-r{n}.v2-patched.js").read_bytes()
+            with self.subTest(region=region.label):
+                with self.assertRaisesRegex(RuntimeError, "older --sidebar-status-filter generation"):
+                    MODULE._plan_region_rewrite(v2 + region.end, region, MODULE.STATUS_FILTER_REGION_VARIANTS)
+
+    # Value: protects=on a 1.37 bundle the footer write is folded into the 1.37 sticky-row rewrite through the real plan and re-plans to nothing; fails_when=fold hosts miss the 1.37 variant (renamed label), so the footer and region writes overlap and every run fails closed; why_new=only the 1.36 bundle went through patch_bytes with both flags; seam=real 1.37 region fixture
+    def test_footer_and_filter_compose_on_137_through_the_plan(self):
+        footer_test = SupersetHideSidebarFooterPatchTest()
+        stock_136 = (FIXTURES / "superset-1.36.0-status-filter-r3.js").read_bytes()
+        stock_137 = (FIXTURES / "superset-1.37.0-status-filter-r3.js").read_bytes()
+        bundle = footer_test.filter_bundle()
+        self.assertEqual(bundle.count(stock_136), 1)
+        bundle = bundle.replace(stock_136, stock_137)
+
+        together, changes = footer_test.patch(bundle, footer=True, status_filter=True)
+
+        self.assertEqual(len(together), len(bundle))
+        self.assertIn("status filter: sticky chip row", changes)
+        self.assertNotIn("sidebar: footer hidden", changes)
+        self.assertEqual(together.count(MODULE.SIDEBAR_FOOTER_HIDDEN), 1)
+        self.assertIn(b"DashboardSidebarActiveWorkspaceSwitcher", together)
+        self.assertEqual(footer_test.patch(together, footer=True, status_filter=True), (together, []))
+
+    # Value: protects=every --hide-nav-buttons entry names a real header button; fails_when=a key is mistyped or an upstream title is renamed, so HIDDEN_NAV_BUTTONS.get(title) misses and the button silently stays visible; why_new=the map mixes positional variants with string keys; seam=none
+    def test_hidden_nav_keys_match_real_button_titles(self):
+        titles = {variant[2] for variant in (*MODULE.TOP_NAV_BUTTON_VARIANTS, MODULE.TOP_NAV_NEW_WORKSPACE_1_30)}
+        self.assertEqual(set(MODULE.HIDDEN_NAV_BUTTONS), {"New Workspace", "Search", "Workspaces"})
+        self.assertLessEqual(set(MODULE.HIDDEN_NAV_BUTTONS), titles)
+
+
+class SupersetStatusFilterNamesTest(unittest.TestCase):
+    """The status filter refuses a real ASAR whose region chunk lacks a name the injected JS reads."""
+
+    WORKSPACE_NEW_SHORTCUT = SupersetUiPatchTest.WORKSPACE_NEW_SHORTCUT
+    REGION_FIXTURES = SupersetSidebarStatusFilterPatchTest.REGION_FIXTURES
+    regions = SupersetSidebarStatusFilterPatchTest.regions
+    # Minimal upstream declarations of every name the injected code reads from
+    # outside the pinned regions (imports from shared chunks, local definitions).
+    NAMES = (
+        b'import { j as jsxRuntimeExports, r as reactExports, c as cn, T as Tooltip, a as TooltipTrigger, '
+        b'b as TooltipContent, m as LuGitMerge, p as LuGitPullRequest } from "./shared.js";\n'
+        b"const StatusStoreContext = 1;\nconst DashboardSidebarSelectionContext = 1;\nconst PR_COLOR_BY_STATE = {};\n"
+        b"function getProjectChildrenWorkspaces() {}\nfunction AsciiSpinner() {}\n"
+        b"function DashboardSidebarProjectsFilterInput() {}\nconst useSidebarSectionsCollapseStore = 1;\n"
+        b"function matches() {}\n"
+    )
+
+    def asar(self, *files: tuple[str, bytes]) -> bytes:
+        """Pack files into a real ASAR layout (pickle sizes, JSON header, payloads)."""
+        tree, payload = {}, b""
+        for name, content in files:
+            tree[name] = {"size": len(content), "offset": str(len(payload))}
+            payload += content
+        header = json.dumps({"files": {"dist": {"files": {"renderer": {"files": {"assets": {"files": tree}}}}}}}).encode()
+        padded = header + b"\0" * (-len(header) % 4)
+        header_size = 8 + len(padded)
+        return (4).to_bytes(4, "little") + header_size.to_bytes(4, "little") + (header_size - 4).to_bytes(4, "little") + len(header).to_bytes(4, "little") + padded + payload
+
+    def chunk(self):
+        """Synthetic base anchors plus every real stock region, as one layout chunk."""
+        return SupersetSidebarStatusFilterPatchTest.stock_bundle(self)
+
+    def patch(self, data, status_filter=True):
+        """Apply the compact set with or without the status filter."""
+        return MODULE.patch_bytes(
+            data, size=6, hide_tray=True, custom_project_icons=True, keep_icon_on_hover=True,
+            compact_sidebar=True, sidebar_status_filter=status_filter,
+        )
+
+    # Value: protects=a real bundle whose region chunk lacks AsciiSpinner, matches, a context, an icon or a helper is refused before any write instead of crashing the sidebar with a ReferenceError; fails_when=the name check is dropped, misses a name the injected JS uses, or runs on the wrong file; why_new=Red Team 2026-10-13, the region digests cannot see names outside the regions and the unattended path now applies the filter; seam=none
+    def test_missing_upstream_name_refuses_the_filter(self):
+        complete = self.asar(("layout-a.js", self.chunk() + self.NAMES))
+        patched, changes = self.patch(complete)
+        self.assertIn("status filter: sticky chip row", changes)
+        self.assertEqual(len(patched), len(complete))
+        chunk = self.chunk()
+        for name in (*MODULE.STATUS_FILTER_IMPORTED_NAMES, *MODULE.STATUS_FILTER_DEFINED_NAMES):
+            with self.subTest(name=name):
+                if re.search(rf"function {name}\(".encode(), chunk):
+                    continue  # defined inside a pinned region, so the region digest already covers it
+                broken = re.sub(rf"\b{name}\b".encode(), f"{name}X".encode(), self.NAMES, count=1)
+                self.assertNotEqual(broken, self.NAMES, name)
+                data = self.asar(("layout-a.js", self.chunk() + broken))
+                with self.assertRaisesRegex(RuntimeError, f"{name} .*bundle structure may have changed"):
+                    self.patch(data)
+                self.patch(data, status_filter=False)
+
+    # Value: protects=names must live in the same chunk as the regions and the regions in one chunk; fails_when=the check accepts a definition from another file or a region split into a second chunk; why_new=Rollup can move a helper into another chunk while every region digest still matches; seam=none
+    def test_names_in_another_chunk_or_split_regions_are_refused(self):
+        elsewhere = self.asar(("layout-a.js", self.chunk()), ("layout-b.js", self.NAMES))
+        with self.assertRaisesRegex(RuntimeError, "bundle structure may have changed"):
+            self.patch(elsewhere)
+        chunk = self.chunk()
+        cut = chunk.index(MODULE.STATUS_FILTER_REGIONS[-1].start)
+        split = self.asar(("layout-a.js", chunk[:cut] + self.NAMES), ("layout-b.js", chunk[cut:]))
+        with self.assertRaisesRegex(RuntimeError, "regions span several files"):
+            self.patch(split)
+
+    # Value: protects=synthetic test bundles and any non-ASAR input keep working without file boundaries; fails_when=the check raises on data that has no ASAR header; why_new=new check; seam=none
+    def test_non_asar_data_skips_the_name_check(self):
+        self.assertIsNone(MODULE.require_status_filter_names(b"no asar header here"))
+        self.patch(self.chunk())
 
 
 class SupersetAsarIntegrityFuseTest(unittest.TestCase):

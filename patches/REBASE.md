@@ -97,7 +97,11 @@ upstream change inside the range is therefore a `neither stock nor patched` (or
    padding (regions 1, 3 and 5 have the most), widen a region to the next top-level
    statement, or add a room-only region like regions 4 to 8 (rank the chunk's top-level functions by the bytes of
    `JS_NOOP_COMMENTS` they hold and skip any that contain another family's
-   anchor). Never strip anything other than `JS_NOOP_COMMENTS` and whole `//`
+   anchor). Moving or editing a shared snippet changes the patched digest of
+   every release variant that uses it, including the still-installed one: add
+   the old patched digests to that variant's `legacy_sha256`, so the live host
+   gets the `--revert` hint instead of "neither stock nor patched", and keep a
+   revert-then-reapply step in the rebase run. Never strip anything other than `JS_NOOP_COMMENTS` and whole `//`
    lines.
 4. Pin the new `length`, `stock_sha256` and `patched_sha256`. Keep the old
    values as a second release variant only while a supported bundle can still

@@ -360,8 +360,10 @@ digests, so such a host gets the `--revert` hint. The renderer sound handler
 now passes `layouts` for both panes to `shouldSuppress`; its separate
 exact-byte pair preserves that suppression. The main sound anchor and the other
 seven filter regions are unchanged. Real 1.37 fixtures and Node behavior tests
-cover these variants; the 1.36 fixtures remain. Automated `PATCH_OPTIONS`
-remain unchanged.
+cover these variants; the 1.36 fixtures remain. Before any write the patcher
+also checks that the chunk holding the regions imports or defines every
+upstream name the injected code reads (`require_status_filter_names`), so a
+release that renames one fails closed instead of crashing the sidebar.
 
 The `LIVE_HOST_ONLY` anchor tests (`test_installed_bundle_accepts_*`) read the
 installed release's stock bytes, not the live file. `stock_snapshot()` follows
@@ -393,14 +395,27 @@ python3 patch-asar.py --revert
 ```
 
 `--pinned-icon-only`, `--sidebar-status-filter`, `--sound-only-when-waiting`,
-`--hide-nav-buttons` and `--hide-sidebar-footer` are part of the automated
-re-apply path since 2026-10-13, after Lubos confirmed the live result visually
+`--hide-nav-buttons` and `--hide-sidebar-footer` belong to the approved
+production set since 2026-10-13, after Lubos confirmed the live result visually
 (Superset 1.37 had lost them because they were manual-only). The same flag set
-lives in `check-upstream-patches.py` `PATCH_OPTIONS`, `watch-local-patches.py`,
-the upstream-update-watch prompt, `/patch-superset` and "When to re-run" below;
+lives in `check-upstream-patches.py` `PATCH_OPTIONS` (so drift detection
+notices a missing optional patch), `watch-local-patches.py`, the
+upstream-update-watch prompt, `/patch-superset` and "When to re-run" below;
 `tests/test_superset_patch_watch.py` and `tests/test_superset_automation_prompt.py`
 fail when they drift. A new optional flag starts outside that set and joins it
-only after a visual confirmation.
+only after a visual confirmation. Today nothing re-applies unattended: the
+watcher LaunchAgent is detect-only and the daily automation is paused (see
+§Automated re-apply), so the re-apply after an update is `/patch-superset`. A
+watcher snapshot installed before this set changed reports the patched bundle
+as `incompatible`; reinstall it with `install-patch-watch.py --apply` after
+the change lands.
+
+The plan is all-or-nothing: if an update breaks only an optional family
+(a region pin, the sound pair, a nav or footer anchor), the full command fails
+before any write and the base set stays stock too. Then apply the base set
+first (`--size 6 --hide-tray --custom-project-icons --keep-icon-on-hover
+--compact-sidebar --ack-invalid-apple-signature`) to bring back icons and the
+compact header, and rebase the failing optional family per `REBASE.md`.
 
 `project-icons/komfi-ops.svg` is an intentional palette exception: its
 slate-900 (`#0f172a`) background and slate-200 (`#e2e8f0`) gear stroke retain

@@ -20,6 +20,7 @@ import mmap
 import os
 import re
 import shutil
+import struct
 import sys
 import tempfile
 import time
@@ -581,7 +582,9 @@ STATUS_FILTER_SHOW_JS = b'''function ssfUseShow(workspaces) {
 }
 '''
 # The chip list and the bits of one workspace. Agent status comes from the
-# row-dot store, the pull request state from the decorated workspace.
+# row-dot store, the pull request state from the decorated workspace. Bit 8 is
+# Working: STATUS_FILTER_CHIP_JS draws the AsciiSpinner for `bit === 8`, so
+# renumbering SSF_CHIPS has to change that check too.
 STATUS_FILTER_BITS_JS = b'''const SSF_CHIPS = [[1, "Needs input", "yellow"], [2, "Failed", "red"], [4, "Review", "green"], [8, "Working", "amber"], [16, "Open PR", "emerald", "open"], [32, "Merged", "purple", "merged"]];
 function ssfBits(status, pr) {
   return (status === "permission" ? 1 : status === "failed" ? 2 : status === "review" ? 4 : status === "working" ? 8 : 0) | (pr === "merged" ? 32 : pr === "open" || pr === "draft" || pr === "queued" ? 16 : 0);
@@ -765,7 +768,10 @@ STATUS_FILTER_REGIONS = (
             "8383a30eaff0a0f282da74b8b79954a1cf5165941c98a1234a19ef1a16839101",
         ),
     ),
-    # DashboardSidebarProjectSection .. SESSIONS section (row guards + SsfStatusChip).
+    # DashboardSidebarProjectSection .. SESSIONS section: project and SESSIONS
+    # guards, SsfStatusChip, and the PROJECTS header loses its filter input (it
+    # moved to the sticky SsfSearch row) while the input labels say it searches
+    # the whole sidebar.
     RegionRewrite(
         label="status filter: projects and sessions",
         start=b"function DashboardSidebarProjectSection({\n",
@@ -841,9 +847,11 @@ STATUS_FILTER_REGIONS = (
             "a867c4b8aa38d54761f5ce1eacb6236cae3d340862faefef40c359b3529f0084",
         ),
     ),
-    # DashboardSidebar: the sticky chip row goes between DashboardSidebarHeader
-    # (the --compact-sidebar grid) and the scrolling OverflowFadeContainer, below
-    # DashboardSidebarWorkspaceStatusProvider. Expanded sidebar only.
+    # DashboardSidebar: the sticky SsfSearch row and below it the chip row go
+    # between DashboardSidebarHeader (the --compact-sidebar grid) and the
+    # scrolling OverflowFadeContainer, below DashboardSidebarWorkspaceStatusProvider.
+    # Expanded sidebar only. The region also holds the --hide-sidebar-footer row,
+    # named in `shared`; the 1.37 shape is in STATUS_FILTER_REGION_VARIANTS.
     RegionRewrite(
         label="status filter: sticky chip row",
         start=b"function DashboardSidebar({\n",
@@ -961,6 +969,71 @@ STATUS_FILTER_REGION_VARIANTS = (
 )
 
 
+# Names the injected filter JS reads from upstream code outside the pinned
+# regions. The region digests cannot see them, so a release that renames or
+# moves one (or Rollup suffixes it, e.g. `matches$1`) while the regions stay
+# byte-identical would throw a ReferenceError in the sidebar. The check below
+# fails closed instead ("bundle structure may have changed" routes the
+# automation to a rebase). Mirrors the LIVE_HOST_ONLY test
+# test_installed_bundle_defines_the_names_the_status_filter_uses.
+STATUS_FILTER_IMPORTED_NAMES = (
+    "jsxRuntimeExports", "reactExports", "cn", "Tooltip", "TooltipTrigger", "TooltipContent",
+    "LuGitMerge", "LuGitPullRequest",
+)
+STATUS_FILTER_DEFINED_NAMES = (
+    "StatusStoreContext", "DashboardSidebarSelectionContext", "PR_COLOR_BY_STATE", "getProjectChildrenWorkspaces",
+    "AsciiSpinner", "DashboardSidebarProjectsFilterInput", "useSidebarSectionsCollapseStore", "matches",
+)
+
+
+def _asar_entries(data) -> list[tuple[str, int, int]] | None:
+    """Return (path, absolute offset, size) of every packed file, or None when data has no ASAR header."""
+    if len(data) < 16:
+        return None
+    pickle_size, header_size, _, json_size = struct.unpack("<4I", data[:16])
+    if pickle_size != 4 or json_size + 8 > header_size or 16 + json_size > len(data):
+        return None
+    try:
+        header = json.loads(bytes(data[16 : 16 + json_size]))
+    except ValueError:
+        return None
+    base = 8 + header_size
+    entries = []
+
+    def walk(node, prefix):
+        for name, child in node.get("files", {}).items():
+            path = f"{prefix}/{name}" if prefix else name
+            if "files" in child:
+                walk(child, path)
+            elif "offset" in child:
+                entries.append((path, base + int(child["offset"]), int(child["size"])))
+
+    walk(header, "")
+    return entries
+
+
+def require_status_filter_names(data) -> None:
+    """Refuse the filter when its regions span files or their chunk lacks a name the injected JS uses."""
+    entries = _asar_entries(data)
+    if entries is None:
+        return  # synthetic test bundles have no file boundaries
+    anchor = data.find(STATUS_FILTER_REGIONS[0].start)
+    found = [(path, start, size) for path, start, size in entries if start <= anchor < start + size]
+    if anchor < 0 or len(found) != 1:
+        raise RuntimeError("status filter: region chunk not found; bundle structure may have changed")
+    path, start, size = found[0]
+    chunk = bytes(data[start : start + size])
+    if any(region.start not in chunk for region in STATUS_FILTER_REGIONS):
+        raise RuntimeError(f"status filter: regions span several files, not only {path}; bundle structure may have changed")
+    for names, pattern in (
+        (STATUS_FILTER_IMPORTED_NAMES, r"\bas {name}[,\s}}]"),
+        (STATUS_FILTER_DEFINED_NAMES, r"(?:const|function) {name}\b(?!\$)"),
+    ):
+        for name in names:
+            if not re.search(pattern.format(name=re.escape(name)).encode(), chunk):
+                raise RuntimeError(f"status filter: {name} is not available in {path}; bundle structure may have changed")
+
+
 def rewrite_region(region: RegionRewrite, stock: bytes) -> bytes:
     """Strip no-op comments, apply each edit once and pad back to the stock length."""
     rewritten = stock
@@ -1035,7 +1108,7 @@ def _fold_into_regions(replacements: list[tuple[int, bytes, bytes, str]]) -> lis
     A region rewrite strips comments, so the inner write is matched by its
     bytes, not its offset; it has to occur exactly once in the rewrite.
     """
-    labels = {region.label for region in STATUS_FILTER_REGIONS}
+    labels = {region.label for region in (*STATUS_FILTER_REGIONS, *STATUS_FILTER_REGION_VARIANTS)}
     hosts = [list(item) for item in replacements if item[3] in labels]
     rest = []
     for item in replacements:
@@ -1468,6 +1541,7 @@ def plan_replacements(
         replacements.extend(_plan_pinned_icon_only(data))
 
     if sidebar_status_filter:
+        require_status_filter_names(data)
         for region in STATUS_FILTER_REGIONS:
             replacements.extend(_plan_region_rewrite(data, region, STATUS_FILTER_REGION_VARIANTS))
 
