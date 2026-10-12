@@ -28,7 +28,9 @@ function SortableWorkspaceItem({
     disabled: disabled || isChildDragDisabled
   });
   const row = reactExports.useMemo(() => jsxRuntimeExports.jsx(DashboardSidebarWorkspaceItem, { workspace, onHoverCardOpen, shortcutLabel, isInSection, indentation, isSelected, onSelectionClick, pinnedContext }), [workspace, onHoverCardOpen, shortcutLabel, isInSection, indentation, isSelected, onSelectionClick, pinnedContext]);
-  if (!ssfUseShow([workspace])) return null;
+  const ssfV = ssfUseShow([workspace]);
+  if (!ssfV) return null;
+  collapsed &&= ssfV < 2;
   return jsxRuntimeExports.jsx("div", { ref: setNodeRef, style: {
     transform: CSS.Translate.toString(transform),
     transition,
@@ -53,7 +55,8 @@ function DashboardSidebarPinnedSection({
   const isDraggingWorkspace = activeType === "workspace";
   const emptyAtPickup = reactExports.useMemo(() => isDraggingWorkspace && pinnedItems.length === 0, [isDraggingWorkspace]);
   const isSectionCollapsed = useSidebarSectionsCollapseStore((s) => s.collapsed.pinned);
-  if (!ssfUseShow(pinnedWorkspaces) && !isCollapsed) return null;
+  const ssfV = ssfUseShow(pinnedWorkspaces);
+  if (!ssfV && !isCollapsed) return null;
   if (isCollapsed) {
     if (pinnedWorkspaces.length === 0) return null;
     return jsxRuntimeExports.jsxs("div", { className: "flex flex-col gap-0.5 py-1", children: [
@@ -79,7 +82,7 @@ function DashboardSidebarPinnedSection({
         id: "kNiQp6"
       }
     ), section: "pinned" }),
-    !isSectionCollapsed && jsxRuntimeExports.jsx(SortableContext, { items: pinnedItems, strategy: verticalListSortingStrategy, children: pinnedItems.map((id) => {
+    (!isSectionCollapsed || ssfV > 1) && jsxRuntimeExports.jsx(SortableContext, { items: pinnedItems, strategy: verticalListSortingStrategy, children: pinnedItems.map((id) => {
       const parsed = parseId(id);
       if (!parsed || parsed.type !== "workspace") return null;
       const workspace = workspacesById.get(parsed.realId);
@@ -375,7 +378,8 @@ function SortableSectionHeader({
     startRename();
     clearPendingSectionRename(section.id);
   }, [clearPendingSectionRename, pendingRenameSectionId, section.id, startRename]);
-  if (!ssfUseShow(section.workspaces)) return null;
+  const ssfV = ssfUseShow(section.workspaces);
+  if (!ssfV) return null;
   return jsxRuntimeExports.jsx("div", { ref: setNodeRef, style: {
     transform: CSS.Translate.toString(transform),
     transition,
@@ -384,24 +388,17 @@ function SortableSectionHeader({
   }, ...getBlockedDragProps(isChildDragDisabled), children: jsxRuntimeExports.jsx(DashboardSidebarSectionContextMenu, { color: section.color, onRename: startRename, onSetColor: (color) => setSectionColor(section.id, color), onDelete: () => onDelete(section.id), onHide, children: jsxRuntimeExports.jsx(DashboardSidebarGroupHeader, { label: isRenaming ? jsxRuntimeExports.jsx(RenameInput, { value: renameValue, onChange: setRenameValue, onSubmit: handleSubmitRename, onCancel: () => {
     setRenameValue(section.name);
     setIsRenaming(false);
-  }, className: "-ml-1 h-5 w-full min-w-0 border-none bg-transparent px-1 py-0 text-[13px] font-medium text-muted-foreground outline-none" }) : jsxRuntimeExports.jsx("span", { className: "truncate", children: section.name }), isCollapsed: section.isCollapsed, isEditing: isRenaming, isDraggable: !isChildDragDisabled, indentation, onToggleCollapse: () => onToggleCollapse(section.id), actions: jsxRuntimeExports.jsx(DashboardSidebarSectionActionsDropdown, { color: section.color, onRename: startRename, onSetColor: (color) => setSectionColor(section.id, color), onDelete: () => onDelete(section.id), onHide }), ...attributes, ...listeners }) }) });
+  }, className: "-ml-1 h-5 w-full min-w-0 border-none bg-transparent px-1 py-0 text-[13px] font-medium text-muted-foreground outline-none" }) : jsxRuntimeExports.jsx("span", { className: "truncate", children: section.name }), isCollapsed: section.isCollapsed && ssfV < 2, isEditing: isRenaming, isDraggable: !isChildDragDisabled, indentation, onToggleCollapse: () => onToggleCollapse(section.id), actions: jsxRuntimeExports.jsx(DashboardSidebarSectionActionsDropdown, { color: section.color, onRename: startRename, onSetColor: (color) => setSectionColor(section.id, color), onDelete: () => onDelete(section.id), onHide }), ...attributes, ...listeners }) }) });
 }
 function SsfStatusChips({
   pinnedWorkspaces,
   sessionWorkspaces,
   groups
 }) {
-  const store = reactExports.useContext(StatusStoreContext);
   const workspaces = reactExports.useMemo(() => [...new Map([...pinnedWorkspaces, ...sessionWorkspaces, ...groups.flatMap((project) => getProjectChildrenWorkspaces(project.children))].map((workspace) => [workspace.id, workspace])).values()], [pinnedWorkspaces, sessionWorkspaces, groups]);
-  const subscribe = reactExports.useCallback((listener) => {
-    const offs = [ssfSubscribe(listener), ...store ? workspaces.map((workspace) => store.subscribe(workspace.id, listener)) : []];
-    return () => offs.forEach((off) => off());
-  }, [store, workspaces]);
-  const [mask, ...counts] = reactExports.useSyncExternalStore(subscribe, () => {
-    const bits = workspaces.map((workspace) => ssfBits(store?.get(workspace.id).status, workspace.pullRequest?.state));
-    return [ssfMask, ...SSF_CHIPS.map(([bit]) => bits.filter((value) => value & bit).length)].join();
-  }).split(",").map(Number);
-  return jsxRuntimeExports.jsx("div", { role: "group", "aria-label": "Workspace status filter", className: "grid shrink-0 grid-cols-6 gap-1 px-2 pb-2", children: SSF_CHIPS.map(([bit, name, hue, pr], index) => jsxRuntimeExports.jsx(SsfStatusChip, { bit, name, hue, pr, mask, count: counts[index] }, bit)) });
+  const [mask, ...counts] = ssfUseCounts(workspaces);
+  const chips = SSF_CHIPS.map(([bit, name, hue, pr], index) => ({ bit, name, hue, pr, mask, count: counts[index] })).filter((chip) => chip.count || mask & chip.bit);
+  return chips.length > 0 && jsxRuntimeExports.jsx("div", { role: "group", "aria-label": "Workspace status filter", className: "grid shrink-0 gap-1 px-2 pb-2", style: { gridTemplateColumns: `repeat(${chips.length}, minmax(0, 1fr))` }, children: chips.map((chip) => jsxRuntimeExports.jsx(SsfStatusChip, chip, chip.bit)) });
 }
 const isBulkSelectable = (workspace) => workspace.pendingTransaction?.type !== "insert";
 function DashboardSidebarExpandedProjectContent({
@@ -489,4 +486,4 @@ function DashboardSidebarExpandedProjectContent({
     ) })
   ] }) }) }) });
 }
-                     
+                                                                                                                                                                                                                                                                                                                                          

@@ -75,6 +75,30 @@ bundle plus a length-preserving inline `gridTemplateColumns` declaration
 (the bundle CSS does not ship `grid-cols-4`). It does not inject CSS or repack
 the archive.
 
+`--hide-nav-buttons` (needs `--compact-sidebar`, header generation 1.30+)
+hides three of those icons: New Workspace, Search and Workspaces. Their
+`className` becomes `"hidden"`, padded to the same length
+(`HIDDEN_NAV_BUTTONS`), so the remaining Automations, Tasks, Pull requests and
+Pages fill one row of the four-column grid. Keyboard shortcuts (New Workspace,
+⌘K search) and the collapsed icon rail are unchanged. Hidden is sticky: a later
+run without the flag keeps the buttons hidden, so a routine re-apply never
+brings them back; `--revert` restores them.
+
+`--hide-sidebar-footer` (desktop-v1.36.0–v1.37.0 `DashboardSidebar`) hides the
+expanded sidebar's bottom row: the organization menu (avatar, team name, PRO
+badge), the updates pill and the settings cog. Only the expanded branch of the
+row's `cn(isCollapsed ? … : …)` becomes `"hidden"` (`SIDEBAR_FOOTER_HIDDEN`),
+so the collapsed icon rail keeps its footer, and with it the organization menu
+(sign out, help) and the updates pill. Settings stay on ⌘, (renderer hotkey
+`OPEN_SETTINGS` and the application menu's `openSettingsAccelerator`). The row
+lies inside the status filter's region 3, which names it in `shared`: the
+region digest maps a hidden row back to stock bytes and the rewrite keeps it
+hidden, and a footer write planned in the same run as the region rewrite is
+folded into it (`_fold_into_regions`). Both flags therefore work alone and in
+either order. The anchor is checked only when the flag is given or the row is
+already hidden, so it never blocks a release that lacks the row. Hidden is
+sticky like `--hide-nav-buttons`; `--revert` restores it.
+
 With `--pinned-icon-only` (anchors track desktop-v1.30.2–v1.36.0), rows in the sidebar
 **PINNED** section show only the workspace name — `budtekomfi-cz/SSZ křivka…`
 becomes `SSZ křivka…` — and the project is identified by its icon (the project
@@ -97,24 +121,44 @@ closed and a re-run is a no-op. Without the flag the pinned rows are left as
 they are; undo with `--revert`.
 
 With `--sidebar-status-filter` (desktop-v1.36.0–v1.37.0, `layout-*.js`) the expanded
-sidebar gets a row of six status chips at the very top, right below the
-`--compact-sidebar` navigation grid. The row sits outside the scrolling list,
-so it stays in place while the workspaces scroll and does not jump when
-sections expand or collapse (v1 put a single cycling button into the PROJECTS
-header; v2 removes it).
+sidebar gets two sticky rows at the very top, right below the
+`--compact-sidebar` navigation grid: a search field and below it a row of
+status chips. Both sit outside the scrolling list, so they stay in place while
+the workspaces scroll and do not jump when sections expand or collapse (v1 put
+a single cycling button into the PROJECTS header; v2 removed it; v3 adds the
+search row, hides empty chips and opens collapsed groups).
+
+**Search.** The search field is upstream's own `DashboardSidebarProjectsFilterInput`,
+moved out of the PROJECTS header (the header keeps its label, sort menu and
+add-repository button) and always expanded. It drives upstream's project
+filter as before (`projectFilterQuery` → `filterDashboardSidebarProjects`), and
+now also searches PINNED and SESSIONS: a row there stays when its workspace
+name or its project name contains the query (case-insensitive, like upstream).
+Those two lists render from the DnD context, not from the filtered groups, so
+the search reaches them through the same render guard as the chips: `SsfSearch`
+publishes the ids to hide (`ssfHide`) in a layout effect, and every row,
+folder and section guard skips them. A section or folder with no match
+disappears. Typing into it expands a collapsed PROJECTS list once, because
+PINNED renders only below it. Escape or the clear button empties it; collapsing
+the sidebar to the icon rail clears it (upstream already resets the query,
+and the effect cleanup empties the hidden set).
+
+**Chips.**
 
 | Chip | Colour | Status | Meaning |
 |---|---|---|---|
 | Needs input | yellow | `permission` | the agent waits for you |
 | Failed | red | `failed` | the agent failed |
 | Review | green | `review` | done, with a message to read |
-| Working | amber | `working` | the agent is running (the spinner rows) |
+| Working | amber, spinner | `working` | the agent is running (the spinner rows) |
 | Open PR | emerald, PR icon | pull request `open`, `draft` or `queued` | the workspace has a pull request in flight |
 | Merged | purple, merge icon | pull request `merged` | the pull request landed |
 
-The first four chips are agent status and show a dot. The two pull request
-chips show the row's own PR icon in its `PR_COLOR_BY_STATE` colour, so they do
-not read as agent status. A closed pull request matches no chip.
+Needs input, Failed and Review show a dot. Working shows the row's own
+animated `AsciiSpinner` (amber; the active, filled chip recolours it with
+`text-current`). The two pull request chips show the row's own PR icon in its
+`PR_COLOR_BY_STATE` colour, so they do not read as agent status. A closed pull
+request matches no chip.
 
 - Each chip shows how many workspaces are in that status right now. Agent
   chips use the same `SidebarWorkspaceStatusStore` as the row dots
@@ -123,14 +167,16 @@ not read as agent status. A closed pull request matches no chip.
   (`pullRequestsByWorkspaceId`), so they make no extra GitHub query. The count
   covers the workspaces in PINNED, SESSIONS and
   PROJECTS (folders included, each workspace once). Hidden projects and the
-  cloud section are not counted.
+  cloud section are not counted. The counts ignore the search.
+- A chip at 0 is hidden. An active chip stays visible at 0 (dimmed), so it can
+  still be switched off. With nothing to show the row disappears. The grid has
+  one equal column per visible chip, so the chips widen when others hide.
 - Click toggles a chip, and several chips can be on at once: the list shows the
   union of the active statuses, agent and pull request chips alike. Option-click solos a chip (only this one on).
   Option-click on the chip that is already the only active one clears the
   filter. No active chip means no filter.
 - An active chip is filled with its colour; an inactive one is a coloured
-  outline. A chip at 0 is dimmed but still clickable. The row is a fixed
-  six-column grid with tabular digits, so a count change never moves it.
+  outline. Digits are tabular.
 - Each chip has `aria-pressed` and a tooltip / `aria-label` with the status
   name, the count and the Option-click hint.
 - The active set survives a restart through `localStorage`
@@ -145,25 +191,35 @@ with no matching workspace disappears. The sidebar builders
 (`buildDashboardSidebarProjects`, `buildDashboardSidebarSessions`,
 `partitionSidebarWorkspacesByPinned`) are pure and have no status access, so
 the filter is applied at render level. A hook, `ssfUseShow(workspaces)`,
-subscribes to the store entries of those workspaces and returns `false` when
-none of them matches.
-Each component then returns `null`, always after all of its own hooks. A
-project section stays while its delete or import dialog or its rename is open,
-so a status change cannot close a dialog mid-confirm.
+subscribes to the store entries of those workspaces and returns `0` when none
+of them matches (or all are hidden by the search), `1` when no chip and no
+search is active, and `2` when one is. Each component returns `null` on `0`,
+always after all of its own hooks.
 
-The filter never hides a selected workspace, and a Shift range spans only the
+**Opening collapsed groups.** On `2` a collapsed project, folder, PINNED or
+SESSIONS section renders open, and so do the rows of a collapsed folder. This
+happens only at render level: the stored collapse state is not touched, so
+everything is collapsed again once the chips and the search are off. While a
+group is forced open its chevron toggles the stored state invisibly. The
+collapsed icon rail keeps the stored state.
+
+A project section stays while its delete or import dialog or its rename is
+open, so a status change cannot close a dialog mid-confirm.
+
+The chips never hide a selected workspace, and a Shift range spans only the
 rows you can see (`ssfRange`, which reads each id's pull request from
 `workspacesById`). Upstream cuts every selection to the ids it was
 given (`applyWorkspaceSelection` → `selectedIdsInVisualOrder`). So a bulk
 delete or move can never reach a workspace the filter hides, including one
 selected before the filter changed or one whose status changed afterwards.
+PINNED and SESSIONS rows are not selectable upstream, so the search hides them
+regardless of selection.
 
 Known limitations:
-- The collapsed icon rail shows no chips and is not filtered.
-- A collapsed project or folder that matches stays collapsed. Expand it to see
-  the rows.
+- The collapsed icon rail shows no chips or search and is not filtered.
 - Drag-and-drop reordering while a filter is active is untested: the sortable
-  lists still contain the hidden rows. Turn the chips off before reordering.
+  lists still contain the hidden rows. Turn the chips off and clear the search
+  before reordering.
 - Workspace keyboard shortcuts still number every row, hidden ones included
   (upstream builds them from the unfiltered groups), so the visible rows can
   show gaps and a shortcut can open a workspace the chips hide.
@@ -175,39 +231,42 @@ Known limitations:
   have seen the workspace or terminal, so a row you open leaves the filtered
   list and the green count drops. Needs-input and failed rows stay until the
   agent's status changes.
+- The search placeholder and label are English ("Search…", "Search the
+  sidebar"), the chip names too.
 
-Upgrading a host that still runs v1 or an earlier v2 build: their digests of
-regions 1, 2 and 5 are recognised (`legacy_sha256`), and the patch stops with "an
+Upgrading a host that still runs v1 or a v2 build: their digests of regions 1
+to 5 are recognised (`legacy_sha256`), and the patch stops with "an
 older --sidebar-status-filter generation is applied". Run `--revert`, then the
 full command again. `--revert` undoes only the last apply (it restores the
 newest backup whose manifest matches the current bundle); if a later run of
 other flags followed the old filter, repeat `--revert` until the error is gone.
 
-### Region rewrite (how ~5.7 KB of code fits into a length-preserving patch)
+### Region rewrite (how ~7 KB of code fits into a length-preserving patch)
 
-The filter needs about 5.7 KB of new code. No single anchor can absorb that
-much, so the patch rewrites five whole regions of the same file in place
+The filter needs about 7 KB of new code. No single anchor can absorb that
+much, so the patch rewrites eight whole regions of the same file in place
 (`STATUS_FILTER_REGIONS`):
 
 | # | Region | Size | Room freed | Holds |
 |---|---|---|---|---|
-| 1 | `SortableWorkspaceItem` → `DashboardSidebarProjectContextMenu` | 22,553 B | 1,449 B + 3 `//` lines | row, PINNED and folder guards, `ssfRange` call, `SsfStatusChips` |
-| 2 | `DashboardSidebarProjectSection` → `GettingStartedChecklist` | 19,272 B | 1,438 B + 2 `//` lines | project and SESSIONS guards, `SsfStatusChip` |
-| 3 | `DashboardSidebar` → `const SEED_FLAG_KEY` | 12,134 B | 588 B | the chip row itself, `SSF_CHIPS` / `ssfBits` |
-| 4 | `DashboardSidebarCloudContextMenu` → `DashboardSidebarCloudPortsButton` | 8,643 B | 1,446 B | shared state (`ssfMask`, `ssfToggle`, `ssfUseShow`) |
-| 5 | `DashboardSidebarWorkspaceContextMenu` → `useDashboardSidebarWorkspaceItemActions` | 9,227 B | 1,350 B | `ssfSubscribe` / `ssfMatches` / `ssfRange` / `ssfLabel` |
+| 1 | `SortableWorkspaceItem` → `DashboardSidebarProjectContextMenu` | 22,553 B | 1,449 B + 3 `//` lines | row, PINNED and folder guards and forced open, `ssfRange` call, `SsfStatusChips` |
+| 2 | `DashboardSidebarProjectSection` → `GettingStartedChecklist` | 19,272 B | 1,438 B + 2 `//` lines + the header's search input | project and SESSIONS guards and forced open, search labels, `SsfStatusChip` |
+| 3 | `DashboardSidebar` → `const SEED_FLAG_KEY` | 12,134 B | 588 B | the search row and the chip row |
+| 4 | `DashboardSidebarCloudContextMenu` → `DashboardSidebarCloudPortsButton` | 8,643 B | 1,446 B | `ssfSubscribe` / `ssfMatches` / `ssfRange` / `ssfLabel`, `ssfUseCounts` |
+| 5 | `DashboardSidebarWorkspaceContextMenu` → `useDashboardSidebarWorkspaceItemActions` | 9,227 B | 1,350 B | `SsfSearch` |
+| 6 | `DashboardSidebarProjectContextMenu` → `const DashboardSidebarProjectRow` | 3,767 B | 600 B | `SSF_CHIPS` / `ssfBits` |
+| 7 | `DashboardSidebarWorkspaceHoverCardContent` → `DashboardSidebarHoverCardOverlay` | 8,079 B | 931 B | `ssfUseShow` |
+| 8 | `DashboardSidebarBulkActions` → `executeBulkWorkspaceDeleteTargets` | 7,692 B | 847 B | shared state (`ssfMask`, `ssfQ`, `ssfHide`, `ssfEmit`, `ssfToggle`) |
 
-Regions 1 and 2 are the v1 regions. Region 3 is where the row has to be
+Regions 1 and 2 are the v1 regions. Region 3 is where the rows have to be
 rendered: in `DashboardSidebar`, between `DashboardSidebarHeader` and the
 scrolling `OverflowFadeContainer`, inside
-`DashboardSidebarWorkspaceStatusProvider`. Its own no-op comments free only
-588 B, so regions 4 and 5 were added purely for room (the three-chip draft
-fitted into four regions; the Working / Open PR / Merged chips needed the
-fifth). They were picked as the functions with the most strippable comments in
-the chunk that no other patch family touches (`DashboardSidebarProjectContextMenu`,
-600 B, was the runner-up). The chip label lives in region 5 because region 2
-had no room left for the dialog guard. After the rewrite the regions keep 21,
-140, 27, 21 and 611 B of trailing padding.
+`DashboardSidebarWorkspaceStatusProvider`. Regions 4 to 8 hold no edit of
+their own; they were added purely for room, picked as the functions with the
+most strippable comments in the chunk that no other patch family touches.
+Region 6 starts exactly where region 1 ends. Region 8 is the first region in
+the module, so the shared `let` bindings sit there. After the rewrite the
+regions keep 330, 254, 293, 29, 278, 164, 110 and 53 B of trailing padding.
 
 Each region:
 1. starts at a unique top-level anchor and has a fixed length. The end anchor
@@ -257,7 +316,7 @@ header (file offsets, sizes, and per-file `integrity` with a SHA-256 for each
   `--ack-invalid-apple-signature` precondition.
 
 The cost: source maps for the rest of each region shift by the removed bytes.
-That affects only DevTools and Sentry column numbers inside those five regions.
+That affects only DevTools and Sentry column numbers inside those eight regions.
 
 Proof on a copy of the installed 1.36.0 bundle (v1 on 2026-10-08, v2 on the
 pre-v1 backup `b1a1ad1c…` the same evening):
@@ -290,14 +349,19 @@ variants, and node harness tests drive the real upstream excerpts to show that
 Stop is silent while the waiting events still ring.
 
 Desktop 1.37.0 adds an active-workspace switcher below the status provider.
-Only sticky-row region 3 changes (12,134 → 13,413 bytes); its separate stock
-and patched SHA-256 pins retain the 1.36 variant. The chips remain between
-`DashboardSidebarHeader` and the scroller, inside the same status provider.
-The renderer sound handler now passes `layouts` for both panes to
-`shouldSuppress`; its separate exact-byte pair preserves that suppression.
-The main sound anchor and the other four filter regions are unchanged.
-Real 1.37 fixtures and Node behavior tests cover these variants; the 1.36
-fixtures remain. Automated `PATCH_OPTIONS` remain unchanged.
+Only sticky-row region 3 changes (12,134 → 13,413 bytes, deeper indent);
+`STATUS_FILTER_REGION_VARIANTS` pins its stock and v3 bytes separately and
+keeps the 1.36 variant. The search and chip rows remain between
+`DashboardSidebarHeader` and the scroller, inside the same status provider, and
+the variant names the footer row in `shared` like the 1.36 region, so
+`--hide-sidebar-footer` composes on both releases. The v2 1.37 build (#465) and
+the v2 region 2 with hidden zero chips (PR #474) are registered as legacy
+digests, so such a host gets the `--revert` hint. The renderer sound handler
+now passes `layouts` for both panes to `shouldSuppress`; its separate
+exact-byte pair preserves that suppression. The main sound anchor and the other
+seven filter regions are unchanged. Real 1.37 fixtures and Node behavior tests
+cover these variants; the 1.36 fixtures remain. Automated `PATCH_OPTIONS`
+remain unchanged.
 
 The `LIVE_HOST_ONLY` anchor tests (`test_installed_bundle_accepts_*`) read the
 installed release's stock bytes, not the live file. `stock_snapshot()` follows
@@ -323,13 +387,13 @@ The approved UI set is applied in one validated atomic swap:
 ```bash
 python3 patch-asar.py --size 6 --hide-tray --custom-project-icons \
   --keep-icon-on-hover --compact-sidebar --pinned-icon-only \
-  --sidebar-status-filter --sound-only-when-waiting \
-  --ack-invalid-apple-signature
+  --sidebar-status-filter --sound-only-when-waiting --hide-nav-buttons \
+  --hide-sidebar-footer --ack-invalid-apple-signature
 python3 patch-asar.py --revert
 ```
 
-`--pinned-icon-only`, `--sidebar-status-filter` and `--sound-only-when-waiting`
-are not yet requested by the automated re-apply path
+`--pinned-icon-only`, `--sidebar-status-filter`, `--sound-only-when-waiting`,
+`--hide-nav-buttons` and `--hide-sidebar-footer` are not yet requested by the automated re-apply path
 (`check-upstream-patches.py` `PATCH_OPTIONS`, the upstream-update-watch prompt,
 `/patch-superset`, "When to re-run" below): add it there only after the live
 result has been confirmed visually. Until then a routine re-apply leaves an
@@ -632,7 +696,7 @@ After a **Superset desktop update**, first refresh project icons from the
 projects' current favicons (`python3 sync-project-icons.py --fetch --check`;
 drift → `--apply`, commit/PR, then `python3 apply.py`), then re-apply bundle
 patches and run the other procedures only if their symptom appears:
-1. `python3 patch-asar.py --size 6 --hide-tray --custom-project-icons --keep-icon-on-hover --compact-sidebar --pinned-icon-only --sidebar-status-filter --sound-only-when-waiting --ack-invalid-apple-signature` — re-apply the complete approved production patch set after accepting an invalid Apple seal (`--pinned-icon-only`, `--sidebar-status-filter` and `--sound-only-when-waiting` are manual-only here — not yet in the automated re-apply path, see section 1 above)
+1. `python3 patch-asar.py --size 6 --hide-tray --custom-project-icons --keep-icon-on-hover --compact-sidebar --pinned-icon-only --sidebar-status-filter --sound-only-when-waiting --hide-nav-buttons --hide-sidebar-footer --ack-invalid-apple-signature` — re-apply the complete approved production patch set after accepting an invalid Apple seal (`--pinned-icon-only`, `--sidebar-status-filter`, `--sound-only-when-waiting`, `--hide-nav-buttons` and `--hide-sidebar-footer` are manual-only here — not yet in the automated re-apply path, see section 1 above)
 2. `python3 patch-tray-icon.py --ack-invalid-apple-signature` — legacy tray-only alternative; do not run it in addition to step 1
 3. `python3 apply-ui-patches.py <dist-root>` — re-apply icon source, layout
    markers and CSS (only needed when you rebuild/repack; the in-place asar

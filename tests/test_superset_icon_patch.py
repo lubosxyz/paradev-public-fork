@@ -231,6 +231,8 @@ class SupersetUiPatchTest(unittest.TestCase):
             pinned_icon_only=True,
             sidebar_status_filter=True,
             sound_only_when_waiting=True,
+            hide_nav_buttons=True,
+            hide_sidebar_footer=True,
         )
         with asar.open("rb") as stream:
             with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_COPY) as data:
@@ -768,6 +770,8 @@ class SupersetUiPatchTest(unittest.TestCase):
             pinned_icon_only=False,
             sidebar_status_filter=False,
             sound_only_when_waiting=False,
+            hide_nav_buttons=False,
+            hide_sidebar_footer=False,
             acknowledge_invalid_signature=False,
         )
 
@@ -1495,25 +1499,38 @@ def node_check(test, body: bytes):
 
 
 class SupersetSidebarStatusFilterPatchTest(unittest.TestCase):
-    """--sidebar-status-filter rewrites five hash-pinned layout-*.js regions in place."""
+    """--sidebar-status-filter rewrites eight hash-pinned layout-*.js regions in place."""
 
     WORKSPACE_NEW_SHORTCUT = SupersetUiPatchTest.WORKSPACE_NEW_SHORTCUT
     # Exact stock bytes of desktop-v1.36.0 layout-CAKjMJ-s.js, cut at the
     # region boundaries (start anchor inclusive, end anchor exclusive).
-    REGION_FIXTURES = [FIXTURES / f"superset-1.36.0-status-filter-r{n}.js" for n in (1, 2, 3, 4, 5)]
+    REGION_FIXTURES = [FIXTURES / f"superset-1.36.0-status-filter-r{n}.js" for n in range(1, 9)]
     # The same regions after --sidebar-status-filter (pinned patched_sha256).
-    PATCHED_FIXTURES = [FIXTURES / f"superset-1.36.0-status-filter-r{n}.patched.js" for n in (1, 2, 3, 4, 5)]
+    PATCHED_FIXTURES = [FIXTURES / f"superset-1.36.0-status-filter-r{n}.patched.js" for n in range(1, 9)]
 
     def regions(self):
         """Pair each region constant with its real stock bytes."""
         return list(zip(MODULE.STATUS_FILTER_REGIONS, [p.read_bytes() for p in self.REGION_FIXTURES], strict=True))
 
     def stock_bundle(self):
-        """Shared synthetic bundle plus every real region, each followed by its end anchor."""
-        return b"|".join(
-            [SupersetUiPatchTest.stock_bundle(self)]
-            + [stock + region.end for region, stock in self.regions()]
-        )
+        """Shared synthetic bundle plus every real region, each followed by its end anchor.
+
+        A region whose end anchor is another region's start (region 1 ends where
+        region 6 starts) is followed by that region, as in the real chunk.
+        """
+        regions = self.regions()
+        by_start = {region.start: (region, stock) for region, stock in regions}
+        followers = {region.end for region, _stock in regions if region.end in by_start}
+        chains = []
+        for region, stock in regions:
+            if region.start in followers:
+                continue
+            chain = stock
+            while region.end in by_start:
+                region, stock = by_start[region.end]
+                chain += stock
+            chains.append(chain + region.end)
+        return b"|".join([SupersetUiPatchTest.stock_bundle(self)] + chains)
 
     def patch(self, data, enabled=True):
         """Apply the approved set with the status filter toggled."""
@@ -1568,7 +1585,24 @@ class SupersetSidebarStatusFilterPatchTest(unittest.TestCase):
     def test_rewrite_only_strips_noop_comments_and_applies_the_edits(self):
         # Undo every edit and the trailing pad: what remains must be the stock
         # region minus the no-op comment tokens and the deleted `//` lines.
-        swaps = {b"orderedWorkspaceIds: selectableWorkspaceIds\n"}
+        swaps = {
+            b"orderedWorkspaceIds: selectableWorkspaceIds\n",
+            b"    !isSectionCollapsed && jsxRuntimeExports.jsx(SortableContext, { items: pinnedItems,",
+            b"isCollapsed: section.isCollapsed, isEditing: isRenaming,",
+            b"isCollapsed: project.isCollapsed, isRenaming,",
+            b"isCollapsed: project.isCollapsed, workspaceShortcutLabels, onWorkspaceHover, onDeleteSection",
+            b"isCollapsed: isSectionCollapsed, topLevelIndentation",
+            b'  const filterLabel = _t(\n    \n    {\n      id: "F2XK4g"\n    }\n  );\n',
+            b'placeholder: _t(\n        \n        {\n          id: "ElqTsH"\n        }\n      ),',
+            b', section: "workspaces", labelHidden: isFilterExpanded, children:',
+        }
+        # The one code line deleted outright: the PROJECTS header's own search
+        # input, which moves to the sticky SsfSearch row.
+        code_deletions = {
+            b"    jsxRuntimeExports.jsx(DashboardSidebarProjectsFilterInput, { query: filterQuery, "
+            b"onQueryChange: onFilterQueryChange, isExpanded: isFilterExpanded, "
+            b"onExpandedChange: handleFilterExpandedChange }),\n",
+        }
         for region, stock in self.regions():
             with self.subTest(region=region.label):
                 patched = MODULE.rewrite_region(region, stock)
@@ -1580,9 +1614,10 @@ class SupersetSidebarStatusFilterPatchTest(unittest.TestCase):
                 undone = patched.rstrip(b" ")
                 for anchor, replacement in region.edits:
                     if replacement == b"":
-                        # Deletions only ever remove whole `//` comment lines.
+                        # Deletions only ever remove whole `//` comment lines,
+                        # apart from the listed code lines.
                         for line in anchor.splitlines():
-                            self.assertTrue(line.lstrip().startswith(b"// "), line)
+                            self.assertTrue(line.lstrip().startswith(b"// ") or anchor in code_deletions, line)
                         self.assertEqual(stripped.count(anchor), 1)
                         stripped = stripped.replace(anchor, b"")
                         continue
@@ -1612,7 +1647,10 @@ class SupersetSidebarStatusFilterPatchTest(unittest.TestCase):
         self.assertEqual(len(original), len(patched))
         self.assertEqual(
             [c for c in changes if c.startswith("status filter")],
-            [region.label for region in MODULE.STATUS_FILTER_REGIONS],
+            [
+                region.label
+                for region in sorted(MODULE.STATUS_FILTER_REGIONS, key=lambda region: original.index(region.start))
+            ],
         )
         prefix_end = original.index(MODULE.STATUS_FILTER_REGIONS[0].start)
         unfiltered, _ = self.patch(original, enabled=False)
@@ -1699,10 +1737,13 @@ class SupersetSidebarStatusFilterPatchTest(unittest.TestCase):
         snippets = b"".join(
             [
                 MODULE.STATUS_FILTER_STATE_JS,
+                MODULE.STATUS_FILTER_SHOW_JS,
                 MODULE.STATUS_FILTER_BITS_JS,
                 MODULE.STATUS_FILTER_MATCH_JS,
+                MODULE.STATUS_FILTER_COUNTS_JS,
                 MODULE.STATUS_FILTER_CHIPS_JS,
                 MODULE.STATUS_FILTER_CHIP_JS,
+                MODULE.STATUS_FILTER_SEARCH_JS,
             ]
         ).decode()
         return f"""
@@ -1726,7 +1767,17 @@ const reactExports = {{
   useCallback: (fn) => fn,
   useMemo: (fn) => fn(),
   useSyncExternalStore: (subscribe, getSnapshot) => {{ const off = subscribe(() => {{}}); off(); return getSnapshot(); }},
+  useLayoutEffect: (effect) => {{ cleanups.push(effect()); }},
 }};
+const cleanups = [];
+const unmount = () => {{ for (const cleanup of cleanups.splice(0)) cleanup?.(); }};
+const sectionsState = {{ collapsed: {{ workspaces: false }}, toggles: [] }};
+const useSidebarSectionsCollapseStore = {{ getState: () => ({{ collapsed: sectionsState.collapsed, toggle: (name) => {{ sectionsState.toggles.push(name); sectionsState.collapsed[name] = !sectionsState.collapsed[name]; }} }}) }};
+const DashboardSidebarProjectsFilterInput = "DashboardSidebarProjectsFilterInput";
+const AsciiSpinner = "AsciiSpinner";
+function matches(text, normalizedQuery) {{
+  return text.toLowerCase().includes(normalizedQuery);
+}}
 const jsxRuntimeExports = {{ jsx: (type, props, key) => ({{ type, props, key }}), jsxs: (type, props, key) => ({{ type, props, key }}) }};
 const cn = (...parts) => parts.filter(Boolean).join(" ");
 const Tooltip = "Tooltip", TooltipTrigger = "TooltipTrigger", TooltipContent = "TooltipContent";
@@ -1736,19 +1787,33 @@ function getProjectChildrenWorkspaces(children) {{
   return children.flatMap((child) => child.type === "workspace" ? [child.workspace] : child.section.workspaces);
 }}
 {snippets}
-const ws = (id, pr = null) => ({{ id, pullRequest: pr ? {{ state: pr }} : null }});
+const ws = (id, pr = null, name = id, projectId = null) => ({{ id, name, projectId, pullRequest: pr ? {{ state: pr }} : null }});
 let sidebar = {{ pinnedWorkspaces: [], sessionWorkspaces: [], groups: [] }};
+const BITS = [1, 2, 4, 8, 16, 32];
 const row = () => SsfStatusChips(sidebar);
-const chips = () => row().props.children.map((element) => {{
-  assert.equal(element.type, SsfStatusChip);
-  const tooltip = SsfStatusChip(element.props);
-  const button = tooltip.props.children[0].props.children;
-  assert.equal(tooltip.props.children[1].props.children, button.props["aria-label"]);
-  return button;
-}});
-const counts = () => chips().map((button) => button.props.children[1]);
-const pressed = () => chips().map((button) => button.props["aria-pressed"]);
-const click = (index, altKey = false) => chips()[index].props.onClick({{ altKey }});
+// One entry per chip in SSF_CHIPS order; null for a chip the row hides (zero and inactive).
+const chips = () => {{
+  const element = row();
+  const rendered = element === false ? [] : element.props.children.map((child) => {{
+    assert.equal(child.type, SsfStatusChip);
+    assert.equal(child.key, child.props.bit);
+    const tooltip = SsfStatusChip(child.props);
+    const button = tooltip.props.children[0].props.children;
+    assert.equal(tooltip.props.children[1].props.children, button.props["aria-label"]);
+    return [child.props.bit, button];
+  }});
+  if (element !== false) assert.equal(element.props.style.gridTemplateColumns, `repeat(${{rendered.length}}, minmax(0, 1fr))`);
+  const byBit = new Map(rendered);
+  return BITS.map((bit) => byBit.get(bit) ?? null);
+}};
+const visible = () => chips().map((button) => button !== null);
+const counts = () => chips().map((button) => button ? button.props.children[1] : 0);
+const pressed = () => chips().map((button) => button ? button.props["aria-pressed"] : false);
+const click = (index, altKey = false) => {{
+  const button = chips()[index];
+  assert.ok(button, `chip ${{index}} is hidden`);
+  button.props.onClick({{ altKey }});
+}};
 {assertions}
 console.log("ok");
 """
@@ -1808,10 +1873,11 @@ assert.deepEqual(shown(), all);
 click(0); click(0);
 assert.deepEqual(shown(), all);
 assert.equal(storage.get("ssf-sidebar-status-chips"), "0");
-assert.equal(ssfUseShow([]), true);
+assert.equal(ssfUseShow([]), 1);
 click(2);
 assert.equal(ssfUseShow([]), false);
-assert.equal(ssfUseShow([byId.get("work"), byId.get("rev")]), true);
+// 2: shown and forced open while a chip is active.
+assert.equal(ssfUseShow([byId.get("work"), byId.get("rev")]), 2);
 // Working, Open PR and Merged follow the same interaction and union.
 click(3, true);
 assert.deepEqual(pressed(), [false, false, false, true, false, false]);
@@ -1833,40 +1899,48 @@ assert.deepEqual(counts(), [1, 1, 1, 1, 3, 2]);
 assert.deepEqual(subscribed, []);
 """))
 
-    # Value: protects=chip a11y and stable layout: aria-pressed, a label with name, count and the Option-click hint, dimmed but clickable at zero, fixed six-column grid with tabular digits; fails_when=a chip loses aria-pressed or its label, a zero chip becomes disabled or the row width follows the counts; why_new=v2 chip rendering contract; seam=none
-    def test_chips_expose_state_and_keep_a_stable_layout(self):
+    # Value: protects=chip a11y and layout: aria-pressed, a label with name, count and the Option-click hint, tabular digits, one grid column per visible chip, a zero chip hidden unless it is active (then dimmed but clickable), no row at all when nothing is visible; fails_when=a chip loses aria-pressed or its label, a zero chip stays visible, an active zero chip disappears so it can no longer be switched off, or the grid columns stop following the visible chips; why_new=v3 hides zero chips (Lubos 2026-10-09); seam=none
+    def test_chips_expose_state_and_hide_at_zero(self):
         run_node(self, self.filter_harness("""
+assert.equal(row(), false);
 statuses.set("a", "permission"); statuses.set("b", "review"); statuses.set("c", "review");
 sidebar = { pinnedWorkspaces: [ws("a", "open"), ws("b", "merged"), ws("c")], sessionWorkspaces: [], groups: [] };
-assert.match(row().props.className, /grid-cols-6/);
 assert.equal(row().props.role, "group");
-assert.equal(chips().length, 6);
-const [needs, failed, review, working, openPr, merged] = chips();
+assert.doesNotMatch(row().props.className, /grid-cols-6/);
+assert.deepEqual(visible(), [true, false, true, false, true, true]);
+const [needs, , review, , openPr, merged] = chips();
 assert.equal(needs.props["aria-label"], "Needs input: 1 workspace. Click to show them, \\u2325-click to show only these.");
 assert.equal(review.props["aria-label"], "Review: 2 workspaces. Click to show them, \\u2325-click to show only these.");
-assert.match(failed.props["aria-label"], /^Failed: 0 workspaces\\./);
-assert.match(working.props["aria-label"], /^Working: 0 workspaces\\./);
 assert.equal(openPr.props["aria-label"], "Open PR: 1 workspace. Click to show them, \\u2325-click to show only these.");
 assert.match(merged.props["aria-label"], /^Merged: 1 workspace\\./);
 // Agent chips show a dot; PR chips show the row's PR icon in its PR_COLOR_BY_STATE colour.
-for (const chip of [needs, failed, review, working]) assert.equal(chip.props.children[0].type, "span");
+for (const chip of [needs, review]) assert.equal(chip.props.children[0].type, "span");
 assert.deepEqual(needs.props.children[0].props.style, { backgroundColor: "var(--color-yellow-500)" });
 assert.equal(openPr.props.children[0].type, "LuGitPullRequest");
 assert.match(openPr.props.children[0].props.className, /text-emerald-500/);
 assert.equal(merged.props.children[0].type, "LuGitMerge");
 assert.match(merged.props.children[0].props.className, /text-purple-500/);
-assert.deepEqual(working.props.style, { borderColor: "var(--color-amber-500)" });
-for (const chip of chips()) {
+for (const chip of chips().filter(Boolean)) {
   assert.equal(chip.type, "button");
   assert.equal(chip.props.disabled, undefined);
   assert.match(chip.props.className, /tabular-nums/);
+  assert.doesNotMatch(chip.props.className, /opacity-40/);
 }
-assert.match(failed.props.className, /opacity-40/);
-assert.doesNotMatch(needs.props.className, /opacity-40/);
-assert.deepEqual(failed.props.style, { borderColor: "var(--color-red-500)" });
-click(1);
+// Working shows Superset's own animated row spinner, amber while inactive.
+statuses.set("c", "working");
+const working = chips()[3];
+assert.equal(working.props.children[0].type, "AsciiSpinner");
+assert.equal(working.props.children[0].props.className, "leading-none");
+assert.deepEqual(working.props.style, { borderColor: "var(--color-amber-500)" });
+click(3);
+assert.equal(chips()[3].props.children[0].props.className, "leading-none text-current");
+click(3);
+// An active chip stays visible at zero, dimmed but clickable, so it can be switched off.
+ssfToggle(2, false);
+assert.deepEqual(visible(), [true, true, true, true, true, true]);
 const active = chips()[1];
 assert.equal(active.props["aria-pressed"], true);
+assert.match(active.props.className, /opacity-40/);
 assert.deepEqual(active.props.style, { backgroundColor: "var(--color-red-500)", borderColor: "var(--color-red-500)", color: "black" });
 // The only active chip: a plain click and an Option-click both clear the filter.
 assert.equal(active.props["aria-label"], "Failed: 0 workspaces. Click to show all, \\u2325-click to show all.");
@@ -1876,6 +1950,9 @@ assert.equal(chips()[1].props["aria-label"], "Failed: 0 workspaces. Click to sto
 const activeMerged = chips()[5];
 assert.deepEqual(activeMerged.props.style, { backgroundColor: "var(--color-purple-500)", borderColor: "var(--color-purple-500)", color: "black" });
 assert.doesNotMatch(activeMerged.props.children[0].props.className, /text-purple-500/);
+click(1);
+click(5);
+assert.deepEqual(visible(), [true, false, true, true, true, true]);
 """))
 
     # Value: protects=the stored chip mask survives a restart and the v1 key migrates once without a crash; fails_when=the v1 mode is ignored or mis-mapped, the v1 key is left behind, a garbage value enables a filter, or the v2 key loses to the v1 key; why_new=v2 changes the storage key and format; seam=none
@@ -1904,7 +1981,7 @@ assert.equal(storage.get("ssf-sidebar-status-chips"), "{expected_mask}");
 assert.equal(storage.has("ssf-sidebar-status-filter"), false);
 """, stored=stored))
 
-    # Value: protects=Rules of Hooks in the five patched React components (a hook after an injected early return crashes the sidebar only when the filter flips); fails_when=an edit anchor moves so a use*() call follows `if (!ssfUseShow(...)) return null`; why_new=node --check and the digest pins cannot see hook ordering; seam=none
+    # Value: protects=Rules of Hooks in the five patched React components (a hook after an injected early return crashes the sidebar only when the filter flips); fails_when=an edit anchor moves so a use*() call follows `if (!ssfV ...) return null`, or the guard stops reading the ssfUseShow result of the line above; why_new=node --check and the digest pins cannot see hook ordering; seam=none
     def test_injected_early_returns_come_after_every_hook(self):
         import re
 
@@ -1912,8 +1989,9 @@ assert.equal(storage.has("ssf-sidebar-status-filter"), false);
         for region, stock in self.regions():
             lines = MODULE.rewrite_region(region, stock).decode().split("\n")
             for index, line in enumerate(lines):
-                if not (line.startswith("  if (!ssfUseShow(") and "return null;" in line):
+                if not (line.startswith("  if (!ssfV") and "return null;" in line):
                     continue
+                self.assertRegex(lines[index - 1], r"^  const ssfV = ssfUseShow\((\[workspace\]|\w+(\.\w+)?)\);$")
                 inserted += 1
                 for later in lines[index + 1 :]:
                     if later == "}":
@@ -1931,6 +2009,8 @@ assert.equal(storage.has("ssf-sidebar-status-filter"), false);
             'setItem: () => { throw new Error("blocked"); }, removeItem: () => { throw new Error("blocked"); } };'
         )
         run_node(self, self.filter_harness("""
+statuses.set("a", "permission");
+sidebar = { pinnedWorkspaces: [ws("a"), ws("b", "open")], sessionWorkspaces: [], groups: [] };
 assert.deepEqual(pressed(), [false, false, false, false, false, false]);
 let calls = 0;
 const off = ssfSubscribe(() => { calls++; });
@@ -1952,6 +2032,8 @@ assert.deepEqual(pressed(), [false, false, false, false, true, false]);
         run_node(self, self.filter_harness("""
 assert.deepEqual(pressed(), [true, true, false, false, false, false]);
 assert.equal(storage.get("ssf-sidebar-status-filter"), "1");
+statuses.set("r", "review");
+sidebar = { pinnedWorkspaces: [ws("r")], sessionWorkspaces: [], groups: [] };
 click(2);
 assert.deepEqual(pressed(), [true, true, true, false, false, false]);
 """, stored={"ssf-sidebar-status-filter": "1"}, storage_stub=read_only))
@@ -1960,8 +2042,8 @@ assert.deepEqual(pressed(), [true, true, true, false, false, false]);
     def test_injected_filter_shows_everything_without_a_status_store(self):
         run_node(self, self.filter_harness("""
 activeStore = null;
-assert.equal(ssfUseShow([ws("a"), ws("b")]), true);
-assert.equal(ssfUseShow([]), true);
+assert.equal(ssfUseShow([ws("a"), ws("b")]), 2);
+assert.equal(ssfUseShow([]), 2);
 """, stored={"ssf-sidebar-status-chips": "3"}))
 
     # Value: protects=a bulk delete or move never reaches a workspace the filter hides; fails_when=ssfRange stops cutting the Shift range or ssfUseShow hides a selected row; why_new=Codex round 1 of LUBOS-1916 reproduced A(permission) B(working) C(permission) -> Shift range selected the hidden B; seam=upstream applyWorkspaceSelection from the 1.36.0 bundle
@@ -1971,6 +2053,7 @@ assert.equal(ssfUseShow([]), true);
 statuses.set("A", "permission"); statuses.set("B", "working"); statuses.set("C", "failed");
 const rows = ["A", "B", "C"];
 const byId = new Map([ws("A"), ws("B", "open"), ws("C", "merged")].map((workspace) => [workspace.id, workspace]));
+sidebar = { pinnedWorkspaces: [...byId.values()], sessionWorkspaces: [], groups: [] };
 const shown = () => rows.filter((id) => ssfUseShow([byId.get(id)]));
 const isSelected = (id) => selected.has(id);
 assert.deepEqual(shown(), ["A", "C"]);
@@ -1982,7 +2065,7 @@ assert.deepEqual(state.selectedIds, ["A", "C"]);
 // Selected before the filter came on, or whose status changed afterwards: still shown.
 selected.add("B");
 assert.deepEqual(shown(), ["A", "B", "C"]);
-assert.equal(ssfUseShow([byId.get("B"), ws("missing")]), true);
+assert.equal(ssfUseShow([byId.get("B"), ws("missing")]), 2);
 assert.deepEqual(ssfRange(store, rows, isSelected, byId), rows);
 selected.clear();
 // PR chips cut the range by the decorated pull request; an id missing from workspacesById has no PR.
@@ -1995,41 +2078,131 @@ click(0); click(1);
 activeStore = null;
 assert.equal(ssfRange(null, rows, () => false, byId), rows);
 activeSelection = null;
-assert.equal(ssfUseShow([byId.get("B")]), true);
+assert.equal(ssfUseShow([byId.get("B")]), 2);
 activeStore = store;
 click(0); click(1);
 assert.deepEqual(pressed(), [false, false, false, false, false, false]);
 assert.equal(ssfRange(store, rows, () => false, byId), rows);
 """, stored={"ssf-sidebar-status-chips": "3"}))
 
-    # Value: protects=the chip row is sticky (outside the scroller) and can read the status store; fails_when=the r3 anchor moves the row into OverflowFadeContainer or above DashboardSidebarWorkspaceStatusProvider; why_new=v2 moves the control from the PROJECTS header to the top of the sidebar; seam=none
-    def test_chip_row_sits_between_the_header_and_the_scroller(self):
+    # Value: protects=the sticky search hides PINNED and SESSIONS rows whose workspace and project names miss the query, leaves PROJECTS rows to upstream's filter, opens collapsed sections, expands a collapsed PROJECTS list on typing and restores everything when it unmounts; fails_when=pinned or session rows ignore the query, project rows get cut twice, a project-name match is lost, the hidden set survives the icon rail or a chip mask hides a query match; why_new=Lubos 2026-10-09: search did not reach PINNED; seam=none
+    def test_search_filters_pinned_and_session_rows(self):
+        run_node(self, self.filter_harness("""
+const groups = [{ id: "proj", name: "Komfi tools", children: [{ type: "workspace", workspace: ws("in-project", null, "unrelated", "proj") }] }];
+const pinned = [ws("p-mcp", null, "Install the MCP server"), ws("p-other", null, "Landing page"), ws("p-proj", null, "Fix", "proj")];
+const sessions = [ws("s-mcp", null, "mcp smoke"), ws("s-other", null, "Notes")];
+let query = "";
+const changes = [];
+const search = () => SsfSearch({ query, onQueryChange: (value) => changes.push(value), pinnedWorkspaces: pinned, sessionWorkspaces: sessions, groups });
+const shown = (list) => list.filter((workspace) => ssfUseShow([workspace])).map((workspace) => workspace.id);
+let element = search();
+assert.equal(element.props.children.type, "DashboardSidebarProjectsFilterInput");
+assert.equal(element.props.children.props.isExpanded, true);
+assert.deepEqual(shown([...pinned, ...sessions]), ["p-mcp", "p-other", "p-proj", "s-mcp", "s-other"]);
+assert.equal(ssfUseShow(pinned), 1);
+unmount();
+query = "  MCP ";
+search();
+assert.deepEqual(shown(pinned), ["p-mcp"]);
+assert.deepEqual(shown(sessions), ["s-mcp"]);
+// Project rows belong to upstream's filterDashboardSidebarProjects.
+assert.deepEqual(shown(groups[0].children.map((child) => child.workspace)), ["in-project"]);
+// A section with a match renders, open (2); one without a match disappears.
+assert.equal(ssfUseShow(pinned), 2);
+assert.equal(ssfUseShow([pinned[1]]), false);
+unmount();
+query = "komfi";
+search();
+assert.deepEqual(shown(pinned), ["p-proj"]);
+assert.deepEqual(shown(sessions), []);
+// A chip narrows the query matches further; selection does not bypass the query.
+statuses.set("p-proj", "review");
+ssfToggle(1, false);
+assert.deepEqual(shown(pinned), []);
+selected.add("p-other");
+assert.deepEqual(shown(pinned), []);
+selected.clear();
+ssfToggle(1, false);
+// Unmount (sidebar collapsed to the icon rail) clears the hidden set.
+unmount();
+assert.deepEqual(shown([...pinned, ...sessions]), ["p-mcp", "p-other", "p-proj", "s-mcp", "s-other"]);
+assert.equal(ssfUseShow(pinned), 1);
+// Typing expands a collapsed PROJECTS list once (PINNED renders below it); clearing does not.
+sectionsState.collapsed.workspaces = true;
+element = search();
+element.props.children.props.onQueryChange("m");
+assert.deepEqual(sectionsState.toggles, ["workspaces"]);
+element.props.children.props.onQueryChange("mc");
+element.props.children.props.onQueryChange("");
+assert.deepEqual(sectionsState.toggles, ["workspaces"]);
+sectionsState.collapsed.workspaces = true;
+element.props.children.props.onQueryChange("   ");
+assert.deepEqual(sectionsState.toggles, ["workspaces"]);
+assert.deepEqual(changes, ["m", "mc", "", "   "]);
+// The collapse callback is a no-op: Escape and blur only clear the query.
+assert.equal(element.props.children.props.onExpandedChange(false), undefined);
+"""))
+
+    # Value: protects=the search row and the chip row are sticky (outside the scroller), the search sits above the chips, and both can read the status store; fails_when=the r3 anchor moves a row into OverflowFadeContainer or above DashboardSidebarWorkspaceStatusProvider, or the search loses upstream's project filter state; why_new=v3 moves the search out of the PROJECTS header above the chips (Lubos 2026-10-09); seam=none
+    def test_search_and_chip_rows_sit_between_the_header_and_the_scroller(self):
         region, stock = self.regions()[2]
         patched = MODULE.rewrite_region(region, stock)
         provider = patched.index(b"jsxRuntimeExports.jsx(DashboardSidebarWorkspaceStatusProvider, ")
         header = patched.index(b"jsxRuntimeExports.jsx(DashboardSidebarHeader, { isCollapsed }),\n")
+        search = patched.index(b"!isCollapsed && jsxRuntimeExports.jsx(SsfSearch, ")
         row = patched.index(b"!isCollapsed && jsxRuntimeExports.jsx(SsfStatusChips, ")
         scroller = patched.index(b"jsxRuntimeExports.jsxs(OverflowFadeContainer, ")
         self.assertLess(provider, header)
-        self.assertLess(header, row)
+        self.assertLess(header, search)
+        self.assertLess(search, row)
         self.assertLess(row, scroller)
+        self.assertIn(b"query: projectFilterQuery, onQueryChange: setProjectFilterQuery", patched[search:row])
         self.assertIn(b"groups: orderedGroups", patched[row:scroller])
+
+    # Value: protects=the search input moved, not duplicated: the PROJECTS header keeps its label, sort menu and add-repository button but no longer renders the input, and the input's labels say it searches the sidebar; fails_when=the header still renders DashboardSidebarProjectsFilterInput (two inputs bound to one query) or hides its label while a query is active; why_new=v3 search row; seam=none
+    def test_projects_header_drops_the_filter_input(self):
+        region, stock = self.regions()[1]
+        patched = MODULE.rewrite_region(region, stock)
+        header = patched[patched.index(b"function DashboardSidebarWorkspacesHeader({") :]
+        self.assertNotIn(b"jsx(DashboardSidebarProjectsFilterInput", header)
+        self.assertNotIn(b"labelHidden", header)
+        self.assertIn(b"jsx(DashboardSidebarProjectsSortMenu, { sortMode, onSortModeChange })", header)
+        self.assertIn(b'const filterLabel = "Search the sidebar";', patched)
+        self.assertIn(b'placeholder: "Search\\u2026",', patched)
+
+    # Value: protects=while a chip or the search is active, every collapsed project, folder, PINNED and SESSIONS section with a visible row renders open, without touching the stored collapse state; fails_when=one of the six render sites keeps reading the stored flag, so matching rows stay hidden behind a collapsed project or folder; why_new=Lubos 2026-10-09 asked for auto-expanding projects and groups; seam=none
+    def test_active_filter_opens_collapsed_projects_folders_and_sections(self):
+        patched = b"".join(MODULE.rewrite_region(region, stock) for region, stock in self.regions())
+        for site in (
+            b"  collapsed &&= ssfV < 2;\n",
+            b"(!isSectionCollapsed || ssfV > 1) && jsxRuntimeExports.jsx(SortableContext, { items: pinnedItems,",
+            b"isCollapsed: section.isCollapsed && ssfV < 2, isEditing: isRenaming,",
+            b"isCollapsed: project.isCollapsed && ssfV < 2, isRenaming,",
+            b"isCollapsed: project.isCollapsed && ssfV < 2, workspaceShortcutLabels, onWorkspaceHover, onDeleteSection",
+            b"isCollapsed: isSectionCollapsed && ssfV < 2, topLevelIndentation",
+        ):
+            with self.subTest(site=site):
+                self.assertEqual(patched.count(site), 1)
+        # The collapsed icon rail keeps the stored state.
+        self.assertIn(b"isCollapsed: project.isCollapsed, totalWorkspaceCount", patched)
 
     # Value: protects=a project section with an open delete or import dialog or a rename stays mounted, and its guard runs after every hook and before the dialogs are built; fails_when=the guard drops a dialog condition or moves above the actions hook, so a status change unmounts DeleteProjectDialog mid-confirm and onDeleted never leaves the deleted project; why_new=adversarial review found the section returned null under an open dialog; seam=none
     def test_project_section_stays_while_a_dialog_or_rename_is_open(self):
         region, stock = self.regions()[1]
         patched = MODULE.rewrite_region(region, stock)
         actions = patched.index(b"} = useDashboardSidebarProjectSectionActions({\n    project\n  });\n")
-        guard = patched.index(b"  if (!ssfUseShow(flattenedCollapsedWorkspaces) ")
+        hook = patched.index(b"  const ssfV = ssfUseShow(flattenedCollapsedWorkspaces);\n")
+        guard = patched.index(b"  if (!ssfV && !isSidebarCollapsed ")
         line = patched[guard : patched.index(b"\n", guard)]
         for name in (b"isDeleteDialogOpen", b"importableWorktrees", b"isRenaming"):
             with self.subTest(name=name):
                 self.assertIn(b"&& !" + name, line)
                 self.assertLess(patched.index(b"    " + name + b",\n"), actions)
-        self.assertLess(actions, guard)
+        self.assertLess(actions, hook)
+        self.assertLess(hook, guard)
         self.assertLess(guard, patched.index(b"const deleteProjectDialog = "))
-        # ssfUseShow is the leftmost operand, so the hook runs on every render.
-        self.assertTrue(line.startswith(b"  if (!ssfUseShow("))
+        # The hook has its own statement, so it runs on every render.
+        self.assertTrue(line.startswith(b"  if (!ssfV && "))
 
     # Value: protects=an installed v1 filter is reported as an upgrade step, never patched over or called unknown; fails_when=legacy digests are dropped or checked after the stock comparison; why_new=v2 changes the patched digests of regions that v1 already rewrote on the live host; seam=none
     def test_legacy_generation_asks_for_a_revert_first(self):
@@ -2038,15 +2211,26 @@ assert.equal(ssfRange(store, rows, () => false, byId), rows);
         self.assertEqual(
             [r.legacy_sha256 for r in MODULE.STATUS_FILTER_REGIONS],
             [
-                ("42fef7999b59c51c15afb440f5a5a5c4368eae0e01582c9cd49c0aaf741ad4c1",),
+                (
+                    "42fef7999b59c51c15afb440f5a5a5c4368eae0e01582c9cd49c0aaf741ad4c1",
+                    "8383a30eaff0a0f282da74b8b79954a1cf5165941c98a1234a19ef1a16839101",
+                ),
                 (
                     "3682ec4e3fa223751b5ce4bde728d33cef3642a36d9561f4df517ec808253be1",
                     "9fc647b8e6c3dc47e9204b09e0c0a382bb60b4943743c25b4214b87c4818acb4",
                     "348275748426b01857310056fe9870b5834aa2a3be040763e9d5ac4bfd88c363",
+                    "ef99ad348ad4d3e31d9a7cd7c67f1e9c0437e3e03259b4f8c182a2a73dcad0e7",
+                    "a867c4b8aa38d54761f5ce1eacb6236cae3d340862faefef40c359b3529f0084",
+                ),
+                ("51557750a5b6afcd93bc3e1e47ee619d4bfaf0081231d5e6b4ec98033b6f4a0e",),
+                ("f7f02ea166cf516cb9a0b4aa269a37bfe603dc598ae79124f3a8a5b8b5f88aba",),
+                (
+                    "1c17da8dba0b8fd2bf26c01a29a678e8231059b89c93dfad4008f442f1adacc9",
+                    "98f21f27a7848b4a85f55f43190715f187b5e62525f6e5f1eca343680559d2b5",
                 ),
                 (),
                 (),
-                ("1c17da8dba0b8fd2bf26c01a29a678e8231059b89c93dfad4008f442f1adacc9",),
+                (),
             ],
         )
         legacy = b"function Old({\n}\n"
@@ -2125,7 +2309,10 @@ assert.equal(ssfRange(store, rows, () => false, byId), rows);
         ):
             with self.subTest(name=name):
                 self.assertIsNotNone(re.search(imported.format(name=name).encode(), chunk), f"{name} is not imported by {path}")
-        for name in ("StatusStoreContext", "DashboardSidebarSelectionContext", "PR_COLOR_BY_STATE", "getProjectChildrenWorkspaces"):
+        for name in (
+            "StatusStoreContext", "DashboardSidebarSelectionContext", "PR_COLOR_BY_STATE", "getProjectChildrenWorkspaces",
+            "AsciiSpinner", "DashboardSidebarProjectsFilterInput", "useSidebarSectionsCollapseStore", "matches",
+        ):
             with self.subTest(name=name):
                 self.assertIsNotNone(re.search(defined.format(name=name).encode(), chunk), f"{name} is not defined in {path}")
         # The values the chips compare against: the status the row spinner
@@ -2141,6 +2328,9 @@ assert.equal(ssfRange(store, rows, () => false, byId), rows);
         for hue in ("yellow", "red", "green", "amber", "emerald", "purple"):
             with self.subTest(hue=hue):
                 self.assertIn(f"--color-{hue}-500:".encode(), css)
+        # The Working chip recolours the spinner with this utility while active.
+        self.assertIsNotNone(re.search(rb"\.text-current(?![\w-])", css))
+        self.assertIsNotNone(re.search(rb"\buseLayoutEffect\b", chunk))
 
     def test_cli_forwards_the_new_flags_to_patch_file(self):
         with mock.patch.object(MODULE, "patch_file", return_value=(None, [])) as patch_file:
@@ -2152,12 +2342,17 @@ assert.equal(ssfRange(store, rows, () => false, byId), rows);
                     "/tmp/backups",
                     "--sidebar-status-filter",
                     "--sound-only-when-waiting",
+                    "--compact-sidebar",
+                    "--hide-nav-buttons",
+                    "--hide-sidebar-footer",
                 ]
             )
 
         self.assertEqual(result, 0)
         self.assertTrue(patch_file.call_args.kwargs["sidebar_status_filter"])
         self.assertTrue(patch_file.call_args.kwargs["sound_only_when_waiting"])
+        self.assertTrue(patch_file.call_args.kwargs["hide_nav_buttons"])
+        self.assertTrue(patch_file.call_args.kwargs["hide_sidebar_footer"])
         self.assertFalse(patch_file.call_args.kwargs["pinned_icon_only"])
 
     def test_patch_file_applies_and_reverts_the_status_filter(self):
@@ -2185,6 +2380,143 @@ assert.equal(ssfRange(store, rows, () => false, byId), rows);
             self.assertIn(b"function SsfStatusChips({", asar.read_bytes())
             MODULE.revert(asar, backup_dir)
             self.assertEqual(asar.read_bytes(), original)
+
+
+class SupersetHideNavButtonsPatchTest(unittest.TestCase):
+    """--hide-nav-buttons hides New Workspace, Search and Workspaces in the compact grid."""
+
+    WORKSPACE_NEW_SHORTCUT = SupersetUiPatchTest.WORKSPACE_NEW_SHORTCUT
+
+    def stock_bundle(self):
+        """Synthetic 1.30+ header: the New Workspace button uses openNewWorkspace."""
+        return SupersetUiPatchTest.stock_bundle(self).replace(
+            MODULE.TOP_NAV_BUTTON_VARIANTS[0][0], MODULE.TOP_NAV_NEW_WORKSPACE_1_30[0]
+        )
+
+    def patch(self, data, hide):
+        """Apply the compact set with the hide flag toggled."""
+        return MODULE.patch_bytes(
+            data, size=6, hide_tray=True, custom_project_icons=True, keep_icon_on_hover=True,
+            compact_sidebar=True, hide_nav_buttons=hide,
+        )
+
+    # Value: protects=the three buttons become equal-length `hidden` buttons and the other grid cells stay icon buttons; fails_when=a hidden variant changes length, keeps a visible class or hides the wrong button; why_new=Lubos 2026-10-09 does not use these three icons; seam=none
+    def test_three_buttons_are_hidden_and_the_rest_stay(self):
+        original = self.stock_bundle()
+
+        patched, changes = self.patch(original, hide=True)
+
+        self.assertEqual(len(original), len(patched))
+        for title, hidden in MODULE.HIDDEN_NAV_BUTTONS.items():
+            with self.subTest(title=title):
+                self.assertIn(hidden, patched)
+                self.assertIn(f'title: "{title}", className: "hidden"'.encode(), hidden)
+                self.assertIn(f"sidebar: {title} hidden", changes)
+        self.assertEqual(sorted(MODULE.HIDDEN_NAV_BUTTONS), ["New Workspace", "Search", "Workspaces"])
+        for _source, target, title in MODULE.TOP_NAV_BUTTON_VARIANTS[3:]:
+            self.assertIn(target, patched, title)
+
+    # Value: protects=hidden is sticky and idempotent: a re-run with or without the flag keeps it, and the compact patch still upgrades a stock bundle without the flag; fails_when=a routine re-apply without the flag un-hides the buttons or fails on the hidden bytes; why_new=new flag; seam=none
+    def test_hidden_is_sticky_and_idempotent(self):
+        hidden, _changes = self.patch(self.stock_bundle(), hide=True)
+        for hide in (True, False):
+            with self.subTest(hide=hide):
+                again, changes = self.patch(hidden, hide=hide)
+                self.assertEqual(changes, [])
+                self.assertEqual(again, hidden)
+        shown, _changes = self.patch(self.stock_bundle(), hide=False)
+        for hidden_variant in MODULE.HIDDEN_NAV_BUTTONS.values():
+            self.assertNotIn(hidden_variant, shown)
+        upgraded, changes = self.patch(shown, hide=True)
+        self.assertEqual(upgraded, hidden)
+        self.assertEqual(len(changes), 3)
+
+    # Value: protects=the flag refuses to run without the compact grid or on a pre-1.30 header it has no variant for; fails_when=the guard is dropped and the flag silently does nothing or patches the wrong button; why_new=new flag; seam=none
+    def test_flag_needs_compact_sidebar_and_a_1_30_header(self):
+        with self.assertRaisesRegex(ValueError, "needs --compact-sidebar"):
+            MODULE.patch_bytes(
+                self.stock_bundle(), size=6, hide_tray=True, custom_project_icons=True,
+                keep_icon_on_hover=True, hide_nav_buttons=True,
+            )
+        with self.assertRaisesRegex(RuntimeError, "1.30 or newer"):
+            self.patch(SupersetUiPatchTest.stock_bundle(self), hide=True)
+
+
+class SupersetHideSidebarFooterPatchTest(unittest.TestCase):
+    """--hide-sidebar-footer hides the expanded sidebar's organization, updates and settings row."""
+
+    WORKSPACE_NEW_SHORTCUT = SupersetUiPatchTest.WORKSPACE_NEW_SHORTCUT
+    # Exact stock bytes of the desktop-v1.36.0 DashboardSidebar footer row.
+    FOOTER = FIXTURES / "superset-1.36.0-sidebar-footer.js"
+    REGION_FIXTURES = SupersetSidebarStatusFilterPatchTest.REGION_FIXTURES
+    regions = SupersetSidebarStatusFilterPatchTest.regions
+
+    def stock_bundle(self):
+        """Shared synthetic bundle plus the real footer row (no status filter regions)."""
+        return SupersetUiPatchTest.stock_bundle(self) + b"|" + self.FOOTER.read_bytes()
+
+    def filter_bundle(self):
+        """Synthetic bundle plus every real status filter region (the footer sits in region 3)."""
+        return SupersetSidebarStatusFilterPatchTest.stock_bundle(self)
+
+    def patch(self, data, *, footer, status_filter=False):
+        """Apply the approved compact set with the footer and filter flags toggled."""
+        return MODULE.patch_bytes(
+            data, size=6, hide_tray=True, custom_project_icons=True, keep_icon_on_hover=True,
+            compact_sidebar=True, sidebar_status_filter=status_filter, hide_sidebar_footer=footer,
+        )
+
+    # Value: protects=the anchor is the real 1.36.0 footer row, hides only the expanded branch and documents what disappears; fails_when=the anchor drifts from the shipped bytes, the hidden variant changes length or also hides the collapsed rail; why_new=Lubos 2026-10-10 wants the room for a longer workspace list; seam=real fixture
+    def test_anchor_is_the_real_footer_row_and_hides_only_the_expanded_sidebar(self):
+        footer = self.FOOTER.read_bytes()
+        region3 = (FIXTURES / "superset-1.36.0-status-filter-r3.js").read_bytes()
+
+        self.assertEqual(region3.count(footer), 1)
+        self.assertEqual(footer.count(MODULE.SIDEBAR_FOOTER), 1)
+        for part in (b"OrganizationDropdown", b"UpdatesPill", b'to: "/settings/account"', b"HiOutlineCog6Tooth"):
+            self.assertIn(part, footer)
+        self.assertEqual(len(MODULE.SIDEBAR_FOOTER_HIDDEN), len(MODULE.SIDEBAR_FOOTER))
+        self.assertIn(b'"flex flex-col items-center gap-2 py-2" : "hidden"', MODULE.SIDEBAR_FOOTER_HIDDEN)
+        self.assertNotIn(b"flex items-center gap-1 p-2", MODULE.SIDEBAR_FOOTER_HIDDEN)
+
+    # Value: protects=the flag works without the status filter, is sticky and idempotent, and a bundle without the row stays patchable unless the flag is asked for; fails_when=a routine re-apply un-hides the row, the flag silently does nothing, or every user of an older release fails on a missing anchor; why_new=new flag; seam=none
+    def test_footer_is_hidden_sticky_and_optional(self):
+        original = self.stock_bundle()
+
+        hidden, changes = self.patch(original, footer=True)
+
+        self.assertEqual(len(hidden), len(original))
+        self.assertIn("sidebar: footer hidden", changes)
+        self.assertEqual(hidden.count(MODULE.SIDEBAR_FOOTER_HIDDEN), 1)
+        for footer in (True, False):
+            with self.subTest(footer=footer):
+                self.assertEqual(self.patch(hidden, footer=footer), (hidden, []))
+        shown, changes = self.patch(original, footer=False)
+        self.assertIn(MODULE.SIDEBAR_FOOTER, shown)
+        self.assertNotIn("sidebar: footer hidden", changes)
+        without_row = SupersetUiPatchTest.stock_bundle(self)
+        self.patch(without_row, footer=False)
+        with self.assertRaisesRegex(RuntimeError, "sidebar footer"):
+            self.patch(without_row, footer=True)
+
+    # Value: protects=the footer flag and the status filter region that contains the row give one result in any order and re-plan to nothing; fails_when=the two writes overlap, the region refuses the hidden row as unknown bytes, or the filter rewrite brings the row back; why_new=the row lives inside the hash-pinned region 3; seam=real region fixtures
+    def test_footer_and_status_filter_compose_in_any_order(self):
+        original = self.filter_bundle()
+
+        together, changes = self.patch(original, footer=True, status_filter=True)
+        footer_first, _ = self.patch(self.patch(original, footer=True)[0], footer=False, status_filter=True)
+        filter_first, later = self.patch(self.patch(original, footer=False, status_filter=True)[0], footer=True, status_filter=True)
+
+        self.assertEqual(together.count(MODULE.SIDEBAR_FOOTER_HIDDEN), 1)
+        self.assertNotIn(MODULE.SIDEBAR_FOOTER, together)
+        self.assertNotIn("sidebar: footer hidden", changes)
+        self.assertIn("status filter: sticky chip row", changes)
+        self.assertEqual(later, ["sidebar: footer hidden"])
+        self.assertEqual(footer_first, together)
+        self.assertEqual(filter_first, together)
+        for footer in (True, False):
+            with self.subTest(footer=footer):
+                self.assertEqual(self.patch(together, footer=footer, status_filter=True), (together, []))
 
 
 class SupersetSoundOnlyWhenWaitingPatchTest(unittest.TestCase):
@@ -2358,7 +2690,7 @@ class Superset137OptionalPatchTest(unittest.TestCase):
         )
 
     def test_real_sticky_region_is_pinned_idempotent_and_parseable(self):
-        """The exact new wrapper retains the switcher and the sticky chip position."""
+        """The exact new wrapper retains the switcher and the v3 search-then-chips position."""
         stock = self.REGION.read_bytes()
         end = MODULE.STATUS_FILTER_REGIONS[2].end
         [(offset, old, patched, label)] = self.region_plan(stock + end)
@@ -2368,10 +2700,32 @@ class Superset137OptionalPatchTest(unittest.TestCase):
         self.assertEqual(len(patched), len(stock))
         self.assertEqual(self.region_plan(patched + end), [])
         self.assertIn(b"DashboardSidebarActiveWorkspaceSwitcher", patched)
-        self.assertLess(patched.index(b"DashboardSidebarWorkspaceStatusProvider"), patched.index(b"SsfStatusChips"))
-        self.assertLess(patched.index(b"DashboardSidebarHeader, { isCollapsed }"), patched.index(b"SsfStatusChips"))
+        self.assertLess(patched.index(b"DashboardSidebarWorkspaceStatusProvider"), patched.index(b"SsfSearch"))
+        self.assertLess(patched.index(b"DashboardSidebarHeader, { isCollapsed }"), patched.index(b"SsfSearch"))
+        self.assertLess(patched.index(b"SsfSearch"), patched.index(b"SsfStatusChips"))
         self.assertLess(patched.index(b"SsfStatusChips"), patched.index(b"jsxRuntimeExports.jsxs(OverflowFadeContainer"))
+        # v3 keeps the chip bits in region 6 on every release.
+        self.assertNotIn(b"SSF_CHIPS", patched)
         node_check(self, patched)
+
+    # Value: protects=a 1.37 host still on the v2 chips (#465) is told to revert instead of failing on unknown bytes; fails_when=the v2 1.37 digest is not registered as legacy; why_new=v3 reaches 1.37 after #465 shipped v2 there; seam=real v2 fixture
+    def test_v2_generation_on_137_asks_for_revert(self):
+        v2 = (FIXTURES / "superset-1.37.0-status-filter-r3.v2-patched.js").read_bytes()
+        with self.assertRaisesRegex(RuntimeError, "older --sidebar-status-filter generation"):
+            self.region_plan(v2 + MODULE.STATUS_FILTER_REGIONS[2].end)
+
+    # Value: protects=the footer row inside the 1.37 region composes with the filter in any order and re-plans to nothing; fails_when=the 1.37 variant drops the shared footer anchor, so a hidden footer reads as unknown bytes or the rewrite shows the row again; why_new=1.37 variant of region 3; seam=real 1.37 region fixture
+    def test_footer_composes_with_137_region(self):
+        stock = self.REGION.read_bytes()
+        end = MODULE.STATUS_FILTER_REGIONS[2].end
+        self.assertEqual(stock.count(MODULE.SIDEBAR_FOOTER), 1)
+        hidden = stock.replace(MODULE.SIDEBAR_FOOTER, MODULE.SIDEBAR_FOOTER_HIDDEN)
+        [(_, _, from_hidden, _)] = self.region_plan(hidden + end)
+        [(_, _, from_stock, _)] = self.region_plan(stock + end)
+        self.assertEqual(from_hidden.count(MODULE.SIDEBAR_FOOTER_HIDDEN), 1)
+        self.assertEqual(from_hidden, from_stock.replace(MODULE.SIDEBAR_FOOTER, MODULE.SIDEBAR_FOOTER_HIDDEN))
+        self.assertEqual(self.region_plan(from_hidden + end), [])
+        node_check(self, from_hidden)
 
     def test_sticky_family_rejects_unknown_bytes_and_duplicate_starts(self):
         """A new length never permits an unpinned or ambiguous region."""

@@ -281,6 +281,46 @@ TOP_NAV_NEW_WORKSPACE_1_30 = _plain_button_variant(
 )
 
 
+def _hidden_nav_variant(variant: tuple[bytes, bytes, str], prefix: str) -> bytes:
+    """Turn one compact icon button into an equal-length `hidden` button."""
+    _source, compact, title = variant
+    if not compact.startswith(prefix.encode()):
+        raise ValueError(f"internal error: {title} prefix mismatch")
+    return _pad_variant(compact, f'{prefix}title: "{title}", className: "hidden"'.encode())
+
+
+# --hide-nav-buttons (on top of --compact-sidebar, header generation 1.30+):
+# hide New Workspace, Search and Workspaces in the compact icon grid. The
+# remaining Automations, Tasks, Pull requests and Pages fill one row of the
+# four-column grid. Their keyboard shortcuts and the collapsed rail are
+# unchanged. Hidden is sticky: a run without the flag keeps an already hidden
+# button hidden (like --pinned-icon-only); --revert restores it.
+HIDDEN_NAV_BUTTONS = {
+    "New Workspace": _hidden_nav_variant(TOP_NAV_NEW_WORKSPACE_1_30, "onClick: () => openNewWorkspace(activeProjectId), "),
+    "Search": _hidden_nav_variant(
+        TOP_NAV_BUTTON_VARIANTS[1], "onPointerDown: handleSearchPointerDown, onClick: handleSearchClick, "
+    ),
+    "Workspaces": _hidden_nav_variant(TOP_NAV_BUTTON_VARIANTS[2], "onClick: handleWorkspacesClick, "),
+}
+
+
+# --hide-sidebar-footer (desktop-v1.36.0 DashboardSidebar): hide the expanded
+# sidebar's bottom row: OrganizationDropdown (avatar, team name, PRO badge),
+# UpdatesPill and the settings cog. Settings stay on Cmd+, (hotkey OPEN_SETTINGS
+# and the application menu's openSettingsAccelerator); the collapsed icon rail
+# keeps its footer, so the organization menu and the update pill stay one
+# collapse away. Sticky like --hide-nav-buttons; --revert restores it. The row
+# lives inside the "status filter: sticky chip row" region, which therefore
+# lists the pair in `shared` and folds this write into its own rewrite.
+SIDEBAR_FOOTER = (
+    b'className: cn(isCollapsed ? "flex flex-col items-center gap-2 py-2" : "flex items-center gap-1 p-2"), '
+    b"children: ["
+)
+SIDEBAR_FOOTER_HIDDEN = _pad_variant(
+    SIDEBAR_FOOTER, b'className: cn(isCollapsed ? "flex flex-col items-center gap-2 py-2" : "hidden"), children: ['
+)
+
+
 def _label_variant(
     title: str, message_id: str, source_class: str, indent: int = 10
 ) -> tuple[bytes, bytes, str]:
@@ -438,8 +478,9 @@ def _plan_pinned_icon_only(data) -> list[tuple[int, bytes, bytes, str]]:
     return replacements
 
 
-# --sidebar-status-filter (desktop-v1.36.0–v1.37.0, layout-*.js). The filter (v2: a sticky
-# row of six status chips) needs ~5.7 KB of new code, far more than any single anchor can absorb, so it uses a region
+# --sidebar-status-filter (desktop-v1.36.0–v1.37.0, layout-*.js). The filter (v3: a sticky
+# search row above a row of status chips) needs ~7 KB of new code, far more
+# than any single anchor can absorb, so it uses a region
 # rewrite instead of anchor swaps — see patches/README.md §Region rewrite for
 # the ASAR-safety argument (header untouched, offsets preserved, the embedded
 # per-file integrity fuse is disabled; require_asar_integrity_fuse_disabled()
@@ -458,7 +499,7 @@ def _plan_pinned_icon_only(data) -> list[tuple[int, bytes, bytes, str]]:
 #   3. pads with spaces at the region end, a top-level statement boundary.
 # Top-level function declarations hoist across the whole module and the `let` /
 # `const` bindings are only read at render time, so helpers may live in any
-# region; regions 4 and 5 exist only for room. The filter is applied at render level: the sidebar
+# region; regions 4 to 8 exist only for room. The filter is applied at render level: the sidebar
 # builders are pure and have no workspace-status access, while every row,
 # folder, project and section renders below DashboardSidebarWorkspaceStatusProvider
 # (StatusStoreContext). Hooks run before each early `return null`.
@@ -479,6 +520,10 @@ class RegionRewrite:
     # Digests of earlier patch generations of this region (v1 header button):
     # recognised so the error says how to upgrade instead of "unknown bytes".
     legacy_sha256: tuple[str, ...] = ()
+    # (stock, variant) anchors another flag owns inside this region. The digest
+    # is taken with each variant mapped back to its stock bytes, and the
+    # rewrite keeps the variant, so that flag works with or without the filter.
+    shared: tuple[tuple[bytes, bytes], ...] = ()
 
 
 # Shared filter state: a bitmask of the active chips, 0 = no filter. Agent
@@ -487,14 +532,18 @@ class RegionRewrite:
 # (`workspace.pullRequest`, the same data as the row icon, no extra GitHub
 # query): 16 open / draft / queued, 32 merged; closed matches nothing. A row
 # shows when its bits meet the mask (union). A selected workspace is never
-# hidden (ssfUseShow) and a Shift range spans only visible rows (ssfRange, in
-# region 5): every applyWorkspaceSelection result is cut to
+# hidden by a chip (ssfUseShow) and a Shift range spans only visible rows
+# (ssfRange): every applyWorkspaceSelection result is cut to
 # orderedWorkspaceIds, so a bulk delete or move can never reach a row the
 # filter hides. The v1 key `ssf-sidebar-status-filter` (1 needs input, 2
 # review) migrates to the matching mask once and is removed; any unreadable
-# value means no filter.
-STATUS_FILTER_STATE_JS = b'''// patch-asar.py --sidebar-status-filter v2
+# value means no filter. ssfQ is the normalised search query and ssfHide the
+# PINNED and SESSIONS ids it hides (STATUS_FILTER_SEARCH_JS); ssfEmit wakes
+# every guard and the chip counts.
+STATUS_FILTER_STATE_JS = b'''// patch-asar.py --sidebar-status-filter v3
 let ssfMask = 0;
+let ssfQ = "";
+let ssfHide = new Set();
 const ssfListeners = new Set();
 try {
   const stored = localStorage.getItem("ssf-sidebar-status-chips") ?? String([0, 3, 4][["1", "2"].indexOf(localStorage.getItem("ssf-sidebar-status-filter")) + 1]);
@@ -503,15 +552,24 @@ try {
   localStorage.removeItem("ssf-sidebar-status-filter");
 } catch {
 }
+function ssfEmit() {
+  for (const listener of [...ssfListeners]) listener();
+}
 function ssfToggle(bit, solo) {
   ssfMask = solo ? ssfMask === bit ? 0 : bit : ssfMask ^ bit;
   try {
     localStorage.setItem("ssf-sidebar-status-chips", String(ssfMask));
   } catch {
   }
-  for (const listener of [...ssfListeners]) listener();
+  ssfEmit();
 }
-function ssfUseShow(workspaces) {
+'''
+# Render guard of every row, folder, project and section: 0 hidden, 1 shown,
+# 2 shown and forced open (a chip or the search is active, so a collapsed
+# project, folder or section with a visible row opens at render level without
+# touching the stored collapse state). One number keeps it a single hook, so
+# it still runs before each early `return null`.
+STATUS_FILTER_SHOW_JS = b'''function ssfUseShow(workspaces) {
   const store = reactExports.useContext(StatusStoreContext);
   const selection = reactExports.useContext(DashboardSidebarSelectionContext);
   const key = workspaces.map((workspace) => workspace.id).join("\\n");
@@ -519,7 +577,7 @@ function ssfUseShow(workspaces) {
     const offs = [ssfSubscribe(listener), ...store ? key.split("\\n").filter(Boolean).map((id) => store.subscribe(id, listener)) : []];
     return () => offs.forEach((off) => off());
   }, [store, key]);
-  return reactExports.useSyncExternalStore(subscribe, () => ssfMask === 0 || !store || workspaces.some((workspace) => selection?.isWorkspaceSelected(workspace.id) || ssfMatches(store, workspace)));
+  return reactExports.useSyncExternalStore(subscribe, () => (workspaces.some((workspace) => !ssfHide.has(workspace.id) && (ssfMask === 0 || !store || selection?.isWorkspaceSelected(workspace.id) || ssfMatches(store, workspace))) || !workspaces.length && (ssfMask === 0 || !store)) && (ssfMask || ssfQ ? 2 : 1));
 }
 '''
 # The chip list and the bits of one workspace. Agent status comes from the
@@ -530,8 +588,7 @@ function ssfBits(status, pr) {
 }
 '''
 # Subscription, matching, the Shift-range cut (workspacesById supplies the
-# pull request of each id) and the chip label (here because region 2 has no
-# room left).
+# pull request of each id) and the chip label.
 STATUS_FILTER_MATCH_JS = b'''function ssfSubscribe(listener) {
   ssfListeners.add(listener);
   return () => ssfListeners.delete(listener);
@@ -546,35 +603,43 @@ function ssfLabel(name, count, mask, bit) {
   return `${name}: ${count} workspace${count === 1 ? "" : "s"}. Click to ${mask === bit ? "show all" : mask & bit ? "stop showing them" : "show them"}, \\u2325-click to ${mask === bit ? "show all" : "show only these"}.`;
 }
 '''
-# Sticky chip row between DashboardSidebarHeader and the scroller. Counts use
-# the same sources as the filter, over PINNED + SESSIONS + PROJECTS, each
-# workspace once (the `groups` prop excludes hidden projects). Click toggles a
-# chip, Option-click solos it (or clears the filter when it is already the only
-# one). Colours are the Tailwind theme variables, so no new CSS class is
-# needed; grid-cols-6 and tabular-nums keep the row width independent of the
-# counts.
+# Chip counts: the same sources as the filter, live from the status store.
+STATUS_FILTER_COUNTS_JS = b'''function ssfUseCounts(workspaces) {
+  const store = reactExports.useContext(StatusStoreContext);
+  const subscribe = reactExports.useCallback((listener) => {
+    const offs = [ssfSubscribe(listener), ...store ? workspaces.map((workspace) => store.subscribe(workspace.id, listener)) : []];
+    return () => offs.forEach((off) => off());
+  }, [store, workspaces]);
+  return reactExports.useSyncExternalStore(subscribe, () => {
+    const bits = workspaces.map((workspace) => ssfBits(store?.get(workspace.id).status, workspace.pullRequest?.state));
+    return [ssfMask, ...SSF_CHIPS.map(([bit]) => bits.filter((value) => value & bit).length)].join();
+  }).split(",").map(Number);
+}
+'''
+# Sticky chip row between the search row and the scroller. Counts cover PINNED
+# + SESSIONS + PROJECTS, each workspace once (the `groups` prop excludes hidden
+# projects). A chip at zero is hidden unless it is active (it stays, dimmed, so
+# it can be switched off); with nothing to show the row disappears. One grid
+# column per visible chip. Click toggles a chip, Option-click solos it (or
+# clears the filter when it is already the only one). Colours are the Tailwind
+# theme variables, so no new CSS class is needed.
 STATUS_FILTER_CHIPS_JS = b'''function SsfStatusChips({
   pinnedWorkspaces,
   sessionWorkspaces,
   groups
 }) {
-  const store = reactExports.useContext(StatusStoreContext);
   const workspaces = reactExports.useMemo(() => [...new Map([...pinnedWorkspaces, ...sessionWorkspaces, ...groups.flatMap((project) => getProjectChildrenWorkspaces(project.children))].map((workspace) => [workspace.id, workspace])).values()], [pinnedWorkspaces, sessionWorkspaces, groups]);
-  const subscribe = reactExports.useCallback((listener) => {
-    const offs = [ssfSubscribe(listener), ...store ? workspaces.map((workspace) => store.subscribe(workspace.id, listener)) : []];
-    return () => offs.forEach((off) => off());
-  }, [store, workspaces]);
-  const [mask, ...counts] = reactExports.useSyncExternalStore(subscribe, () => {
-    const bits = workspaces.map((workspace) => ssfBits(store?.get(workspace.id).status, workspace.pullRequest?.state));
-    return [ssfMask, ...SSF_CHIPS.map(([bit]) => bits.filter((value) => value & bit).length)].join();
-  }).split(",").map(Number);
-  return jsxRuntimeExports.jsx("div", { role: "group", "aria-label": "Workspace status filter", className: "grid shrink-0 grid-cols-6 gap-1 px-2 pb-2", children: SSF_CHIPS.map(([bit, name, hue, pr], index) => jsxRuntimeExports.jsx(SsfStatusChip, { bit, name, hue, pr, mask, count: counts[index] }, bit)) });
+  const [mask, ...counts] = ssfUseCounts(workspaces);
+  const chips = SSF_CHIPS.map(([bit, name, hue, pr], index) => ({ bit, name, hue, pr, mask, count: counts[index] })).filter((chip) => chip.count || mask & chip.bit);
+  return chips.length > 0 && jsxRuntimeExports.jsx("div", { role: "group", "aria-label": "Workspace status filter", className: "grid shrink-0 gap-1 px-2 pb-2", style: { gridTemplateColumns: `repeat(${chips.length}, minmax(0, 1fr))` }, children: chips.map((chip) => jsxRuntimeExports.jsx(SsfStatusChip, chip, chip.bit)) });
 }
 '''
 # One chip: a full-colour fill when active, a coloured outline otherwise, dimmed
 # at zero but still clickable. Agent chips show a dot in the STATUS_CONFIG
-# colour; pull request chips show the row's PR icon in its PR_COLOR_BY_STATE
-# colour, so they read as PR state, not agent status.
+# colour, except Working, which shows the row's own animated AsciiSpinner
+# (amber, `text-current` on the filled chip); pull request chips show the row's
+# PR icon in its PR_COLOR_BY_STATE colour, so they read as PR state, not agent
+# status.
 STATUS_FILTER_CHIP_JS = b'''function SsfStatusChip({
   bit,
   name,
@@ -588,11 +653,47 @@ STATUS_FILTER_CHIP_JS = b'''function SsfStatusChip({
   const label = ssfLabel(name, count, mask, bit);
   return jsxRuntimeExports.jsxs(Tooltip, { delayDuration: 500, children: [
     jsxRuntimeExports.jsx(TooltipTrigger, { asChild: true, children: jsxRuntimeExports.jsxs("button", { type: "button", "aria-pressed": active, "aria-label": label, onClick: (event) => ssfToggle(bit, event.altKey), style: active ? { backgroundColor: color, borderColor: color, color: "black" } : { borderColor: color }, className: cn("flex h-6 min-w-0 items-center justify-center gap-1 overflow-hidden rounded-full border text-xs font-medium tabular-nums transition-colors", !active && "text-muted-foreground hover:bg-fill-hover", count === 0 && "opacity-40"), children: [
-      pr ? jsxRuntimeExports.jsx(pr === "merged" ? LuGitMerge : LuGitPullRequest, { className: cn("size-3 shrink-0", !active && PR_COLOR_BY_STATE[pr]), strokeWidth: 2 }) : jsxRuntimeExports.jsx("span", { className: "size-1.5 shrink-0 rounded-full", style: { backgroundColor: active ? "currentColor" : color } }),
+      pr ? jsxRuntimeExports.jsx(pr === "merged" ? LuGitMerge : LuGitPullRequest, { className: cn("size-3 shrink-0", !active && PR_COLOR_BY_STATE[pr]), strokeWidth: 2 }) : bit === 8 ? jsxRuntimeExports.jsx(AsciiSpinner, { className: cn("leading-none", active && "text-current") }) : jsxRuntimeExports.jsx("span", { className: "size-1.5 shrink-0 rounded-full", style: { backgroundColor: active ? "currentColor" : color } }),
       count
     ] }) }),
     jsxRuntimeExports.jsx(TooltipContent, { side: "bottom", children: label })
   ] });
+}
+'''
+
+
+# Sticky search above the chips. It drives upstream's project filter
+# (projectFilterQuery, filterDashboardSidebarProjects) and, through ssfQ and
+# ssfHide, hides the PINNED and SESSIONS rows whose workspace or project name
+# does not contain the query; those two lists render from the DnD context, so
+# only a row-level guard can filter them. Typing expands a collapsed PROJECTS
+# list, because PINNED renders only below it. The cleanup clears the hidden set
+# when the sidebar collapses to the icon rail and this component unmounts.
+STATUS_FILTER_SEARCH_JS = b'''function SsfSearch({
+  query,
+  onQueryChange,
+  pinnedWorkspaces,
+  sessionWorkspaces,
+  groups
+}) {
+  reactExports.useLayoutEffect(() => {
+    const q = query.trim().toLowerCase();
+    const names = new Map(groups.map((project) => [project.id, project.name]));
+    ssfQ = q;
+    ssfHide = new Set([...pinnedWorkspaces, ...sessionWorkspaces].filter((workspace) => q && !matches(workspace.name, q) && !matches(names.get(workspace.projectId) ?? "", q)).map((workspace) => workspace.id));
+    ssfEmit();
+    return () => {
+      ssfQ = "";
+      ssfHide = new Set();
+      ssfEmit();
+    };
+  }, [query, pinnedWorkspaces, sessionWorkspaces, groups]);
+  return jsxRuntimeExports.jsx("div", { className: "flex shrink-0 px-2 pb-2", children: jsxRuntimeExports.jsx(DashboardSidebarProjectsFilterInput, { query, isExpanded: true, onExpandedChange: () => {
+  }, onQueryChange: (value) => {
+    const sections = useSidebarSectionsCollapseStore.getState();
+    if (value.trim() && sections.collapsed.workspaces) sections.toggle("workspaces");
+    onQueryChange(value);
+  } }) });
 }
 '''
 
@@ -616,20 +717,29 @@ STATUS_FILTER_REGIONS = (
         end=b"function DashboardSidebarProjectContextMenu({\n",
         length=22553,
         stock_sha256="af09e89f2a007d0762d4f9f8f03273ada726b8ead7ea01ab43e125b8715b17d3",
-        patched_sha256="8383a30eaff0a0f282da74b8b79954a1cf5165941c98a1234a19ef1a16839101",
+        patched_sha256="326571d3fd198ae8f7c23721c8b46c8505543d76a7a724f2e1ebfda1c03fc03a",
         edits=(
+            # A row inside a collapsed folder opens while a filter is active.
             _insert_after(
                 b", [workspace, onHoverCardOpen, shortcutLabel, isInSection, indentation, "
                 b"isSelected, onSelectionClick, pinnedContext]);\n",
-                b"  if (!ssfUseShow([workspace])) return null;\n",
+                b"  const ssfV = ssfUseShow([workspace]);\n  if (!ssfV) return null;\n  collapsed &&= ssfV < 2;\n",
             ),
             _insert_after(
                 b"  const isSectionCollapsed = useSidebarSectionsCollapseStore((s) => s.collapsed.pinned);\n",
-                b"  if (!ssfUseShow(pinnedWorkspaces) && !isCollapsed) return null;\n",
+                b"  const ssfV = ssfUseShow(pinnedWorkspaces);\n  if (!ssfV && !isCollapsed) return null;\n",
+            ),
+            (
+                b"    !isSectionCollapsed && jsxRuntimeExports.jsx(SortableContext, { items: pinnedItems,",
+                b"    (!isSectionCollapsed || ssfV > 1) && jsxRuntimeExports.jsx(SortableContext, { items: pinnedItems,",
             ),
             _insert_after(
                 b"  }, [clearPendingSectionRename, pendingRenameSectionId, section.id, startRename]);\n",
-                b"  if (!ssfUseShow(section.workspaces)) return null;\n",
+                b"  const ssfV = ssfUseShow(section.workspaces);\n  if (!ssfV) return null;\n",
+            ),
+            (
+                b"isCollapsed: section.isCollapsed, isEditing: isRenaming,",
+                b"isCollapsed: section.isCollapsed && ssfV < 2, isEditing: isRenaming,",
             ),
             # Three `//` lines inside `return (`; deleting whole lines frees room
             # for the selection guard without touching any expression.
@@ -649,7 +759,11 @@ STATUS_FILTER_REGIONS = (
             ),
             _insert_before(b"const isBulkSelectable = (workspace) =>", STATUS_FILTER_CHIPS_JS),
         ),
-        legacy_sha256=("42fef7999b59c51c15afb440f5a5a5c4368eae0e01582c9cd49c0aaf741ad4c1",),
+        # v1; v2 (six chips, no search).
+        legacy_sha256=(
+            "42fef7999b59c51c15afb440f5a5a5c4368eae0e01582c9cd49c0aaf741ad4c1",
+            "8383a30eaff0a0f282da74b8b79954a1cf5165941c98a1234a19ef1a16839101",
+        ),
     ),
     # DashboardSidebarProjectSection .. SESSIONS section (row guards + SsfStatusChip).
     RegionRewrite(
@@ -658,18 +772,50 @@ STATUS_FILTER_REGIONS = (
         end=b"function GettingStartedChecklist({\n",
         length=19272,
         stock_sha256="21cf2198d0a6b806fda51365aec77d3d3865a51188179f9caebdae2f3f2f6a55",
-        patched_sha256="ef99ad348ad4d3e31d9a7cd7c67f1e9c0437e3e03259b4f8c182a2a73dcad0e7",
+        patched_sha256="47a88b86f712525c842f54a4dcc5864160f17b7b4fac4c0ac4bbd1c987f50d13",
         edits=(
             _insert_after(
                 b"  } = useDashboardSidebarProjectSectionActions({\n    project\n  });\n",
                 # An open delete or import dialog or a project rename keeps the
                 # section mounted, so a status change cannot drop it mid-confirm.
-                b"  if (!ssfUseShow(flattenedCollapsedWorkspaces) && !isSidebarCollapsed && !isDeleteDialogOpen && !importableWorktrees && !isRenaming) return null;\n",
+                b"  const ssfV = ssfUseShow(flattenedCollapsedWorkspaces);\n"
+                b"  if (!ssfV && !isSidebarCollapsed && !isDeleteDialogOpen && !importableWorktrees && !isRenaming) return null;\n",
+            ),
+            # A collapsed project opens while a filter is active (row and content).
+            (
+                b"isCollapsed: project.isCollapsed, isRenaming,",
+                b"isCollapsed: project.isCollapsed && ssfV < 2, isRenaming,",
+            ),
+            (
+                b"isCollapsed: project.isCollapsed, workspaceShortcutLabels, onWorkspaceHover, onDeleteSection",
+                b"isCollapsed: project.isCollapsed && ssfV < 2, workspaceShortcutLabels, onWorkspaceHover, onDeleteSection",
             ),
             _insert_after(
                 b"  const isSectionCollapsed = useSidebarSectionsCollapseStore((s) => s.collapsed.sessions);\n",
-                b"  if (!ssfUseShow(sessionWorkspaces) && !isCollapsed) return null;\n",
+                b"  const ssfV = ssfUseShow(sessionWorkspaces);\n  if (!ssfV && !isCollapsed) return null;\n",
             ),
+            (
+                b"isCollapsed: isSectionCollapsed, topLevelIndentation",
+                b"isCollapsed: isSectionCollapsed && ssfV < 2, topLevelIndentation",
+            ),
+            # The input now lives only in the sticky SsfSearch row and searches
+            # PINNED and SESSIONS too, so its labels say so; the PROJECTS header
+            # keeps its label, sort menu and add-repository button.
+            (
+                b"  const filterLabel = _t(\n    \n    {\n      id: \"F2XK4g\"\n    }\n  );\n",
+                b'  const filterLabel = "Search the sidebar";\n',
+            ),
+            (
+                b"placeholder: _t(\n        \n        {\n          id: \"ElqTsH\"\n        }\n      ),",
+                b'placeholder: "Search\\u2026",',
+            ),
+            (
+                b"    jsxRuntimeExports.jsx(DashboardSidebarProjectsFilterInput, { query: filterQuery, "
+                b"onQueryChange: onFilterQueryChange, isExpanded: isFilterExpanded, "
+                b"onExpandedChange: handleFilterExpandedChange }),\n",
+                b"",
+            ),
+            (b", section: \"workspaces\", labelHidden: isFilterExpanded, children:", b", section: \"workspaces\", children:"),
             # Two `//` lines inside expressions (after `return (` and after a
             # comma); deleting whole lines frees room for the helpers.
             (
@@ -685,11 +831,14 @@ STATUS_FILTER_REGIONS = (
         ),
         # v1 header button; the first v2 build (its plain-click label said
         # "stop showing them" also for the only active chip); the second v2
-        # build (label inline, a section hid under an open dialog).
+        # build (label inline, a section hid under an open dialog); v2 final;
+        # v2 with hidden inactive zero chips (PR #474, applied live on 1.37).
         legacy_sha256=(
             "3682ec4e3fa223751b5ce4bde728d33cef3642a36d9561f4df517ec808253be1",
             "9fc647b8e6c3dc47e9204b09e0c0a382bb60b4943743c25b4214b87c4818acb4",
             "348275748426b01857310056fe9870b5834aa2a3be040763e9d5ac4bfd88c363",
+            "ef99ad348ad4d3e31d9a7cd7c67f1e9c0437e3e03259b4f8c182a2a73dcad0e7",
+            "a867c4b8aa38d54761f5ce1eacb6236cae3d340862faefef40c359b3529f0084",
         ),
     ),
     # DashboardSidebar: the sticky chip row goes between DashboardSidebarHeader
@@ -701,47 +850,93 @@ STATUS_FILTER_REGIONS = (
         end=b'const SEED_FLAG_KEY = "superset:dev:v2-sidebar-seeded";\n',
         length=12134,
         stock_sha256="ab4fb1849a1df56f41ee66de3a965e0bf4566c383247e11ba05e193780e30239",
-        patched_sha256="51557750a5b6afcd93bc3e1e47ee619d4bfaf0081231d5e6b4ec98033b6f4a0e",
+        patched_sha256="02d79a1591ab5d35bcb4cc44bc2d4dda4d07c2a7899a2a349e10832d49add0e1",
         edits=(
             _insert_after(
                 b"      jsxRuntimeExports.jsx(DashboardSidebarHeader, { isCollapsed }),\n",
+                b"      !isCollapsed && jsxRuntimeExports.jsx(SsfSearch, { query: projectFilterQuery, "
+                b"onQueryChange: setProjectFilterQuery, pinnedWorkspaces, sessionWorkspaces, groups }),\n"
                 b"      !isCollapsed && jsxRuntimeExports.jsx(SsfStatusChips, "
                 b"{ pinnedWorkspaces, sessionWorkspaces, groups: orderedGroups }),\n",
             ),
-            _insert_after(b"    ] }) }) }) }) }) })\n  ] });\n}\n", STATUS_FILTER_BITS_JS),
         ),
+        # v2 (chips only, the chip bits lived here).
+        legacy_sha256=("51557750a5b6afcd93bc3e1e47ee619d4bfaf0081231d5e6b4ec98033b6f4a0e",),
+        shared=((SIDEBAR_FOOTER, SIDEBAR_FOOTER_HIDDEN),),
     ),
     # DashboardSidebarCloudContextMenu: no edit of its own, only room (1,446 B
-    # of no-op comments) for the shared filter state.
+    # of no-op comments) for matching, the Shift-range cut, the chip label and
+    # the chip counts.
     RegionRewrite(
-        label="status filter: shared state",
+        label="status filter: matching and counts",
         start=b"function DashboardSidebarCloudContextMenu({\n",
         end=b"function DashboardSidebarCloudPortsButton({\n",
         length=8643,
         stock_sha256="4fbd96c26c429f92ebc0219b9aa01d98ed1510990ba0aa4502ff7c7f8a26be83",
-        patched_sha256="f7f02ea166cf516cb9a0b4aa269a37bfe603dc598ae79124f3a8a5b8b5f88aba",
-        edits=(_insert_before(b"const MAX_BADGE_COUNT = 9;\n", STATUS_FILTER_STATE_JS),),
+        patched_sha256="1c05543a9a08dbbca1fc2eb357618b3d2003a8d42bd55bc92ab37584925d5182",
+        edits=(_insert_before(b"const MAX_BADGE_COUNT = 9;\n", STATUS_FILTER_MATCH_JS + STATUS_FILTER_COUNTS_JS),),
+        # v2 (the shared state lived here).
+        legacy_sha256=("f7f02ea166cf516cb9a0b4aa269a37bfe603dc598ae79124f3a8a5b8b5f88aba",),
     ),
     # DashboardSidebarWorkspaceContextMenu: no edit of its own, only room
-    # (1,350 B of no-op comments) for subscription, matching, the Shift-range
-    # cut and the chip label.
+    # (1,350 B of no-op comments) for the sticky search row.
     RegionRewrite(
-        label="status filter: matching",
+        label="status filter: search",
         start=b"function DashboardSidebarWorkspaceContextMenu({\n",
         end=b"function useDashboardSidebarWorkspaceItemActions({\n",
         length=9227,
         stock_sha256="7167a1331345ee26b1d7594826a0669e2bab76976b418009e16280d3e0518c39",
-        patched_sha256="98f21f27a7848b4a85f55f43190715f187b5e62525f6e5f1eca343680559d2b5",
-        edits=(_insert_after(b"    ] })\n  ] });\n}\n", STATUS_FILTER_MATCH_JS),),
-        # The first and second v2 builds, before the chip label moved here.
-        legacy_sha256=("1c17da8dba0b8fd2bf26c01a29a678e8231059b89c93dfad4008f442f1adacc9",),
+        patched_sha256="0169b7b80eeb43ac471b90a81ddda7a677395859f14da76d6a0c4da11f7f29c1",
+        edits=(_insert_after(b"    ] })\n  ] });\n}\n", STATUS_FILTER_SEARCH_JS),),
+        # The first and second v2 builds (before the chip label moved here)
+        # and v2 final (matching lived here).
+        legacy_sha256=(
+            "1c17da8dba0b8fd2bf26c01a29a678e8231059b89c93dfad4008f442f1adacc9",
+            "98f21f27a7848b4a85f55f43190715f187b5e62525f6e5f1eca343680559d2b5",
+        ),
+    ),
+    # DashboardSidebarProjectContextMenu: no edit of its own, only room (600 B
+    # of no-op comments) for the chip list and bits, which region 3 gave up
+    # for the search row. It starts where region 1 ends.
+    RegionRewrite(
+        label="status filter: chip bits",
+        start=b"function DashboardSidebarProjectContextMenu({\n",
+        end=b"const DashboardSidebarProjectRow = reactExports.forwardRef((",
+        length=3767,
+        stock_sha256="3cd0c6b470292f9dae3ac9c13f470e3268f2a7b03c785e789f4abc7924cb60b2",
+        patched_sha256="a78e2e7a9f7bda23e88c0666a33187ea526007077bd76d7abafa7add91ee8a9f",
+        edits=(_insert_after(b"      ] }) : null\n    ] })\n  ] });\n}\n", STATUS_FILTER_BITS_JS),),
+    ),
+    # DashboardSidebarWorkspaceHoverCardContent: room only (931 B) for the
+    # render guard ssfUseShow.
+    RegionRewrite(
+        label="status filter: render guard",
+        start=b"function DashboardSidebarWorkspaceHoverCardContent({\n",
+        end=b"function DashboardSidebarHoverCardOverlay({\n",
+        length=8079,
+        stock_sha256="60ea27f0802fb5a8fea19a7cfb80fe3c51f0eef8fc33323e51afab38e23a6877",
+        patched_sha256="f5e72a947ca00091324d45dfea87cb992048d10fa03f855b1cd5e575213edaa9",
+        edits=(_insert_after(b"    ] }) }) }) : null\n  ] });\n}\n", STATUS_FILTER_SHOW_JS),),
+    ),
+    # DashboardSidebarBulkActions: room only (847 B) for the shared filter
+    # state. It is the first region in the module, so the `let` bindings are
+    # declared before anything else of the filter.
+    RegionRewrite(
+        label="status filter: shared state",
+        start=b"function DashboardSidebarBulkActions({\n",
+        end=b"async function executeBulkWorkspaceDeleteTargets({\n",
+        length=7692,
+        stock_sha256="d36751f314d3d9c53d01011da8383bb96a1d2451797ace489d0866ffb3c19024",
+        patched_sha256="3fb88b707eb376238e1b390e170d6569bb7b4fa66d466304456f27ad4e7d0096",
+        edits=(_insert_after(b"        ] })\n      ]\n    }\n  ) });\n}\n", STATUS_FILTER_STATE_JS),),
     ),
 )
 
 
 # 1.37 adds an active-workspace switcher under the status provider, changing
-# only the sticky-row region; the other four regions remain byte-identical.
-# Keep the 1.36 pins above for rollback; see REBASE.md and real fixture r3.
+# only the sticky-row region (deeper indent, 13,413 B); the other seven regions
+# remain byte-identical. Keep the 1.36 pins above for rollback; see REBASE.md
+# and real fixture superset-1.37.0-status-filter-r3.js.
 STATUS_FILTER_REGION_VARIANTS = (
     RegionRewrite(
         label="status filter: sticky chip row",
@@ -749,15 +944,19 @@ STATUS_FILTER_REGION_VARIANTS = (
         end=STATUS_FILTER_REGIONS[2].end,
         length=13413,
         stock_sha256="900b4f6260154132b79bfa163f5d3e66f4f8e751ac476459703fbe596c5bb54e",
-        patched_sha256="e77b3309f341457b692581f147766ce6c3ed0a993d804ed199e8e969025af73a",
+        patched_sha256="ef72d748a66c83d089b69c9768126930ebdb72c538d2f42935de55f5ba8a0e87",
         edits=(
             _insert_after(
-                b'        jsxRuntimeExports.jsx(DashboardSidebarHeader, { isCollapsed }),\n',
+                b"        jsxRuntimeExports.jsx(DashboardSidebarHeader, { isCollapsed }),\n",
+                b"        !isCollapsed && jsxRuntimeExports.jsx(SsfSearch, { query: projectFilterQuery, "
+                b"onQueryChange: setProjectFilterQuery, pinnedWorkspaces, sessionWorkspaces, groups }),\n"
                 b"        !isCollapsed && jsxRuntimeExports.jsx(SsfStatusChips, "
                 b"{ pinnedWorkspaces, sessionWorkspaces, groups: orderedGroups }),\n",
             ),
-            _insert_after(b'    ] }) }) })\n  ] });\n}\n', STATUS_FILTER_BITS_JS),
         ),
+        # v2 on 1.37 (#465: chips only, the chip bits lived here).
+        legacy_sha256=("e77b3309f341457b692581f147766ce6c3ed0a993d804ed199e8e969025af73a",),
+        shared=((SIDEBAR_FOOTER, SIDEBAR_FOOTER_HIDDEN),),
     ),
 )
 
@@ -799,7 +998,12 @@ def _plan_region_rewrite(
     region = candidates[0]
     stop = offset + region.length
     current = bytes(data[offset:stop])
-    digest = hashlib.sha256(current).hexdigest()
+    canonical, kept = current, []
+    for stock, variant in region.shared:
+        if canonical.count(variant) == 1:
+            canonical = canonical.replace(variant, stock)
+            kept.append((stock, variant))
+    digest = hashlib.sha256(canonical).hexdigest()
     if digest == region.patched_sha256:
         return []
     if digest in region.legacy_sha256:
@@ -809,10 +1013,41 @@ def _plan_region_rewrite(
         )
     if digest != region.stock_sha256:
         raise RuntimeError(f"{region.label}: region is neither stock nor patched; bundle structure may have changed")
-    rewritten = rewrite_region(region, current)
+    rewritten = rewrite_region(region, canonical)
     if hashlib.sha256(rewritten).hexdigest() != region.patched_sha256:
         raise RuntimeError(f"internal error: {region.label} rewrite does not match its pinned digest")
+    for stock, variant in kept:
+        rewritten = _replace_once(rewritten, stock, variant, region.label)
     return [(offset, current, rewritten, region.label)]
+
+
+def _replace_once(data: bytes, old: bytes, new: bytes, label: str) -> bytes:
+    """Replace one anchor that must occur exactly once."""
+    found = data.count(old)
+    if found != 1:
+        raise RuntimeError(f"{label}: shared anchor found {found} times")
+    return data.replace(old, new)
+
+
+def _fold_into_regions(replacements: list[tuple[int, bytes, bytes, str]]) -> list[tuple[int, bytes, bytes, str]]:
+    """Merge each write that lies inside a planned region rewrite into that rewrite.
+
+    A region rewrite strips comments, so the inner write is matched by its
+    bytes, not its offset; it has to occur exactly once in the rewrite.
+    """
+    labels = {region.label for region in STATUS_FILTER_REGIONS}
+    hosts = [list(item) for item in replacements if item[3] in labels]
+    rest = []
+    for item in replacements:
+        offset, old, new, label = item
+        if label in labels:
+            continue
+        host = next((h for h in hosts if h[0] <= offset and offset + len(old) <= h[0] + len(h[1])), None)
+        if host is None:
+            rest.append(item)
+        else:
+            host[2] = _replace_once(host[2], old, new, f"{host[3]} + {label}")
+    return rest + [tuple(host) for host in hosts]
 
 
 # --sound-only-when-waiting (desktop-v1.36.0–v1.37.0). Upstream rings on every agent
@@ -997,10 +1232,14 @@ def plan_replacements(
     pinned_icon_only: bool = False,
     sidebar_status_filter: bool = False,
     sound_only_when_waiting: bool = False,
+    hide_nav_buttons: bool = False,
+    hide_sidebar_footer: bool = False,
 ) -> list[tuple[int, bytes, bytes, str]]:
     """Validate the complete bundle first, then return equal-length writes."""
     if not 4 <= size <= 9:
         raise ValueError("size must be 4..9 (Tailwind size-N)")
+    if hide_nav_buttons and not compact_sidebar:
+        raise ValueError("--hide-nav-buttons needs --compact-sidebar")
 
     replacements = []
 
@@ -1120,17 +1359,27 @@ def plan_replacements(
         ]
         old_new, old_target, _ = TOP_NAV_BUTTON_VARIANTS[0]
         current_new, current_target, _ = TOP_NAV_NEW_WORKSPACE_1_30
+        new_hidden = HIDDEN_NAV_BUTTONS["New Workspace"]
         new_offset, new_old = _single_variant(
             data, "New Workspace button",
-            [old_new, old_target, current_new, current_target],
+            [old_new, old_target, current_new, current_target, new_hidden],
         )
-        new_target = current_target if new_old in (current_new, current_target) else old_target
+        new_target = current_target if new_old in (current_new, current_target, new_hidden) else old_target
+        if hide_nav_buttons and new_target != current_target:
+            raise RuntimeError("--hide-nav-buttons needs desktop 1.30 or newer")
+        if hide_nav_buttons or new_old == new_hidden:
+            new_target = new_hidden
         if new_old != new_target:
-            replacements.append((new_offset, new_old, new_target, "sidebar: New Workspace icon button"))
-        sidebar_variants.extend(
-            (f"{title} button", source, target, f"sidebar: {title} icon button")
-            for source, target, title in TOP_NAV_BUTTON_VARIANTS[1:]
-        )
+            change = "hidden" if new_target == new_hidden else "icon button"
+            replacements.append((new_offset, new_old, new_target, f"sidebar: New Workspace {change}"))
+        for source, target, title in TOP_NAV_BUTTON_VARIANTS[1:]:
+            hidden = HIDDEN_NAV_BUTTONS.get(title)
+            offset, old = _single_variant(data, f"{title} button", [source, target, *([hidden] if hidden else [])])
+            if hidden and (hide_nav_buttons or old == hidden):
+                target = hidden
+            if old != target:
+                change = "hidden" if target == hidden else "icon button"
+                replacements.append((offset, old, target, f"sidebar: {title} {change}"))
         # 1.30.x: inline badge -> overlay. 1.31-1.35: badge removed upstream, so
         # the family is verify-only there. 1.36+: sibling badge -> corner overlay.
         # Exactly one of the five shapes must exist.
@@ -1224,6 +1473,15 @@ def plan_replacements(
 
     if sound_only_when_waiting:
         replacements.extend(_plan_sound_only_when_waiting(data))
+
+    # Checked only when asked or already hidden, so releases without this row
+    # stay patchable for everyone who does not use the flag.
+    if hide_sidebar_footer or data.find(SIDEBAR_FOOTER_HIDDEN) >= 0:
+        offset, old = _single_variant(data, "sidebar footer", [SIDEBAR_FOOTER, SIDEBAR_FOOTER_HIDDEN])
+        if old != SIDEBAR_FOOTER_HIDDEN:
+            replacements.append((offset, old, SIDEBAR_FOOTER_HIDDEN, "sidebar: footer hidden"))
+
+    replacements = _fold_into_regions(replacements)
 
     _require_disjoint(replacements)
     for _offset, old, new, label in replacements:
@@ -1544,6 +1802,16 @@ def main(argv=None):
         action="store_true",
         help="play the notification sound only when an agent waits for input, never on Stop",
     )
+    parser.add_argument(
+        "--hide-nav-buttons",
+        action="store_true",
+        help="with --compact-sidebar: hide the New Workspace, Search and Workspaces icons",
+    )
+    parser.add_argument(
+        "--hide-sidebar-footer",
+        action="store_true",
+        help="hide the expanded sidebar's organization, updates and settings row (settings stay on Cmd+,)",
+    )
     parser.add_argument("--revert", action="store_true")
     parser.add_argument("--asar", type=Path, default=DEFAULT_ASAR)
     parser.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
@@ -1569,6 +1837,8 @@ def main(argv=None):
             pinned_icon_only=args.pinned_icon_only,
             sidebar_status_filter=args.sidebar_status_filter,
             sound_only_when_waiting=args.sound_only_when_waiting,
+            hide_nav_buttons=args.hide_nav_buttons,
+            hide_sidebar_footer=args.hide_sidebar_footer,
             acknowledge_invalid_signature=args.ack_invalid_apple_signature,
         )
     except (OSError, RuntimeError, ValueError) as exc:

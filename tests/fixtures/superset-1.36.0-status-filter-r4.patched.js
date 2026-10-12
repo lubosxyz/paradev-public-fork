@@ -184,33 +184,29 @@ function DashboardSidebarCloudContextMenu({
     ] })
   ] });
 }
-// patch-asar.py --sidebar-status-filter v2
-let ssfMask = 0;
-const ssfListeners = new Set();
-try {
-  const stored = localStorage.getItem("ssf-sidebar-status-chips") ?? String([0, 3, 4][["1", "2"].indexOf(localStorage.getItem("ssf-sidebar-status-filter")) + 1]);
-  ssfMask = /^\d\d?$/.test(stored) && stored < 64 ? Number(stored) : 0;
-  localStorage.setItem("ssf-sidebar-status-chips", String(ssfMask));
-  localStorage.removeItem("ssf-sidebar-status-filter");
-} catch {
+function ssfSubscribe(listener) {
+  ssfListeners.add(listener);
+  return () => ssfListeners.delete(listener);
 }
-function ssfToggle(bit, solo) {
-  ssfMask = solo ? ssfMask === bit ? 0 : bit : ssfMask ^ bit;
-  try {
-    localStorage.setItem("ssf-sidebar-status-chips", String(ssfMask));
-  } catch {
-  }
-  for (const listener of [...ssfListeners]) listener();
+function ssfMatches(store, workspace) {
+  return (ssfMask & ssfBits(store.get(workspace.id).status, workspace.pullRequest?.state)) !== 0;
 }
-function ssfUseShow(workspaces) {
+function ssfRange(store, workspaceIds, isSelected, workspacesById) {
+  return ssfMask === 0 || !store ? workspaceIds : workspaceIds.filter((id) => isSelected(id) || ssfMatches(store, workspacesById.get(id) ?? { id }));
+}
+function ssfLabel(name, count, mask, bit) {
+  return `${name}: ${count} workspace${count === 1 ? "" : "s"}. Click to ${mask === bit ? "show all" : mask & bit ? "stop showing them" : "show them"}, \u2325-click to ${mask === bit ? "show all" : "show only these"}.`;
+}
+function ssfUseCounts(workspaces) {
   const store = reactExports.useContext(StatusStoreContext);
-  const selection = reactExports.useContext(DashboardSidebarSelectionContext);
-  const key = workspaces.map((workspace) => workspace.id).join("\n");
   const subscribe = reactExports.useCallback((listener) => {
-    const offs = [ssfSubscribe(listener), ...store ? key.split("\n").filter(Boolean).map((id) => store.subscribe(id, listener)) : []];
+    const offs = [ssfSubscribe(listener), ...store ? workspaces.map((workspace) => store.subscribe(workspace.id, listener)) : []];
     return () => offs.forEach((off) => off());
-  }, [store, key]);
-  return reactExports.useSyncExternalStore(subscribe, () => ssfMask === 0 || !store || workspaces.some((workspace) => selection?.isWorkspaceSelected(workspace.id) || ssfMatches(store, workspace)));
+  }, [store, workspaces]);
+  return reactExports.useSyncExternalStore(subscribe, () => {
+    const bits = workspaces.map((workspace) => ssfBits(store?.get(workspace.id).status, workspace.pullRequest?.state));
+    return [ssfMask, ...SSF_CHIPS.map(([bit]) => bits.filter((value) => value & bit).length)].join();
+  }).split(",").map(Number);
 }
 const MAX_BADGE_COUNT = 9;
-                     
+                             

@@ -198,17 +198,30 @@ function DashboardSidebarWorkspaceContextMenu({
     ] })
   ] });
 }
-function ssfSubscribe(listener) {
-  ssfListeners.add(listener);
-  return () => ssfListeners.delete(listener);
+function SsfSearch({
+  query,
+  onQueryChange,
+  pinnedWorkspaces,
+  sessionWorkspaces,
+  groups
+}) {
+  reactExports.useLayoutEffect(() => {
+    const q = query.trim().toLowerCase();
+    const names = new Map(groups.map((project) => [project.id, project.name]));
+    ssfQ = q;
+    ssfHide = new Set([...pinnedWorkspaces, ...sessionWorkspaces].filter((workspace) => q && !matches(workspace.name, q) && !matches(names.get(workspace.projectId) ?? "", q)).map((workspace) => workspace.id));
+    ssfEmit();
+    return () => {
+      ssfQ = "";
+      ssfHide = new Set();
+      ssfEmit();
+    };
+  }, [query, pinnedWorkspaces, sessionWorkspaces, groups]);
+  return jsxRuntimeExports.jsx("div", { className: "flex shrink-0 px-2 pb-2", children: jsxRuntimeExports.jsx(DashboardSidebarProjectsFilterInput, { query, isExpanded: true, onExpandedChange: () => {
+  }, onQueryChange: (value) => {
+    const sections = useSidebarSectionsCollapseStore.getState();
+    if (value.trim() && sections.collapsed.workspaces) sections.toggle("workspaces");
+    onQueryChange(value);
+  } }) });
 }
-function ssfMatches(store, workspace) {
-  return (ssfMask & ssfBits(store.get(workspace.id).status, workspace.pullRequest?.state)) !== 0;
-}
-function ssfRange(store, workspaceIds, isSelected, workspacesById) {
-  return ssfMask === 0 || !store ? workspaceIds : workspaceIds.filter((id) => isSelected(id) || ssfMatches(store, workspacesById.get(id) ?? { id }));
-}
-function ssfLabel(name, count, mask, bit) {
-  return `${name}: ${count} workspace${count === 1 ? "" : "s"}. Click to ${mask === bit ? "show all" : mask & bit ? "stop showing them" : "show them"}, \u2325-click to ${mask === bit ? "show all" : "show only these"}.`;
-}
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
+                                                                                                                                                                                                                                                                                      

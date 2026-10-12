@@ -86,11 +86,16 @@ upstream change inside the range is therefore a `neither stock nor patched` (or
    The project-section guard must keep naming the dialog and rename state
    (`isDeleteDialogOpen`, `importableWorktrees`, `isRenaming`);
    `test_project_section_stays_while_a_dialog_or_rename_is_open` checks it.
+   A region's `shared` pairs belong to another flag (region 3 holds the
+   `--hide-sidebar-footer` row): re-derive them from the new excerpt as well,
+   recut `tests/fixtures/superset-<V>-sidebar-footer.js`, and keep them out of
+   every edit anchor.
 3. Run `rewrite_region()` on the new excerpt. If it reports `exceeds the region
-   by N bytes`, move a helper snippet (`STATUS_FILTER_STATE_JS`, `_BITS_JS`,
-   `_MATCH_JS`, `_CHIPS_JS`, `_CHIP_JS`) into a region with more trailing
-   padding (region 5 has the most), widen a region to the next top-level
-   statement, or add a room-only region like regions 4 and 5 (rank the chunk's top-level functions by the bytes of
+   by N bytes`, move a helper snippet (`STATUS_FILTER_STATE_JS`, `_SHOW_JS`,
+   `_BITS_JS`, `_MATCH_JS`, `_COUNTS_JS`, `_CHIPS_JS`, `_CHIP_JS`, `_SEARCH_JS`;
+   each is whole top-level declarations) into a region with more trailing
+   padding (regions 1, 3 and 5 have the most), widen a region to the next top-level
+   statement, or add a room-only region like regions 4 to 8 (rank the chunk's top-level functions by the bytes of
    `JS_NOOP_COMMENTS` they hold and skip any that contain another family's
    anchor). Never strip anything other than `JS_NOOP_COMMENTS` and whole `//`
    lines.
@@ -104,7 +109,9 @@ upstream change inside the range is therefore a `neither stock nor patched` (or
    the injected identifiers (`StatusStoreContext`,
    `DashboardSidebarSelectionContext`, `getProjectChildrenWorkspaces`,
    `Tooltip*`, `cn`, `reactExports`, `jsxRuntimeExports`, `LuGitPullRequest`,
-   `LuGitMerge`, `PR_COLOR_BY_STATE`) are still in the chunk's module scope,
+   `LuGitMerge`, `PR_COLOR_BY_STATE`, `AsciiSpinner`,
+   `DashboardSidebarProjectsFilterInput`, `useSidebarSectionsCollapseStore`,
+   `matches`) are still in the chunk's module scope,
    that `workspacesById` is still in scope at the `ssfRange` call site and that
    `decorateSidebarWorkspace` still sets `pullRequest` (with `.state`), that
    region 3 still renders `DashboardSidebarHeader` right before the scrolling

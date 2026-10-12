@@ -38,7 +38,8 @@ function DashboardSidebarProjectSection({
   } = useDashboardSidebarProjectSectionActions({
     project
   });
-  if (!ssfUseShow(flattenedCollapsedWorkspaces) && !isSidebarCollapsed && !isDeleteDialogOpen && !importableWorktrees && !isRenaming) return null;
+  const ssfV = ssfUseShow(flattenedCollapsedWorkspaces);
+  if (!ssfV && !isSidebarCollapsed && !isDeleteDialogOpen && !importableWorktrees && !isRenaming) return null;
   const totalWorkspaceCount = flattenedCollapsedWorkspaces.length;
   const deleteProjectDialog = canDeleteProject && jsxRuntimeExports.jsx(DeleteProjectDialog, { open: isDeleteDialogOpen, onOpenChange: setIsDeleteDialogOpen, projectId: project.id, projectName: project.name, hostIds: projectHostIds, onDeleted: leaveProjectIfActive, onHide: hideProject });
   const importWorktreesDialog = importableWorktrees && jsxRuntimeExports.jsx(ImportWorktreesDialog, { open: true, worktrees: importableWorktrees, isImporting: isImportingWorktrees, onOpenChange: (open) => {
@@ -52,7 +53,7 @@ function DashboardSidebarProjectSection({
     ] }) });
   }
   return jsxRuntimeExports.jsxs("div", { className: "mt-1 first:mt-0", children: [
-    jsxRuntimeExports.jsx(DashboardSidebarProjectContextMenu, { projectId: project.id, onCreateSection: handleNewSection, onImportWorktrees: handleImportWorktrees, onOpenInFinder: handleOpenInFinder, onOpenSettings: handleOpenSettings, onHide: hideProject, onDelete: canDeleteProject ? openDeleteDialog : null, onRename: startRename, children: jsxRuntimeExports.jsx(DashboardSidebarProjectRow, { projectName: project.name, iconUrl: project.iconUrl, projectColor: project.color, isCollapsed: project.isCollapsed, isRenaming, renameValue, onRenameValueChange: setRenameValue, onSubmitRename: submitRename, onCancelRename: cancelRename, onStartRename: startRename, onToggleCollapse: () => onToggleCollapse(project.id), onNewWorkspace: handleNewWorkspace, ...dragHandleAttributes ?? {}, ...dragHandleListeners ?? {} }) }),
+    jsxRuntimeExports.jsx(DashboardSidebarProjectContextMenu, { projectId: project.id, onCreateSection: handleNewSection, onImportWorktrees: handleImportWorktrees, onOpenInFinder: handleOpenInFinder, onOpenSettings: handleOpenSettings, onHide: hideProject, onDelete: canDeleteProject ? openDeleteDialog : null, onRename: startRename, children: jsxRuntimeExports.jsx(DashboardSidebarProjectRow, { projectName: project.name, iconUrl: project.iconUrl, projectColor: project.color, isCollapsed: project.isCollapsed && ssfV < 2, isRenaming, renameValue, onRenameValueChange: setRenameValue, onSubmitRename: submitRename, onCancelRename: cancelRename, onStartRename: startRename, onToggleCollapse: () => onToggleCollapse(project.id), onNewWorkspace: handleNewWorkspace, ...dragHandleAttributes ?? {}, ...dragHandleListeners ?? {} }) }),
     jsxRuntimeExports.jsx(AnimatePresence, { initial: false, children: !isDraggingProject && jsxRuntimeExports.jsx(motion.div, { initial: {
       height: 0,
       opacity: 0
@@ -65,7 +66,7 @@ function DashboardSidebarProjectSection({
     }, transition: {
       duration: 0.15,
       ease: "easeOut"
-    }, className: "overflow-hidden", children: jsxRuntimeExports.jsx(DashboardSidebarExpandedProjectContent, { containerId: project.id, projectId: project.id, isCollapsed: project.isCollapsed, workspaceShortcutLabels, onWorkspaceHover, onDeleteSection: deleteSection, onRenameSection: renameSection, onToggleSectionCollapse: toggleSectionCollapsed }) }) }),
+    }, className: "overflow-hidden", children: jsxRuntimeExports.jsx(DashboardSidebarExpandedProjectContent, { containerId: project.id, projectId: project.id, isCollapsed: project.isCollapsed && ssfV < 2, workspaceShortcutLabels, onWorkspaceHover, onDeleteSection: deleteSection, onRenameSection: renameSection, onToggleSectionCollapse: toggleSectionCollapsed }) }) }),
     importWorktreesDialog,
     deleteProjectDialog
   ] });
@@ -88,7 +89,8 @@ function DashboardSidebarSessionsSection({
     activeWorkspaceHome
   } = useDashboardSidebarDnd();
   const isSectionCollapsed = useSidebarSectionsCollapseStore((s) => s.collapsed.sessions);
-  if (!ssfUseShow(sessionWorkspaces) && !isCollapsed) return null;
+  const ssfV = ssfUseShow(sessionWorkspaces);
+  if (!ssfV && !isCollapsed) return null;
   const collapsedDropZoneEligible = !isCollapsed && isSectionCollapsed && sessionItems.length === 0 && activeWorkspaceHome === SESSIONS_CONTAINER;
   if (isCollapsed) {
     if (sessionWorkspaces.length === 0) return null;
@@ -118,7 +120,7 @@ function DashboardSidebarSessionsSection({
         id: "YkvmF4"
       } }) })
     ] }) }),
-    jsxRuntimeExports.jsx(DashboardSidebarExpandedProjectContent, { containerId: SESSIONS_CONTAINER, projectId: null, isCollapsed: isSectionCollapsed, topLevelIndentation: "top-level", groupedIndentation: "workspace", workspaceShortcutLabels, onWorkspaceHover, onDeleteSection, onRenameSection, onToggleSectionCollapse }),
+    jsxRuntimeExports.jsx(DashboardSidebarExpandedProjectContent, { containerId: SESSIONS_CONTAINER, projectId: null, isCollapsed: isSectionCollapsed && ssfV < 2, topLevelIndentation: "top-level", groupedIndentation: "workspace", workspaceShortcutLabels, onWorkspaceHover, onDeleteSection, onRenameSection, onToggleSectionCollapse }),
     collapsedDropZoneEligible && jsxRuntimeExports.jsx(SidebarDropZone$1, { dropZoneId: dropZoneId(SESSIONS_CONTAINER), label: _t(
       
       {
@@ -140,7 +142,7 @@ function SsfStatusChip({
   const label = ssfLabel(name, count, mask, bit);
   return jsxRuntimeExports.jsxs(Tooltip, { delayDuration: 500, children: [
     jsxRuntimeExports.jsx(TooltipTrigger, { asChild: true, children: jsxRuntimeExports.jsxs("button", { type: "button", "aria-pressed": active, "aria-label": label, onClick: (event) => ssfToggle(bit, event.altKey), style: active ? { backgroundColor: color, borderColor: color, color: "black" } : { borderColor: color }, className: cn("flex h-6 min-w-0 items-center justify-center gap-1 overflow-hidden rounded-full border text-xs font-medium tabular-nums transition-colors", !active && "text-muted-foreground hover:bg-fill-hover", count === 0 && "opacity-40"), children: [
-      pr ? jsxRuntimeExports.jsx(pr === "merged" ? LuGitMerge : LuGitPullRequest, { className: cn("size-3 shrink-0", !active && PR_COLOR_BY_STATE[pr]), strokeWidth: 2 }) : jsxRuntimeExports.jsx("span", { className: "size-1.5 shrink-0 rounded-full", style: { backgroundColor: active ? "currentColor" : color } }),
+      pr ? jsxRuntimeExports.jsx(pr === "merged" ? LuGitMerge : LuGitPullRequest, { className: cn("size-3 shrink-0", !active && PR_COLOR_BY_STATE[pr]), strokeWidth: 2 }) : bit === 8 ? jsxRuntimeExports.jsx(AsciiSpinner, { className: cn("leading-none", active && "text-current") }) : jsxRuntimeExports.jsx("span", { className: "size-1.5 shrink-0 rounded-full", style: { backgroundColor: active ? "currentColor" : color } }),
       count
     ] }) }),
     jsxRuntimeExports.jsx(TooltipContent, { side: "bottom", children: label })
@@ -161,12 +163,7 @@ function DashboardSidebarProjectsFilterInput({
     if (isExpanded && !wasExpandedRef.current) inputRef.current?.focus();
     wasExpandedRef.current = isExpanded;
   }, [isExpanded]);
-  const filterLabel = _t(
-    
-    {
-      id: "F2XK4g"
-    }
-  );
+  const filterLabel = "Search the sidebar";
   if (!isExpanded) {
     return jsxRuntimeExports.jsxs(Tooltip, { delayDuration: 700, children: [
       jsxRuntimeExports.jsx(TooltipTrigger, { asChild: true, children: jsxRuntimeExports.jsx("button", { type: "button", "aria-label": filterLabel, onClick: (event) => {
@@ -188,12 +185,7 @@ function DashboardSidebarProjectsFilterInput({
       jsxRuntimeExports.jsx(HiMagnifyingGlass, { className: "size-3 shrink-0 text-muted-foreground" }),
       jsxRuntimeExports.jsx("input", { ref: inputRef, value: query, onChange: (event) => onQueryChange(event.target.value), onBlur: () => {
         if (query.trim() === "") collapse();
-      }, placeholder: _t(
-        
-        {
-          id: "ElqTsH"
-        }
-      ), "aria-label": filterLabel, className: "h-6 w-full min-w-0 bg-transparent text-xs font-normal normal-case tracking-normal text-foreground placeholder:text-muted-foreground focus:outline-none" }),
+      }, placeholder: "Search\u2026", "aria-label": filterLabel, className: "h-6 w-full min-w-0 bg-transparent text-xs font-normal normal-case tracking-normal text-foreground placeholder:text-muted-foreground focus:outline-none" }),
       query !== "" && jsxRuntimeExports.jsx(
         "button",
         {
@@ -382,8 +374,7 @@ function DashboardSidebarWorkspacesHeader({
     {
       id: "-0B-ue"
     }
-  ), section: "workspaces", labelHidden: isFilterExpanded, children: [
-    jsxRuntimeExports.jsx(DashboardSidebarProjectsFilterInput, { query: filterQuery, onQueryChange: onFilterQueryChange, isExpanded: isFilterExpanded, onExpandedChange: handleFilterExpandedChange }),
+  ), section: "workspaces", children: [
     jsxRuntimeExports.jsx(DashboardSidebarProjectsSortMenu, { sortMode, onSortModeChange }),
     jsxRuntimeExports.jsxs(DropdownMenu, { children: [
       jsxRuntimeExports.jsxs(Tooltip, { delayDuration: 700, children: [
@@ -443,4 +434,4 @@ function DashboardSidebarWorkspacesHeader({
     ] })
   ] });
 }
-                                                                                                                                            
+                                                                                                                                                                                                                                                              

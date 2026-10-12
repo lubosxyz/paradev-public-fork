@@ -179,6 +179,7 @@ function DashboardSidebar({
     jsxRuntimeExports.jsx(DashboardSidebarBulkDeleteMount, {}),
     jsxRuntimeExports.jsx(DashboardSidebarSectionRenameProvider, { children: jsxRuntimeExports.jsx(DashboardSidebarHoverProvider, { children: jsxRuntimeExports.jsx(DashboardSidebarWorkspaceStatusProvider, { workspaces: statusWorkspaces, activeWorkspaceId: activeV2WorkspaceId, children: jsxRuntimeExports.jsx(DashboardSidebarHoverCardOverlay, { children: jsxRuntimeExports.jsx(DashboardSidebarDndProvider, { projects: displayedGroups, pinnedWorkspaces, sessionChildren, isSidebarCollapsed: isCollapsed, workspaceShortcutLabels, onReorderProjects: handleReorderProjects, isProjectDragDisabled, isChildDragDisabled, children: jsxRuntimeExports.jsxs("div", { className: "flex h-full flex-col border-r border-border bg-sidebar dark:bg-muted/35", children: [
       jsxRuntimeExports.jsx(DashboardSidebarHeader, { isCollapsed }),
+      !isCollapsed && jsxRuntimeExports.jsx(SsfSearch, { query: projectFilterQuery, onQueryChange: setProjectFilterQuery, pinnedWorkspaces, sessionWorkspaces, groups }),
       !isCollapsed && jsxRuntimeExports.jsx(SsfStatusChips, { pinnedWorkspaces, sessionWorkspaces, groups: orderedGroups }),
       jsxRuntimeExports.jsxs(OverflowFadeContainer, { fadeEdges: ["top", "bottom"], className: "flex-1 overflow-y-auto hide-scrollbar", children: [
         (isCollapsed || !workspacesListCollapsed) && jsxRuntimeExports.jsx(DashboardSidebarPinnedSection, { pinnedWorkspaces, isCollapsed, onWorkspaceHover: refreshWorkspacePullRequest }),
@@ -230,8 +231,4 @@ function DashboardSidebar({
     ] }) }) }) }) }) })
   ] });
 }
-const SSF_CHIPS = [[1, "Needs input", "yellow"], [2, "Failed", "red"], [4, "Review", "green"], [8, "Working", "amber"], [16, "Open PR", "emerald", "open"], [32, "Merged", "purple", "merged"]];
-function ssfBits(status, pr) {
-  return (status === "permission" ? 1 : status === "failed" ? 2 : status === "review" ? 4 : status === "working" ? 8 : 0) | (pr === "merged" ? 32 : pr === "open" || pr === "draft" || pr === "queued" ? 16 : 0);
-}
-                           
+                                                                                                                                                                                                                                                                                                     
