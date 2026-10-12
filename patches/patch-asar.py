@@ -1032,7 +1032,7 @@ def require_status_filter_names(data) -> None:
     for names, pattern in (
         # Rollup emits imports as `import { a as X, … } from` and module-scope
         # declarations at column 0; a nested or exported alias binds nothing here.
-        (STATUS_FILTER_IMPORTED_NAMES, r"^import\s*\{{[^}}]*\bas {name}\b[^}}]*\}}\s*from"),
+        (STATUS_FILTER_IMPORTED_NAMES, r"^import\s*\{{[^}}]*\bas {name}(?![\w$])[^}}]*\}}\s*from"),
         (STATUS_FILTER_DEFINED_NAMES, r"^(?:const|let|function) {name}\b(?!\$)"),
     ):
         for name in names:

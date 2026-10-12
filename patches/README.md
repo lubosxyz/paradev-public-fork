@@ -31,7 +31,7 @@ All `size-N` strings are 6 chars, so asar header offsets stay valid — no repac
 unpacking-pattern issues with native modules.
 
 With `--compact-sidebar`, the expanded utility navigation becomes a four-column
-icon grid. Anchor families track desktop-v1.25.1 and desktop-v1.26.0–v1.36.0:
+icon grid. Anchor families track desktop-v1.25.1 and desktop-v1.26.0–v1.37.0:
 eight buttons (New Workspace, Search,
 Workspaces, Automations, Tasks, Pull requests, plus the flag-gated Pages and
 Plugins; Usage left this header and later returned flag-gated, see below). Labels render through Lingui
@@ -99,7 +99,7 @@ either order. The anchor is checked only when the flag is given or the row is
 already hidden, so it never blocks a release that lacks the row. Hidden is
 sticky like `--hide-nav-buttons`; `--revert` restores it.
 
-With `--pinned-icon-only` (anchors track desktop-v1.30.2–v1.36.0), rows in the sidebar
+With `--pinned-icon-only` (anchors track desktop-v1.30.2–v1.37.0), rows in the sidebar
 **PINNED** section show only the workspace name — `budtekomfi-cz/SSZ křivka…`
 becomes `SSZ křivka…` — and the project is identified by its icon (the project
 name stays in the icon tooltip). Two length-preserving edits in
@@ -220,6 +220,10 @@ Known limitations:
 - An active chip does not open a collapsed PROJECTS section, and PINNED renders
   only below it: with PROJECTS collapsed a chip can count rows you do not see.
   Typing into the search expands PROJECTS once by toggling its stored state.
+- The PROJECTS header no longer renders its own filter input; an upstream
+  shortcut that opens that input does nothing (use the sticky search row).
+- The name check proves that the upstream names exist, not their signatures
+  (`matches(text, query)`, the sections store `toggle`, spinner props).
 - The search matches PINNED and SESSIONS rows by the names of visible projects
   only; a row whose project is hidden matches by its own name alone.
 - The hidden nav buttons and the hidden footer are sticky. A patcher that

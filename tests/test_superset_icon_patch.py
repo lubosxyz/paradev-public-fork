@@ -2879,7 +2879,7 @@ class SupersetStatusFilterNamesTest(unittest.TestCase):
         for broken in (
             real[:16] + b"{not json" + real[25:],
             (4).to_bytes(4, "little") + (10**9).to_bytes(4, "little") + real[8:],
-            real.replace(b'"size": ', b'"bytes": ', 1),
+            real.replace(b'"size"', b'"sizx"', 1),
         ):
             with self.subTest(prefix=broken[:20]):
                 with self.assertRaisesRegex(RuntimeError, "ASAR header"):
@@ -2889,7 +2889,8 @@ class SupersetStatusFilterNamesTest(unittest.TestCase):
     def test_nested_definitions_and_export_aliases_do_not_count(self):
         nested = self.NAMES.replace(b"function matches() {}\n", b"function outer() {\n  function matches() {}\n}\n")
         exported = self.NAMES.replace(b"c as cn, ", b"") + b"export { q as cn };\n"
-        for name, names in (("matches", nested), ("cn", exported)):
+        renamed = self.NAMES.replace(b"c as cn, ", b"c as cn$1, ")
+        for name, names in (("matches", nested), ("cn", exported), ("cn", renamed)):
             with self.subTest(name=name):
                 with self.assertRaisesRegex(RuntimeError, f"{name} is not available"):
                     MODULE.require_status_filter_names(self.asar(("layout-a.js", self.chunk() + names)))
