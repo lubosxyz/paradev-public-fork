@@ -393,11 +393,14 @@ python3 patch-asar.py --revert
 ```
 
 `--pinned-icon-only`, `--sidebar-status-filter`, `--sound-only-when-waiting`,
-`--hide-nav-buttons` and `--hide-sidebar-footer` are not yet requested by the automated re-apply path
-(`check-upstream-patches.py` `PATCH_OPTIONS`, the upstream-update-watch prompt,
-`/patch-superset`, "When to re-run" below): add it there only after the live
-result has been confirmed visually. Until then a routine re-apply leaves an
-already patched pinned row alone but will not restore it after an update.
+`--hide-nav-buttons` and `--hide-sidebar-footer` are part of the automated
+re-apply path since 2026-10-13, after Lubos confirmed the live result visually
+(Superset 1.37 had lost them because they were manual-only). The same flag set
+lives in `check-upstream-patches.py` `PATCH_OPTIONS`, `watch-local-patches.py`,
+the upstream-update-watch prompt, `/patch-superset` and "When to re-run" below;
+`tests/test_superset_patch_watch.py` and `tests/test_superset_automation_prompt.py`
+fail when they drift. A new optional flag starts outside that set and joins it
+only after a visual confirmation.
 
 `project-icons/komfi-ops.svg` is an intentional palette exception: its
 slate-900 (`#0f172a`) background and slate-200 (`#e2e8f0`) gear stroke retain
@@ -696,7 +699,7 @@ After a **Superset desktop update**, first refresh project icons from the
 projects' current favicons (`python3 sync-project-icons.py --fetch --check`;
 drift → `--apply`, commit/PR, then `python3 apply.py`), then re-apply bundle
 patches and run the other procedures only if their symptom appears:
-1. `python3 patch-asar.py --size 6 --hide-tray --custom-project-icons --keep-icon-on-hover --compact-sidebar --pinned-icon-only --sidebar-status-filter --sound-only-when-waiting --hide-nav-buttons --hide-sidebar-footer --ack-invalid-apple-signature` — re-apply the complete approved production patch set after accepting an invalid Apple seal (`--pinned-icon-only`, `--sidebar-status-filter`, `--sound-only-when-waiting`, `--hide-nav-buttons` and `--hide-sidebar-footer` are manual-only here — not yet in the automated re-apply path, see section 1 above)
+1. `python3 patch-asar.py --size 6 --hide-tray --custom-project-icons --keep-icon-on-hover --compact-sidebar --pinned-icon-only --sidebar-status-filter --sound-only-when-waiting --hide-nav-buttons --hide-sidebar-footer --ack-invalid-apple-signature` — re-apply the complete approved production patch set after accepting an invalid Apple seal (the same set as the automated re-apply: `check-upstream-patches.py` `PATCH_OPTIONS`, `watch-local-patches.py` and the upstream-update-watch prompt; Lubos confirmed the optional flags visually on 2026-10-13)
 2. `python3 patch-tray-icon.py --ack-invalid-apple-signature` — legacy tray-only alternative; do not run it in addition to step 1
 3. `python3 apply-ui-patches.py <dist-root>` — re-apply icon source, layout
    markers and CSS (only needed when you rebuild/repack; the in-place asar
