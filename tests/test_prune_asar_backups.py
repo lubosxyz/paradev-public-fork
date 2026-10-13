@@ -1,4 +1,4 @@
-"""Tests for setup/superset/patches/prune-asar-backups.py.
+"""Tests for patches/prune-asar-backups.py.
 
 The script prunes `app.asar.backup-*` entries in a directory (default
 ~/.superset). Only VERIFIED sets — protected name (`pre-ui-patch` /
@@ -22,7 +22,7 @@ import tempfile
 import unittest
 
 REPO_ROOT = pathlib.Path(__file__).parents[1]
-SCRIPT = REPO_ROOT / "setup" / "superset" / "patches" / "prune-asar-backups.py"
+SCRIPT = REPO_ROOT / "patches" / "prune-asar-backups.py"
 
 
 def mkset(dir_, ts, prefix="pre-ui-patch", manifest=True, unpacked=False,

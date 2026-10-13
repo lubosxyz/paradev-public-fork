@@ -12,14 +12,9 @@ from unittest import mock
 import xml.etree.ElementTree as ET
 
 
-MODULE_PATH = Path(__file__).parents[1] / "setup/superset/patches/patch-asar.py"
-KOMFI_OPS_ICON = (
-    Path(__file__).parents[1]
-    / "setup"
-    / "superset"
-    / "project-icons"
-    / "komfi-ops.svg"
-)
+MODULE_PATH = Path(__file__).parents[1] / "patches/patch-asar.py"
+APPROVED_FLAGS = Path(__file__).parents[1] / "patches/approved-flags.json"
+KOMFI_OPS_ICON = Path(__file__).parent / "fixtures" / "komfi-ops.svg"
 SPEC = importlib.util.spec_from_file_location("patch_superset_asar", MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
@@ -223,13 +218,8 @@ class SupersetUiPatchTest(unittest.TestCase):
         asar = installed_stock_snapshot()
         if asar is None:
             self.skipTest("no installed Superset bundle on this machine")
-        # The checker's set is the production set the re-apply paths pass.
-        checker_spec = importlib.util.spec_from_file_location(
-            "check_upstream_patches_live", MODULE_PATH.parents[1] / "check-upstream-patches.py"
-        )
-        checker = importlib.util.module_from_spec(checker_spec)
-        checker_spec.loader.exec_module(checker)
-        options = dict(checker.PATCH_OPTIONS)
+        # The approved set is the production set the re-apply paths pass.
+        options = json.loads(APPROVED_FLAGS.read_text())["patch_options"]
         with asar.open("rb") as stream:
             with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_COPY) as data:
                 writes = MODULE.plan_replacements(data, **options)

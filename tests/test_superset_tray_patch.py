@@ -7,7 +7,7 @@ import unittest
 from unittest import mock
 
 
-MODULE_PATH = Path(__file__).parents[1] / "setup/superset/patches/patch-tray-icon.py"
+MODULE_PATH = Path(__file__).parents[1] / "patches/patch-tray-icon.py"
 SPEC = importlib.util.spec_from_file_location("patch_tray_icon", MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)

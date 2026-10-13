@@ -1,0 +1,15 @@
+{
+  "comment": "Approved production flag set for patch-asar.py (kwargs of plan_replacements). Staged copy of PATCH_OPTIONS in dev-setup-dashboard setup/superset/check-upstream-patches.py at c946612b3; that file stays the source of truth until the cutover in README.md moves the consumers here.",
+  "patch_options": {
+    "size": 6,
+    "hide_tray": true,
+    "custom_project_icons": true,
+    "keep_icon_on_hover": true,
+    "compact_sidebar": true,
+    "pinned_icon_only": true,
+    "sidebar_status_filter": true,
+    "sound_only_when_waiting": true,
+    "hide_nav_buttons": true,
+    "hide_sidebar_footer": true
+  }
+}
