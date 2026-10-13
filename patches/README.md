@@ -1,5 +1,11 @@
 # Superset v2 patches
 
+> **Staging copy (LUBOS-2292):** imported from dev-setup-dashboard
+> `setup/superset/patches/README.md` at `c946612b3`. Until the cutover in the
+> branch `README.md`, dev-setup-dashboard stays the source of truth and the
+> paths below (`setup/superset/...`) refer to that repository. Sections 2, 3,
+> 5 and 6 document tools that stay in dev-setup-dashboard.
+
 Six persistent customizations and recovery procedures for Superset v2 desktop.
 Sections 1+4 patch the app bundle and may need re-applying after an update.
 Sections 2+3+5 repair persisted local state and only run when their specific

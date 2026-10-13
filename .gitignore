@@ -1,0 +1,9 @@
+# This orphan branch shares worktrees with the Superset monorepo branches of the same clone;
+# their ignored build output and local dev data stay behind on checkout and must never land here.
+.claude/
+node_modules/
+apps/
+packages/
+superset-dev-data/
+__pycache__/
+*.pyc
