@@ -2,10 +2,22 @@
 # Fast gate for the local-patches branch: syntax of every script and fixture, then the full
 # stdlib unittest suite of the bundle patch tooling. No network, no package install, no writes
 # outside a temp dir; the live-bundle tests only read /Applications/Superset.app.
-# Usage: scripts/gate.sh   (run from anywhere; exits non-zero on the first failing step)
+# Usage: scripts/gate.sh [--live]   (run from anywhere; exits non-zero on the first failing step)
+#   default  fast gate: LIVE_HOST_ONLY tests skipped (they take minutes: each maps the 1 GB bundle)
+#   --live   also run the LIVE_HOST_ONLY tests against the installed bundle; required when a change
+#            touches anchors, regions, digests or flags of patches/*.py (README.md "Brána")
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PYTHONDONTWRITEBYTECODE=1
+
+live=0
+for arg in "$@"; do
+  case "$arg" in
+    --live) live=1 ;;
+    *) echo "unknown argument: $arg" >&2; exit 2 ;;
+  esac
+done
+if [ "$live" = 1 ]; then export LIVE_HOST_TESTS=1; else export LIVE_HOST_TESTS=0; fi
 
 step() { printf '\n== %s\n' "$*"; }
 start=$(date +%s)
@@ -40,7 +52,7 @@ node_tests=$(find tests patches -name '*.test.mjs' 2>/dev/null | sort)
 # shellcheck disable=SC2086  # repo-controlled paths without spaces
 if [ -n "$node_tests" ]; then node --test $node_tests; else echo "none"; fi
 
-step "python unittest"
-python3 -m unittest discover -s tests "$@"
+step "python unittest (LIVE_HOST_TESTS=$LIVE_HOST_TESTS)"
+python3 -m unittest discover -s tests
 
-printf '\nGATE PASS in %ss\n' "$(( $(date +%s) - start ))"
+printf '\nGATE PASS (%s) in %ss\n' "$([ "$live" = 1 ] && echo live || echo fast)" "$(( $(date +%s) - start ))"

@@ -47,17 +47,20 @@ Kritérium: **sem patří kód, který čte nebo mění shipnutý bundle** (`app
 ## Brána
 
 ```sh
-scripts/gate.sh
+scripts/gate.sh          # rychlá brána (výchozí)
+scripts/gate.sh --live   # + LIVE_HOST_ONLY testy proti nainstalovanému bundlu
 ```
 
-Cílená a rychlá: `node --check` všech fixtures a `tools/*.{js,mjs}` (kromě výslovně vyjmenovaných bajtových výřezů), kompilace všech `*.py`, validace `patches/*.json`, `node --test` pro `*.test.mjs` (pokud existují) a `python3 -m unittest discover -s tests`. Jen stdlib Python 3.10+ a Node 22; žádná instalace, síť ani DSD toolchain. Live testy (`@live_host_only`) jen čtou nainstalovaný bundle a jeho stock zálohu; bez bundlu se přeskočí, `LIVE_HOST_TESTS=1|0` rozhodnutí vynutí.
+Obsah: `node --check` všech fixtures a `tools/*.{js,mjs}` (kromě výslovně vyjmenovaných bajtových výřezů), kompilace všech `*.py`, validace `patches/*.json`, `node --test` pro `*.test.mjs` (pokud existují) a `python3 -m unittest discover -s tests`. Jen stdlib Python 3.10+ a Node 22; žádná instalace, síť ani DSD toolchain.
+
+**Spouštěč `--live`:** změna kotev, regionů, digestů nebo flagů v `patches/*.py`, změna `patches/approved-flags.json`, nové fixtures z nového Superset releasu, nebo ověření před re-apply na `/Applications`. Live testy jen čtou nainstalovaný bundle a jeho stock zálohu (copy-on-write mapování), nikdy do nich nezapisují; každý mapuje ~1 GB, takže sada trvá minuty (měřeno 2026-10-13: 7 live testů ≈ 1200 s z 1266 s pod loadem 100–290, zbytek ≈ 70 s). Bez nainstalovaného bundlu se přeskočí. Docs-only, `tools/` a test-only změny bez nových kotev stačí rychlá brána; v ready komentáři uveď, který režim běžel a proč.
 
 Jako landing bránu ji spouštěj pod host admission (třída shared):
 
 ```sh
 python3 ~/.claude/runtime/dev-setup-dashboard/current/hooks/gate_lock.py run \
   --sha "$(git rev-parse HEAD)" --toolchain superset-desktop-patches --class shared \
-  --project superset-private-fork -- scripts/gate.sh
+  --project superset-private-fork -- scripts/gate.sh   # nebo scripts/gate.sh --live
 ```
 
 `.gate.json` deklaruje `remote: never`: live testy patří na hostitele s nainstalovanou aplikací a `origin` tohoto clone je veřejný fork, ne tohle repo.
