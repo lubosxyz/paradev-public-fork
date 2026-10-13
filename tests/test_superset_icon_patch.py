@@ -1738,6 +1738,7 @@ class SupersetSidebarStatusFilterPatchTest(unittest.TestCase):
                 MODULE.STATUS_FILTER_CHIPS_JS,
                 MODULE.STATUS_FILTER_CHIP_JS,
                 MODULE.STATUS_FILTER_SEARCH_JS,
+                MODULE.STATUS_FILTER_CLEAR_JS,
             ]
         ).decode()
         return f"""
@@ -1762,6 +1763,8 @@ const reactExports = {{
   useMemo: (fn) => fn(),
   useSyncExternalStore: (subscribe, getSnapshot) => {{ const off = subscribe(() => {{}}); off(); return getSnapshot(); }},
   useLayoutEffect: (effect) => {{ cleanups.push(effect()); }},
+  // Passive effects run right after each render; React accepts only a cleanup function or undefined.
+  useEffect: (effect) => {{ const cleanup = effect(); assert.ok(cleanup === undefined || typeof cleanup === "function"); }},
 }};
 const cleanups = [];
 const unmount = () => {{ for (const cleanup of cleanups.splice(0)) cleanup?.(); }};
@@ -1947,6 +1950,123 @@ assert.doesNotMatch(activeMerged.props.children[0].props.className, /text-purple
 click(1);
 click(5);
 assert.deepEqual(visible(), [true, false, true, true, true, true]);
+"""))
+
+    # Value: protects=an active chip whose count drops from above zero to zero during the run switches itself off (mask, localStorage, subscribers), for each of the six chips, while other active and inactive chips keep their state and an emptied mask turns the filter off; fails_when=ssfClear stops comparing with the previous render, clears an inactive bit, clears every bit at once, or skips the persist and emit; why_new=LUBOS-2317 auto-clear; seam=none
+    def test_active_chip_switches_itself_off_when_its_count_drops_to_zero(self):
+        run_node(self, self.filter_harness("""
+const sources = [["n", "permission"], ["f", "failed"], ["r", "review"], ["w", "working"], ["o", null, "open"], ["m", null, "merged"]];
+const all = sources.map(([id, , pr]) => ws(id, pr));
+sidebar = { pinnedWorkspaces: all, sessionWorkspaces: [], groups: [] };
+const reset = () => {
+  for (const [id, status] of sources) statuses.set(id, status);
+  for (const [index, [, , pr]] of sources.entries()) all[index].pullRequest = pr ? { state: pr } : null;
+};
+for (const [index, [id, , pr]] of sources.entries()) {
+  reset();
+  ssfToggle(ssfMask, false);
+  const bit = BITS[index];
+  // Another active chip (Merged for Needs input, else Needs input) stays on.
+  const others = index === 0 ? 32 : 1;
+  ssfToggle(bit | others, false);
+  assert.equal(counts()[index], 1);
+  let calls = 0;
+  const off = ssfSubscribe(() => { calls++; });
+  if (pr) all[index].pullRequest = { state: "closed" }; else statuses.delete(id);
+  row();
+  off();
+  assert.equal(ssfMask, others, `chip ${index}`);
+  assert.equal(storage.get("ssf-sidebar-status-chips"), String(others));
+  assert.equal(calls, 1);
+  assert.deepEqual(pressed(), BITS.map((value) => value === others));
+  // Back above zero: the chip stays off until clicked again.
+  reset();
+  row();
+  assert.equal(ssfMask, others);
+}
+// An inactive chip that drops to zero changes nothing.
+reset();
+ssfToggle(ssfMask ^ 4, false);
+statuses.delete("n");
+row();
+assert.equal(ssfMask, 4);
+// The last active chip goes: no filter, every row shows again.
+statuses.set("r", null);
+row();
+assert.equal(ssfMask, 0);
+assert.equal(storage.get("ssf-sidebar-status-chips"), "0");
+assert.equal(ssfUseShow([ws("idle")]), 1);
+// Two active chips that empty in the same render both go.
+reset();
+row();
+ssfToggle(1 | 2 | 16, false);
+statuses.delete("n"); statuses.delete("f");
+row();
+assert.equal(ssfMask, 16);
+// Click toggle and Option-click solo work as before.
+click(4);
+assert.equal(ssfMask, 0);
+click(5, true);
+assert.equal(ssfMask, 32);
+click(5, true);
+assert.equal(ssfMask, 0);
+"""))
+
+    # Value: protects=no chip is switched off by a zero that was never preceded by a count above zero in this run: the zero restored from localStorage at startup, the counts before the status store exists, or the first counts once the store arrives; fails_when=ssfSeen starts from zeros instead of null, or the store-less render records agent counts of 0 so the store's arrival or its absence reads as a drop; why_new=LUBOS-2317 acceptance 1; seam=none
+    def test_chip_is_not_cleared_without_a_drop_during_the_run(self):
+        run_node(self, self.filter_harness("""
+statuses.set("r", "review");
+sidebar = { pinnedWorkspaces: [ws("r"), ws("o", "open")], sessionWorkspaces: [], groups: [] };
+// Restored Needs input + Failed at zero, Review and Open PR above zero.
+row(); row();
+assert.equal(ssfMask, 3);
+assert.deepEqual(pressed(), [true, true, false, false, false, false]);
+assert.equal(storage.get("ssf-sidebar-status-chips"), "3");
+// No status store: agent counts read zero, PR counts stay; nothing is cleared.
+ssfToggle(4 | 16, false);
+activeStore = null;
+row(); row();
+assert.equal(ssfMask, 23);
+// The store arrives with Review at zero: a first reading, not a drop.
+statuses.delete("r");
+activeStore = store;
+row();
+assert.equal(ssfMask, 23);
+// A drop seen across a missing store does not count either.
+statuses.set("r", "review");
+row();
+activeStore = null;
+row();
+statuses.delete("r");
+activeStore = store;
+row();
+assert.equal(ssfMask, 23);
+// From here a real drop clears.
+statuses.set("r", "review");
+row();
+statuses.delete("r");
+row();
+assert.equal(ssfMask, 19);
+""", stored={"ssf-sidebar-status-chips": "3"}))
+
+    # Value: protects=opening the last workspace of a status, which stays visible because it is selected, still switches the chip off once the count reaches zero; fails_when=the counts start honouring isWorkspaceSelected, so the selected row keeps the chip alive at a count the user cannot clear; why_new=LUBOS-2317 acceptance 3; seam=none
+    def test_selected_last_workspace_still_lets_its_chip_go(self):
+        run_node(self, self.filter_harness("""
+statuses.set("r", "review"); statuses.set("w", "working");
+const r = ws("r"), w = ws("w");
+sidebar = { pinnedWorkspaces: [r, w], sessionWorkspaces: [], groups: [] };
+click(2, true);
+row();
+selected.add("r");
+assert.equal(ssfUseShow([r]), 2);
+// Opening the workspace clears upstream's review status; the row stays selected.
+statuses.set("r", null);
+assert.equal(ssfUseShow([r]), 2);
+row();
+assert.equal(ssfMask, 0);
+assert.equal(storage.get("ssf-sidebar-status-chips"), "0");
+assert.deepEqual(pressed(), [false, false, false, false, false, false]);
+assert.equal(ssfUseShow([w]), 1);
 """))
 
     # Value: protects=the stored chip mask survives a restart and the v1 key migrates once without a crash; fails_when=the v1 mode is ignored or mis-mapped, the v1 key is left behind, a garbage value enables a filter, or the v2 key loses to the v1 key; why_new=v2 changes the storage key and format; seam=none
@@ -2208,6 +2328,7 @@ assert.equal(element.props.children.props.onExpandedChange(false), undefined);
                 (
                     "42fef7999b59c51c15afb440f5a5a5c4368eae0e01582c9cd49c0aaf741ad4c1",
                     "8383a30eaff0a0f282da74b8b79954a1cf5165941c98a1234a19ef1a16839101",
+                    "326571d3fd198ae8f7c23721c8b46c8505543d76a7a724f2e1ebfda1c03fc03a",
                 ),
                 (
                     "3682ec4e3fa223751b5ce4bde728d33cef3642a36d9561f4df517ec808253be1",
@@ -2221,6 +2342,7 @@ assert.equal(element.props.children.props.onExpandedChange(false), undefined);
                 (
                     "1c17da8dba0b8fd2bf26c01a29a678e8231059b89c93dfad4008f442f1adacc9",
                     "98f21f27a7848b4a85f55f43190715f187b5e62525f6e5f1eca343680559d2b5",
+                    "0169b7b80eeb43ac471b90a81ddda7a677395859f14da76d6a0c4da11f7f29c1",
                 ),
                 (),
                 (),
@@ -2772,6 +2894,20 @@ class SupersetStatusFilterGenerationsTest(unittest.TestCase):
             with self.subTest(region=region.label):
                 with self.assertRaisesRegex(RuntimeError, "older --sidebar-status-filter generation"):
                     MODULE._plan_region_rewrite(v2 + region.end, region, MODULE.STATUS_FILTER_REGION_VARIANTS)
+
+    # Value: protects=a host on the v3 filter without the auto-clear (live on 1.37 since 2026-10-13) gets the --revert hint for the two regions the auto-clear changes, and the other regions stay patched no-ops; fails_when=a v3 digest of region 1 or 5 drops out of legacy_sha256, or the auto-clear leaks into another region so the live bundle fails as "neither stock nor patched"; why_new=LUBOS-2317 moved region 1 and 5 to a new generation; seam=real v3 fixtures
+    def test_v3_generation_without_auto_clear_asks_for_revert(self):
+        changed = {1, 5}
+        for n, region in enumerate(MODULE.STATUS_FILTER_REGIONS, 1):
+            with self.subTest(region=region.label):
+                if n in changed:
+                    v3 = (FIXTURES / f"superset-1.36.0-status-filter-r{n}.v3-patched.js").read_bytes()
+                    self.assertIn(hashlib.sha256(v3).hexdigest(), region.legacy_sha256)
+                    with self.assertRaisesRegex(RuntimeError, "older --sidebar-status-filter generation"):
+                        MODULE._plan_region_rewrite(v3 + region.end, region, MODULE.STATUS_FILTER_REGION_VARIANTS)
+                else:
+                    patched = (FIXTURES / f"superset-1.36.0-status-filter-r{n}.patched.js").read_bytes()
+                    self.assertEqual([], MODULE._plan_region_rewrite(patched + region.end, region, MODULE.STATUS_FILTER_REGION_VARIANTS))
 
     # Value: protects=on a 1.37 bundle the footer write is folded into the 1.37 sticky-row rewrite through the real plan and re-plans to nothing; fails_when=fold hosts miss the 1.37 variant (renamed label), so the footer and region writes overlap and every run fails closed; why_new=only the 1.36 bundle went through patch_bytes with both flags; seam=real 1.37 region fixture
     def test_footer_and_filter_compose_on_137_through_the_plan(self):

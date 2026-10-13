@@ -224,4 +224,10 @@ function SsfSearch({
     onQueryChange(value);
   } }) });
 }
-                                                                                                                                                                                                                                                                                      
+let ssfSeen = null;
+function ssfClear(store, counts) {
+  const gone = store ? ssfMask & SSF_CHIPS.reduce((bits, [bit], index) => ssfSeen?.[index] && !counts[index] ? bits | bit : bits, 0) : 0;
+  ssfSeen = store && counts;
+  if (gone) ssfToggle(gone, false);
+}
+                  

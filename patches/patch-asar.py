@@ -624,15 +624,21 @@ STATUS_FILTER_COUNTS_JS = b'''function ssfUseCounts(workspaces) {
 # projects). A chip at zero is hidden unless it is active (it stays, dimmed, so
 # it can be switched off); with nothing to show the row disappears. One grid
 # column per visible chip. Click toggles a chip, Option-click solos it (or
-# clears the filter when it is already the only one). Colours are the Tailwind
-# theme variables, so no new CSS class is needed.
+# clears the filter when it is already the only one). An active chip whose
+# count drops from above zero to zero switches itself off (ssfClear, after the
+# render). Colours are the Tailwind theme variables, so no new CSS class is
+# needed.
 STATUS_FILTER_CHIPS_JS = b'''function SsfStatusChips({
   pinnedWorkspaces,
   sessionWorkspaces,
   groups
 }) {
+  const store = reactExports.useContext(StatusStoreContext);
   const workspaces = reactExports.useMemo(() => [...new Map([...pinnedWorkspaces, ...sessionWorkspaces, ...groups.flatMap((project) => getProjectChildrenWorkspaces(project.children))].map((workspace) => [workspace.id, workspace])).values()], [pinnedWorkspaces, sessionWorkspaces, groups]);
   const [mask, ...counts] = ssfUseCounts(workspaces);
+  reactExports.useEffect(() => {
+    ssfClear(store, counts);
+  });
   const chips = SSF_CHIPS.map(([bit, name, hue, pr], index) => ({ bit, name, hue, pr, mask, count: counts[index] })).filter((chip) => chip.count || mask & chip.bit);
   return chips.length > 0 && jsxRuntimeExports.jsx("div", { role: "group", "aria-label": "Workspace status filter", className: "grid shrink-0 gap-1 px-2 pb-2", style: { gridTemplateColumns: `repeat(${chips.length}, minmax(0, 1fr))` }, children: chips.map((chip) => jsxRuntimeExports.jsx(SsfStatusChip, chip, chip.bit)) });
 }
@@ -700,6 +706,22 @@ STATUS_FILTER_SEARCH_JS = b'''function SsfSearch({
 }
 '''
 
+# Auto-clear (LUBOS-2317): an active chip whose count drops from above zero to
+# zero while the app runs (the last workspace of that status was opened or
+# handled) leaves the mask through ssfToggle, which persists and notifies like
+# a click; other chips stay. ssfSeen holds the counts of the previous render in
+# SSF_CHIPS order, module state because one chip row exists, and null until the
+# status store is there, so a zero at startup, a zero restored from storage or
+# a missing store never clears a chip. The counts ignore the selection, so a
+# selected row that stays visible still lets its chip go.
+STATUS_FILTER_CLEAR_JS = b'''let ssfSeen = null;
+function ssfClear(store, counts) {
+  const gone = store ? ssfMask & SSF_CHIPS.reduce((bits, [bit], index) => ssfSeen?.[index] && !counts[index] ? bits | bit : bits, 0) : 0;
+  ssfSeen = store && counts;
+  if (gone) ssfToggle(gone, false);
+}
+'''
+
 
 def _insert_after(anchor: bytes, snippet: bytes) -> tuple[bytes, bytes]:
     """Edit that appends one snippet right after an exact anchor."""
@@ -720,7 +742,7 @@ STATUS_FILTER_REGIONS = (
         end=b"function DashboardSidebarProjectContextMenu({\n",
         length=22553,
         stock_sha256="af09e89f2a007d0762d4f9f8f03273ada726b8ead7ea01ab43e125b8715b17d3",
-        patched_sha256="326571d3fd198ae8f7c23721c8b46c8505543d76a7a724f2e1ebfda1c03fc03a",
+        patched_sha256="3fb6c3088f6051afbea4e932afd8063d892772f4bdd0d29d772b6c160a829961",
         edits=(
             # A row inside a collapsed folder opens while a filter is active.
             _insert_after(
@@ -762,10 +784,11 @@ STATUS_FILTER_REGIONS = (
             ),
             _insert_before(b"const isBulkSelectable = (workspace) =>", STATUS_FILTER_CHIPS_JS),
         ),
-        # v1; v2 (six chips, no search).
+        # v1; v2 (six chips, no search); v3 before the auto-clear (LUBOS-2317).
         legacy_sha256=(
             "42fef7999b59c51c15afb440f5a5a5c4368eae0e01582c9cd49c0aaf741ad4c1",
             "8383a30eaff0a0f282da74b8b79954a1cf5165941c98a1234a19ef1a16839101",
+            "326571d3fd198ae8f7c23721c8b46c8505543d76a7a724f2e1ebfda1c03fc03a",
         ),
     ),
     # DashboardSidebarProjectSection .. SESSIONS section: project and SESSIONS
@@ -887,20 +910,21 @@ STATUS_FILTER_REGIONS = (
         legacy_sha256=("f7f02ea166cf516cb9a0b4aa269a37bfe603dc598ae79124f3a8a5b8b5f88aba",),
     ),
     # DashboardSidebarWorkspaceContextMenu: no edit of its own, only room
-    # (1,350 B of no-op comments) for the sticky search row.
+    # (1,350 B of no-op comments) for the sticky search row and the auto-clear.
     RegionRewrite(
         label="status filter: search",
         start=b"function DashboardSidebarWorkspaceContextMenu({\n",
         end=b"function useDashboardSidebarWorkspaceItemActions({\n",
         length=9227,
         stock_sha256="7167a1331345ee26b1d7594826a0669e2bab76976b418009e16280d3e0518c39",
-        patched_sha256="0169b7b80eeb43ac471b90a81ddda7a677395859f14da76d6a0c4da11f7f29c1",
-        edits=(_insert_after(b"    ] })\n  ] });\n}\n", STATUS_FILTER_SEARCH_JS),),
-        # The first and second v2 builds (before the chip label moved here)
-        # and v2 final (matching lived here).
+        patched_sha256="11cf66ab426fd01806c2a0a31b172271a9344d61cc0322a10d216ff95b7e3588",
+        edits=(_insert_after(b"    ] })\n  ] });\n}\n", STATUS_FILTER_SEARCH_JS + STATUS_FILTER_CLEAR_JS),),
+        # The first and second v2 builds (before the chip label moved here),
+        # v2 final (matching lived here) and v3 before the auto-clear.
         legacy_sha256=(
             "1c17da8dba0b8fd2bf26c01a29a678e8231059b89c93dfad4008f442f1adacc9",
             "98f21f27a7848b4a85f55f43190715f187b5e62525f6e5f1eca343680559d2b5",
+            "0169b7b80eeb43ac471b90a81ddda7a677395859f14da76d6a0c4da11f7f29c1",
         ),
     ),
     # DashboardSidebarProjectContextMenu: no edit of its own, only room (600 B
