@@ -26,7 +26,7 @@ start=$(date +%s)
 # Every scanned directory must exist: a missing one would otherwise shrink a step to 0 files.
 SCANNED_DIRS="patches tests tests/fixtures tools"
 # The suite must load each of these modules; a rename or import error must not pass as "Ran 0 tests".
-REQUIRED_TEST_MODULES="test_superset_icon_patch test_superset_tray_patch test_prune_asar_backups"
+REQUIRED_TEST_MODULES="test_superset_icon_patch test_superset_tray_patch test_prune_asar_backups test_superset_palette_patch"
 for dir in $SCANNED_DIRS; do [ -d "$dir" ] || fail "missing directory: $dir"; done
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

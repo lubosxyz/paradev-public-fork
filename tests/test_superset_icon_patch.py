@@ -766,6 +766,8 @@ class SupersetUiPatchTest(unittest.TestCase):
             sound_only_when_waiting=False,
             hide_nav_buttons=False,
             hide_sidebar_footer=False,
+            command_palette_cmd_k=False,
+            command_palette_workspace_search=False,
             acknowledge_invalid_signature=False,
         )
 

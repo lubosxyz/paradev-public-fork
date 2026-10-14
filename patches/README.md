@@ -445,6 +445,74 @@ first (`--size 6 --hide-tray --custom-project-icons --keep-icon-on-hover
 --compact-sidebar --ack-invalid-apple-signature`) to bring back icons and the
 compact header, and rebase the failing optional family per `REBASE.md`.
 
+### Command palette on Cmd+K and workspace search (opt-in, desktop-v1.37.0)
+
+Two optional flags (LUBOS-2290). Like every new optional flag they stay
+**outside** the approved set (`approved-flags.json`, `PATCH_OPTIONS`, the
+re-apply after an update) until Lubos confirms them visually; until then they
+are applied by hand on top of the approved set:
+
+```bash
+python3 patch-asar.py --size 6 --hide-tray --custom-project-icons \
+  --keep-icon-on-hover --compact-sidebar --pinned-icon-only \
+  --sidebar-status-filter --sound-only-when-waiting --hide-nav-buttons \
+  --hide-sidebar-footer --command-palette-cmd-k \
+  --command-palette-workspace-search --ack-invalid-apple-signature
+python3 patch-asar.py --revert   # undoes exactly this step
+```
+
+On a bundle that already carries the approved set the plan has only the five
+palette writes, so the backup of this step is the approved bundle and
+`--revert` returns its SHA-256. A re-run is a no-op. A later re-apply without
+the two flags keeps them (sticky, like `--hide-nav-buttons`); only `--revert`
+removes them.
+
+`--command-palette-cmd-k` (`useRecordHotkeys-*.js`, `HOTKEYS_REGISTRY`) swaps
+two mac defaults: `OPEN_COMMAND_PALETTE` Cmd+Shift+K → **Cmd+K** and
+`CLEAR_TERMINAL` Cmd+K → **Cmd+Shift+K**. Every consumer reads the registry
+(`useHotkey`, the terminal's forwarded chords, Settings → Keyboard, the hint
+labels), no Electron menu accelerator binds either id, and user overrides in
+localStorage `hotkey-overrides` still win. Windows and Linux are unchanged.
+Each entry keeps its length: Clear Terminal gains `shift+` by dropping its
+own `/** i18n */` marker and padding inside the label parentheses; the palette
+entry pads after the comma. Both entries are exact stock/swapped pairs, so an
+upstream change of either default fails closed.
+
+`--command-palette-workspace-search` adds project and workspace results to the
+top-level palette. With a non-empty query two groups render above the
+commands: **Projects** (every query token in the project name, up to 5; Enter
+opens a frame with that project's workspaces, Backspace on the empty query
+goes back) and **Workspaces** (up to 8, every token in the display name, name,
+branch or project; ranked display-name prefix > display name or name contains
+> branch contains > tokens across fields, ties keep the newest-first order of
+`useAccessibleV2Workspaces`; Enter switches like Navigation → Workspaces; the
+open workspace is highlighted). cmdk keeps DOM order and selects the first row,
+so the best match is one Enter away. An empty query renders nothing (upstream
+palette). v1 workspaces are not searched. Group headings reuse the catalog's
+"Projects", "Workspaces" and "Sessions" messages, so they follow the locale.
+
+It is a region rewrite (§Region rewrite) of three hash-pinned regions:
+
+| # | chunk | region | bytes | free after rewrite | role |
+|---|---|---|---|---|---|
+| 1 | `AppMenuButton-*.js` | `useActiveCommands` … `SubPaletteView` | 2,758 | 58 | `CommandListView` renders each provider's optional `paletteSearch` before the ranked sections |
+| 2 | `layout-*.js` | `ThemeFrame` … `useDestroyDialogState` | 63,723 | 300 | `sspProvider` registered in `registerAllModules`, `V2WorkspaceList({ query, projectId })` → `projectFilters`, `SspPaletteResults`, `SspProjectFrame` |
+| 3 | `layout-*.js` | `ProjectHeader` (v1 sidebar) | 12,292 | 383 | room only: `SspPaletteSearch` (mount guard), `sspScore` |
+
+No other family writes inside these regions (`_require_disjoint` refuses an
+overlap). Before any write the patcher checks that each chunk imports or
+defines every name the injected code reads and that no injected name
+(`sspProvider`, `SspPaletteResults`, `SspProjectFrame`, `SspPaletteSearch`,
+`sspScore`) occurs in the chunk outside its regions. Tests:
+`tests/test_superset_palette_patch.py` (real 1.37.0 fixtures
+`superset-1.37.0-palette-r{1,2,3}[.patched].js` and
+`superset-1.37.0-hotkeys-registry[.patched].js`, fail-closed states,
+apply / re-run / revert on a real ASAR layout, `LIVE_HOST_ONLY`: the stock
+snapshot plans the five writes and each whole patched chunk passes
+`node --check`) and `tests/palette_search.test.mjs` (the patched bytes rendered
+with stubbed React: filter, ranking, workspace switch, project drill-down,
+empty query, hotkey swap).
+
 `project-icons/komfi-ops.svg` is an intentional palette exception: its
 slate-900 (`#0f172a`) background and slate-200 (`#e2e8f0`) gear stroke retain
 the approved dark-background identity instead of following the light sibling

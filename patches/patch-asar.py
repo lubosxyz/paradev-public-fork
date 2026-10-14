@@ -4,7 +4,8 @@
 The selected patches cover the compact sidebar, 24 px project icons,
 project-owned icon URLs, project icons retained on hover, icon-only pinned
 workspace rows, sidebar status filter chips, notification sound only while an agent
-waits, and no menu-bar tray icon. Every replacement has exactly the
+waits, no menu-bar tray icon, the command palette on Cmd+K and project and
+workspace search in the palette. Every replacement has exactly the
 same byte length as its source. That preserves ASAR offsets, but any app.asar
 mutation still invalidates Apple's resource seal and therefore requires an
 explicit production acknowledgement.
@@ -1044,28 +1045,42 @@ def _asar_entries(data) -> list[tuple[str, int, int]] | None:
     return entries
 
 
-def require_status_filter_names(data) -> None:
-    """Refuse the filter when its regions span files or their chunk lacks a name the injected JS uses."""
+def _region_chunk(data, regions, label: str) -> tuple[str, int, bytes] | None:
+    """Return (path, offset, bytes) of the one ASAR file holding every region, or None without a header."""
     entries = _asar_entries(data)
     if entries is None:
-        return  # synthetic test bundles have no file boundaries
-    anchor = data.find(STATUS_FILTER_REGIONS[0].start)
+        return None  # synthetic test bundles have no file boundaries
+    anchor = data.find(regions[0].start)
     found = [(path, start, size) for path, start, size in entries if start <= anchor < start + size]
     if anchor < 0 or len(found) != 1:
-        raise RuntimeError("status filter: region chunk not found; bundle structure may have changed")
+        raise RuntimeError(f"{label}: region chunk not found; bundle structure may have changed")
     path, start, size = found[0]
     chunk = bytes(data[start : start + size])
-    if any(region.start not in chunk for region in STATUS_FILTER_REGIONS):
-        raise RuntimeError(f"status filter: regions span several files, not only {path}; bundle structure may have changed")
+    if any(region.start not in chunk for region in regions):
+        raise RuntimeError(f"{label}: regions span several files, not only {path}; bundle structure may have changed")
+    return path, start, chunk
+
+
+def _require_chunk_names(path: str, chunk: bytes, imported, defined, label: str) -> None:
+    """Fail closed unless the chunk binds every name the injected JS reads at module scope."""
     for names, pattern in (
         # Rollup emits imports as `import { a as X, … } from` and module-scope
         # declarations at column 0; a nested or exported alias binds nothing here.
-        (STATUS_FILTER_IMPORTED_NAMES, r"^import\s*\{{[^}}]*\bas {name}(?![\w$])[^}}]*\}}\s*from"),
-        (STATUS_FILTER_DEFINED_NAMES, r"^(?:const|let|function) {name}\b(?!\$)"),
+        (imported, r"^import\s*\{{[^}}]*\bas {name}(?![\w$])[^}}]*\}}\s*from"),
+        (defined, r"^(?:const|let|function) {name}\b(?!\$)"),
     ):
         for name in names:
             if not re.search(pattern.format(name=re.escape(name)).encode(), chunk, re.M):
-                raise RuntimeError(f"status filter: {name} is not available in {path}; bundle structure may have changed")
+                raise RuntimeError(f"{label}: {name} is not available in {path}; bundle structure may have changed")
+
+
+def require_status_filter_names(data) -> None:
+    """Refuse the filter when its regions span files or their chunk lacks a name the injected JS uses."""
+    found = _region_chunk(data, STATUS_FILTER_REGIONS, "status filter")
+    if found is None:
+        return
+    path, _start, chunk = found
+    _require_chunk_names(path, chunk, STATUS_FILTER_IMPORTED_NAMES, STATUS_FILTER_DEFINED_NAMES, "status filter")
 
 
 def rewrite_region(region: RegionRewrite, stock: bytes) -> bytes:
@@ -1251,6 +1266,228 @@ def _plan_sound_only_when_waiting(data) -> list[tuple[int, bytes, bytes, str]]:
     return replacements
 
 
+# --command-palette-cmd-k (desktop-v1.37.0, useRecordHotkeys-*.js). Upstream
+# binds the command palette to Cmd+Shift+K and Clear Terminal to Cmd+K on mac.
+# Swapping the two HOTKEYS_REGISTRY defaults is enough: every consumer reads the
+# registry (useHotkey, the terminal's FORWARDED_HOTKEYS chords, the Settings
+# keyboard page and the hotkey hints via useHotkeyDisplay), no Electron menu
+# accelerator exists for either id, and user overrides in localStorage
+# `hotkey-overrides` still win. Windows and Linux bindings stay. Each entry
+# keeps its length: CLEAR_TERMINAL gains "shift+" (6 B) by deleting the
+# `/** i18n */` marker of its own label (11 B, a Lingui extraction hint with no
+# runtime effect) and padding 5 spaces inside the label parentheses;
+# OPEN_COMMAND_PALETTE loses 6 B and pads 6 spaces after the comma at the end
+# of its line.
+PALETTE_HOTKEY_CLEAR_STOCK = (
+    b'  CLEAR_TERMINAL: {\n    key: {\n      mac: L$1("meta+k"),\n'
+    b'      windows: L$1("ctrl+shift+k"),\n      linux: L$1("ctrl+shift+k")\n'
+    b"    },\n    label: (\n      /** i18n */\n"
+)
+PALETTE_HOTKEY_CLEAR_SWAPPED = (
+    b'  CLEAR_TERMINAL: {\n    key: {\n      mac: L$1("meta+shift+k"),\n'
+    b'      windows: L$1("ctrl+shift+k"),\n      linux: L$1("ctrl+shift+k")\n'
+    b"    },\n    label: (\n           \n"
+)
+PALETTE_HOTKEY_OPEN_STOCK = b'  OPEN_COMMAND_PALETTE: {\n    key: {\n      mac: L$1("meta+shift+k"),\n'
+PALETTE_HOTKEY_OPEN_SWAPPED = b'  OPEN_COMMAND_PALETTE: {\n    key: {\n      mac: L$1("meta+k"),      \n'
+
+
+def _plan_command_palette_cmd_k(data) -> list[tuple[int, bytes, bytes, str]]:
+    """Validate both mac hotkey defaults and return the swaps still needed."""
+    replacements = []
+    for name, stock, swapped, label in (
+        ("CLEAR_TERMINAL hotkey", PALETTE_HOTKEY_CLEAR_STOCK, PALETTE_HOTKEY_CLEAR_SWAPPED,
+         "command palette: Clear Terminal on Cmd+Shift+K"),
+        ("OPEN_COMMAND_PALETTE hotkey", PALETTE_HOTKEY_OPEN_STOCK, PALETTE_HOTKEY_OPEN_SWAPPED,
+         "command palette: open on Cmd+K"),
+    ):
+        offset, old = _single_variant(data, name, [stock, swapped])
+        if old != swapped:
+            replacements.append((offset, old, swapped, label))
+    return replacements
+
+
+# --command-palette-workspace-search (desktop-v1.37.0). The top-level palette
+# (CommandListView, AppMenuButton-*.js) ranks only commands; workspaces live one
+# frame deeper (Navigation > Workspaces, WorkspaceListFrame in layout-*.js).
+# With a non-empty query the patch puts two groups above the commands:
+# Projects (Enter pushes a frame with that project's workspaces; Backspace on
+# the empty query pops it, upstream CommandPalette.handleKeyDown) and
+# Workspaces (Enter switches, as V2WorkspaceList does). cmdk runs with
+# shouldFilter false, keeps DOM order and selects the first row, so a match is
+# one Enter away. Region rewrites as for --sidebar-status-filter (README
+# §Region rewrite), three regions in two chunks:
+#   1. AppMenuButton: CommandListView renders every registered provider's
+#      optional `paletteSearch` component before the ranked sections. The
+#      provider registry is the palette's own extension point, so the chunk
+#      needs no new import; useActiveCommands already subscribes to it.
+#   2. layout: the palette modules (ThemeFrame .. TeardownFailedPane).
+#      registerAllModules registers `sspProvider`; V2WorkspaceList takes an
+#      optional `projectId` and passes it to useAccessibleV2Workspaces as
+#      `projectFilters` (the drill-down frame reuses it whole); the results
+#      component lives here.
+#   3. layout: ProjectHeader (the v1 sidebar, untouched by every other family)
+#      only for room: the mount guard and the ranking.
+# Workspaces come from useAccessibleV2Workspaces, the hook of the Workspaces
+# frame, so the rows are the same; v1 workspaces are skipped
+# (useIsV2CloudEnabled). An empty query renders nothing, so the palette is then
+# upstream behaviour. Group headings reuse the catalog's own "Projects"
+# (-0B-ue), "Workspaces" (pmt7u4) and "Sessions" (4cEClj) messages; the
+# drill-down frame title is "Workspaces" because Lingui has no message that is
+# only a value.
+PALETTE_SEARCH_RESULTS_JS = b'''// patch-asar.py --command-palette-workspace-search
+const sspProvider = { id: "ssp-workspace-search", provide: () => [], paletteSearch: SspPaletteSearch };
+function SspPaletteResults({
+  query,
+  onSelect
+}) {
+  const { _: _t } = useLingui();
+  const { all: workspaces } = useAccessibleV2Workspaces();
+  const currentPath = useLocation({ select: (loc) => loc.pathname });
+  const navigate = useNavigate();
+  const setOpen = useFrameStackStore((s) => s.setOpen);
+  const { jsx, jsxs, Fragment } = jsxRuntimeExports;
+  const tokens = query.trim().toLowerCase().split(/\\s+/);
+  const projects = [...new Map(workspaces.filter((w) => w.projectId && tokens.every((t) => w.projectName.toLowerCase().includes(t))).map((w) => [w.projectId, w])).values()].slice(0, 5);
+  const matches = workspaces.map((w) => [sspScore(w, tokens), w]).filter(([score]) => score > 0).sort((a, b) => b[0] - a[0]).slice(0, 8).map(([, w]) => w);
+  return jsxs(Fragment, { children: [
+    projects.length > 0 && jsx(CommandGroup, { heading: _t({ id: "-0B-ue" }), children: projects.map((w) => jsxs(CommandItem, { value: `ssp project ${w.projectId}`, onSelect: () => onSelect({ id: `ssp.project.${w.projectId}`, title: { id: "pmt7u4" }, renderFrame: () => jsx(SspProjectFrame, { projectId: w.projectId }) }), className: ROW_CLASS, children: [
+      w.projectIconUrl ? jsx("img", { src: w.projectIconUrl, alt: "", className: "size-4 shrink-0 object-contain" }) : jsx(LuFolderOpen, {}),
+      jsx("span", { className: "min-w-0 flex-1 truncate font-normal", children: w.projectName }),
+      jsx(HiChevronRight, { className: "text-muted-foreground" })
+    ] }, w.projectId)) }, "ssp-projects"),
+    matches.length > 0 && jsx(CommandGroup, { heading: _t({ id: "pmt7u4" }), children: matches.map((w) => jsxs(CommandItem, { value: `ssp workspace ${w.id}`, onSelect: () => {
+      void navigateToV2Workspace(w.id, navigate);
+      setOpen(false);
+    }, className: cn(ROW_CLASS, currentPath === `/v2-workspace/${w.id}` && "bg-accent/50"), children: [
+      jsx("span", { className: "min-w-0 flex-1 truncate font-normal", children: getV2WorkspaceDisplayName(w) }),
+      jsxs("span", { className: "flex min-w-0 max-w-56 items-center gap-1 text-muted-foreground text-xs", children: [
+        jsx(LuGitBranch, { className: "!size-3 shrink-0" }),
+        jsx("span", { className: "truncate", children: `${w.projectName ?? _t({ id: "4cEClj" })} \\u00b7 ${w.branch}` })
+      ] })
+    ] }, w.id)) }, "ssp-workspaces")
+  ] });
+}
+function SspProjectFrame({
+  projectId
+}) {
+  return jsxRuntimeExports.jsx(V2WorkspaceList, { query: useCommandPaletteQuery().trim(), projectId });
+}
+'''
+# Mount the results only for a non-empty query on v2 (the hook is not free),
+# and score one workspace: 0 unless every token is in its display name, name,
+# branch or project; then 4 display name starts with the query, 3 display name
+# or name contains it, 2 branch contains it, 1 the tokens only match across
+# fields. Array.prototype.sort is stable, so equal scores keep the hook's
+# newest-first order.
+PALETTE_SEARCH_HELPERS_JS = b'''// patch-asar.py --command-palette-workspace-search
+function SspPaletteSearch({
+  query,
+  onSelect
+}) {
+  return useIsV2CloudEnabled() && query.trim() ? jsxRuntimeExports.jsx(SspPaletteResults, { query, onSelect }) : null;
+}
+function sspScore(w, tokens) {
+  const fields = [getV2WorkspaceDisplayName(w), w.name, w.branch, w.projectName].map((field) => (field ?? "").toLowerCase());
+  const phrase = tokens.join(" ");
+  return !tokens.every((token) => fields.some((field) => field.includes(token))) ? 0 : fields[0].startsWith(phrase) ? 4 : fields[0].includes(phrase) || fields[1].includes(phrase) ? 3 : fields[2].includes(phrase) ? 2 : 1;
+}
+'''
+
+PALETTE_SEARCH_REGIONS = (
+    RegionRewrite(
+        label="command palette: provider search slot",
+        start=b"function useActiveCommands(context) {\n",
+        end=b"function SubPaletteView({\n",
+        length=2758,
+        stock_sha256="5196e68c6ee73766e6ff8be26ed11fbe2cdd5704eb9371ddc5d31a1ac8c80d23",
+        patched_sha256="e79f20ca45594031f1d2cd55af2674d42191a77ee4c8b561a17edc5916d9a5ea",
+        edits=(
+            (
+                b"    ranked.map((section) => jsxRuntimeExports.jsx(CommandGroup, ",
+                b"    getProviders().map((provider) => provider.paletteSearch && "
+                b"jsxRuntimeExports.jsx(provider.paletteSearch, { query, onSelect }, provider.id)),\n"
+                b"    ranked.map((section) => jsxRuntimeExports.jsx(CommandGroup, ",
+            ),
+        ),
+    ),
+    RegionRewrite(
+        label="command palette: workspace and project results",
+        start=b"function ThemeFrame() {\n",
+        end=b"function useDestroyDialogState({\n",
+        length=63723,
+        stock_sha256="5f99eb751101fa5b44b48aa06b0f9e2cbd4e63c30514d8cc8cfcf7d7f9c0c4cc",
+        patched_sha256="b7fdc42d1f7ca39415c90b0e2e3e1e2f43d606c5f078a466dd0b816efff0aa81",
+        edits=(
+            (b"function V2WorkspaceList({\n  query\n}) {\n", b"function V2WorkspaceList({\n  query,\n  projectId\n}) {\n"),
+            (
+                b"  } = useAccessibleV2Workspaces({\n    searchQuery: query\n  });\n",
+                b"  } = useAccessibleV2Workspaces({\n    searchQuery: query,\n"
+                b"    projectFilters: projectId ? [projectId] : []\n  });\n",
+            ),
+            (
+                b"registerProvider(addProjectProvider)];\n",
+                b"registerProvider(addProjectProvider), registerProvider(sspProvider)];\n",
+            ),
+            (b"function CommandPaletteTrigger() {\n", PALETTE_SEARCH_RESULTS_JS + b"function CommandPaletteTrigger() {\n"),
+        ),
+    ),
+    RegionRewrite(
+        label="command palette: search helpers",
+        start=b"function ProjectHeader({\n",
+        end=b"const useActiveDragItemStore = create(",
+        length=12292,
+        stock_sha256="363ac18f1814f4e79cc21bd3547dae3abaf127dc1b3975ad53dd8cf9a058cb89",
+        patched_sha256="1877fefa8dd15f8b3e1ef4cc77d837c47e77f342b19da1392705658405be9ffd",
+        edits=(
+            (
+                b"onConfirm: handleConfirmClose })\n  ] });\n}\n",
+                b"onConfirm: handleConfirmClose })\n  ] });\n}\n" + PALETTE_SEARCH_HELPERS_JS,
+            ),
+        ),
+    ),
+)
+# Per chunk: the regions it holds and the module-scope names the injected JS
+# reads there (Rollup aliases differ per chunk, so each is checked by name).
+PALETTE_SEARCH_CHUNKS = (
+    (PALETTE_SEARCH_REGIONS[:1], ("jsxRuntimeExports",), ("getProviders",)),
+    (
+        PALETTE_SEARCH_REGIONS[1:],
+        (
+            "jsxRuntimeExports", "useLingui", "useAccessibleV2Workspaces", "useLocation", "useNavigate",
+            "useFrameStackStore", "useCommandPaletteQuery", "registerProvider", "CommandGroup", "CommandItem",
+            "cn", "getV2WorkspaceDisplayName", "navigateToV2Workspace", "useIsV2CloudEnabled", "LuGitBranch",
+            "LuFolderOpen", "HiChevronRight",
+        ),
+        ("ROW_CLASS", "V2WorkspaceList"),
+    ),
+)
+# Names the injected JS declares; none may occur in its chunk outside the regions.
+PALETTE_SEARCH_NEW_NAMES = ("sspProvider", "SspPaletteResults", "SspProjectFrame", "SspPaletteSearch", "sspScore")
+
+
+def _plan_command_palette_workspace_search(data) -> list[tuple[int, bytes, bytes, str]]:
+    """Validate the palette chunks and regions and return the rewrites still needed."""
+    for regions, imported, defined in PALETTE_SEARCH_CHUNKS:
+        found = _region_chunk(data, regions, "command palette")
+        if found is None:
+            break  # synthetic test bundles have no file boundaries
+        path, _start, chunk = found
+        _require_chunk_names(path, chunk, imported, defined, "command palette")
+        # The added names must not exist anywhere in the chunk outside the regions that add them.
+        outside = chunk
+        for region in regions:
+            offset = chunk.find(region.start)
+            outside = outside[:offset] + b" " * region.length + outside[offset + region.length :]
+        for name in PALETTE_SEARCH_NEW_NAMES:
+            if re.search(rf"(?<![\w$]){name}(?![\w$])".encode(), outside):
+                raise RuntimeError(f"command palette: {path} already uses {name}; bundle structure may have changed")
+    replacements = []
+    for region in PALETTE_SEARCH_REGIONS:
+        replacements.extend(_plan_region_rewrite(data, region))
+    return replacements
+
+
 # Electron fuse wire: sentinel, version byte, length byte, one char per fuse.
 # Fuse index 4 is EnableEmbeddedAsarIntegrityValidation ('1' enabled, '0'
 # disabled, 'r' removed). When enabled, Electron checks every file block against
@@ -1348,6 +1585,8 @@ def plan_replacements(
     sound_only_when_waiting: bool = False,
     hide_nav_buttons: bool = False,
     hide_sidebar_footer: bool = False,
+    command_palette_cmd_k: bool = False,
+    command_palette_workspace_search: bool = False,
 ) -> list[tuple[int, bytes, bytes, str]]:
     """Validate the complete bundle first, then return equal-length writes."""
     if not 4 <= size <= 9:
@@ -1595,6 +1834,12 @@ def plan_replacements(
         offset, old = _single_variant(data, "sidebar footer", [SIDEBAR_FOOTER, SIDEBAR_FOOTER_HIDDEN])
         if old != SIDEBAR_FOOTER_HIDDEN:
             replacements.append((offset, old, SIDEBAR_FOOTER_HIDDEN, "sidebar: footer hidden"))
+
+    if command_palette_cmd_k:
+        replacements.extend(_plan_command_palette_cmd_k(data))
+
+    if command_palette_workspace_search:
+        replacements.extend(_plan_command_palette_workspace_search(data))
 
     replacements = _fold_into_regions(replacements)
 
@@ -1927,6 +2172,16 @@ def main(argv=None):
         action="store_true",
         help="hide the expanded sidebar's organization, updates and settings row (settings stay on Cmd+,)",
     )
+    parser.add_argument(
+        "--command-palette-cmd-k",
+        action="store_true",
+        help="mac: open the command palette on Cmd+K and clear the terminal on Cmd+Shift+K (swapped defaults)",
+    )
+    parser.add_argument(
+        "--command-palette-workspace-search",
+        action="store_true",
+        help="command palette: typing lists matching projects and workspaces above the commands",
+    )
     parser.add_argument("--revert", action="store_true")
     parser.add_argument("--asar", type=Path, default=DEFAULT_ASAR)
     parser.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
@@ -1954,6 +2209,8 @@ def main(argv=None):
             sound_only_when_waiting=args.sound_only_when_waiting,
             hide_nav_buttons=args.hide_nav_buttons,
             hide_sidebar_footer=args.hide_sidebar_footer,
+            command_palette_cmd_k=args.command_palette_cmd_k,
+            command_palette_workspace_search=args.command_palette_workspace_search,
             acknowledge_invalid_signature=args.ack_invalid_apple_signature,
         )
     except (OSError, RuntimeError, ValueError) as exc:
