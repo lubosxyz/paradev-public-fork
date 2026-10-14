@@ -2049,6 +2049,34 @@ row();
 assert.equal(ssfMask, 19);
 """, stored={"ssf-sidebar-status-chips": "3"}))
 
+    # Value: protects=a remount that hands the chips a new status store instance, whose bindings still load and report zero, never clears an active chip; the new store's first counts are a baseline and only its own later drop clears; fails_when=ssfSeen is compared across store instances, so storeA's last counts against storeB's loading zeros remove the bit for good; why_new=round 1 opposition P2 on PR #489 (a remount swaps stores directly, never through null); seam=none
+    def test_store_swap_takes_the_new_store_first_counts_as_a_baseline(self):
+        run_node(self, self.filter_harness("""
+statuses.set("r", "review"); statuses.set("w", "working");
+sidebar = { pinnedWorkspaces: [ws("r"), ws("w"), ws("o", "open")], sessionWorkspaces: [], groups: [] };
+click(2); click(3); click(4);
+row();
+assert.equal(ssfMask, 28);
+// Remount: a new store whose binding queries have not finished reports no status.
+const loadingStatuses = new Map();
+const storeB = { get: (id) => ({ status: loadingStatuses.get(id) ?? null }), subscribe: store.subscribe };
+activeStore = storeB;
+row(); row();
+assert.equal(ssfMask, 28);
+assert.equal(storage.get("ssf-sidebar-status-chips"), "28");
+// The new store loads; its own later drop still clears, other chips stay.
+loadingStatuses.set("r", "review"); loadingStatuses.set("w", "working");
+row();
+loadingStatuses.delete("r");
+row();
+assert.equal(ssfMask, 24);
+// Back to the first store with Working gone: again a first reading, not a drop.
+statuses.delete("w");
+activeStore = store;
+row();
+assert.equal(ssfMask, 24);
+"""))
+
     # Value: protects=opening the last workspace of a status, which stays visible because it is selected, still switches the chip off once the count reaches zero; fails_when=the counts start honouring isWorkspaceSelected, so the selected row keeps the chip alive at a count the user cannot clear; why_new=LUBOS-2317 acceptance 3; seam=none
     def test_selected_last_workspace_still_lets_its_chip_go(self):
         run_node(self, self.filter_harness("""
@@ -2343,6 +2371,7 @@ assert.equal(element.props.children.props.onExpandedChange(false), undefined);
                     "1c17da8dba0b8fd2bf26c01a29a678e8231059b89c93dfad4008f442f1adacc9",
                     "98f21f27a7848b4a85f55f43190715f187b5e62525f6e5f1eca343680559d2b5",
                     "0169b7b80eeb43ac471b90a81ddda7a677395859f14da76d6a0c4da11f7f29c1",
+                    "11cf66ab426fd01806c2a0a31b172271a9344d61cc0322a10d216ff95b7e3588",
                 ),
                 (),
                 (),
@@ -2905,6 +2934,19 @@ class SupersetStatusFilterGenerationsTest(unittest.TestCase):
                     self.assertIn(hashlib.sha256(v3).hexdigest(), region.legacy_sha256)
                     with self.assertRaisesRegex(RuntimeError, "older --sidebar-status-filter generation"):
                         MODULE._plan_region_rewrite(v3 + region.end, region, MODULE.STATUS_FILTER_REGION_VARIANTS)
+                else:
+                    patched = (FIXTURES / f"superset-1.36.0-status-filter-r{n}.patched.js").read_bytes()
+                    self.assertEqual([], MODULE._plan_region_rewrite(patched + region.end, region, MODULE.STATUS_FILTER_REGION_VARIANTS))
+
+    # Value: protects=a host on the first auto-clear (live on 1.37 since 2026-10-14 00:59 CEST, history not bound to the store) gets the --revert hint for region 5 only, and every other region stays a patched no-op; fails_when=the first auto-clear digest drops out of legacy_sha256, or the store-bound history leaks into another region; why_new=round 1 opposition P2 on PR #489 changed only region 5; seam=real first auto-clear fixture
+    def test_first_auto_clear_generation_asks_for_revert_in_region_5_only(self):
+        for n, region in enumerate(MODULE.STATUS_FILTER_REGIONS, 1):
+            with self.subTest(region=region.label):
+                if n == 5:
+                    ac1 = (FIXTURES / "superset-1.36.0-status-filter-r5.ac1-patched.js").read_bytes()
+                    self.assertIn(hashlib.sha256(ac1).hexdigest(), region.legacy_sha256)
+                    with self.assertRaisesRegex(RuntimeError, "older --sidebar-status-filter generation"):
+                        MODULE._plan_region_rewrite(ac1 + region.end, region, MODULE.STATUS_FILTER_REGION_VARIANTS)
                 else:
                     patched = (FIXTURES / f"superset-1.36.0-status-filter-r{n}.patched.js").read_bytes()
                     self.assertEqual([], MODULE._plan_region_rewrite(patched + region.end, region, MODULE.STATUS_FILTER_REGION_VARIANTS))

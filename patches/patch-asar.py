@@ -709,15 +709,17 @@ STATUS_FILTER_SEARCH_JS = b'''function SsfSearch({
 # Auto-clear (LUBOS-2317): an active chip whose count drops from above zero to
 # zero while the app runs (the last workspace of that status was opened or
 # handled) leaves the mask through ssfToggle, which persists and notifies like
-# a click; other chips stay. ssfSeen holds the counts of the previous render in
-# SSF_CHIPS order, module state because one chip row exists, and null until the
-# status store is there, so a zero at startup, a zero restored from storage or
-# a missing store never clears a chip. The counts ignore the selection, so a
-# selected row that stays visible still lets its chip go.
-STATUS_FILTER_CLEAR_JS = b'''let ssfSeen = null;
+# a click; other chips stay. ssfSeen holds the status store and the counts of
+# the previous render in SSF_CHIPS order, module state because one chip row
+# exists. Only a drop within the same store instance counts: a zero at startup,
+# a zero restored from storage, a missing store and the first counts of a new
+# store (a remount whose bindings still load reads zero) never clear a chip.
+# The counts ignore the selection, so a selected row that stays visible still
+# lets its chip go. Short names keep region 5 within its padding.
+STATUS_FILTER_CLEAR_JS = b'''let ssfSeen = [];
 function ssfClear(store, counts) {
-  const gone = store ? ssfMask & SSF_CHIPS.reduce((bits, [bit], index) => ssfSeen?.[index] && !counts[index] ? bits | bit : bits, 0) : 0;
-  ssfSeen = store && counts;
+  const [was, seen] = ssfSeen, gone = store && was === store ? ssfMask & SSF_CHIPS.reduce((b, [bit], i) => seen[i] && !counts[i] ? b | bit : b, 0) : 0;
+  ssfSeen = [store, counts];
   if (gone) ssfToggle(gone, false);
 }
 '''
@@ -917,14 +919,16 @@ STATUS_FILTER_REGIONS = (
         end=b"function useDashboardSidebarWorkspaceItemActions({\n",
         length=9227,
         stock_sha256="7167a1331345ee26b1d7594826a0669e2bab76976b418009e16280d3e0518c39",
-        patched_sha256="11cf66ab426fd01806c2a0a31b172271a9344d61cc0322a10d216ff95b7e3588",
+        patched_sha256="c3acafba03b544f8dbd9333aa26172a1078883e8b14f535cd1800de3c81c1cfa",
         edits=(_insert_after(b"    ] })\n  ] });\n}\n", STATUS_FILTER_SEARCH_JS + STATUS_FILTER_CLEAR_JS),),
         # The first and second v2 builds (before the chip label moved here),
-        # v2 final (matching lived here) and v3 before the auto-clear.
+        # v2 final (matching lived here), v3 before the auto-clear and the
+        # first auto-clear, whose history ignored a store swap.
         legacy_sha256=(
             "1c17da8dba0b8fd2bf26c01a29a678e8231059b89c93dfad4008f442f1adacc9",
             "98f21f27a7848b4a85f55f43190715f187b5e62525f6e5f1eca343680559d2b5",
             "0169b7b80eeb43ac471b90a81ddda7a677395859f14da76d6a0c4da11f7f29c1",
+            "11cf66ab426fd01806c2a0a31b172271a9344d61cc0322a10d216ff95b7e3588",
         ),
     ),
     # DashboardSidebarProjectContextMenu: no edit of its own, only room (600 B

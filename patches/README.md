@@ -178,8 +178,10 @@ request matches no chip.
   while the app runs (you opened or handled the last workspace of that status,
   even one that stays visible because it is selected) switches itself off;
   the other active chips stay, and with none left the filter is off. A chip
-  restored from `localStorage` at 0, or at 0 before the status store exists,
-  stays on, visible at 0 (dimmed), so it can still be switched off by hand.
+  restored from `localStorage` at 0, at 0 before the status store exists, or
+  at 0 in the first counts of a new store instance (a remount whose status
+  queries still load) stays on, visible at 0 (dimmed), so it can still be
+  switched off by hand. Only a drop within one store instance counts.
   With nothing to show the row disappears. The grid has one equal column per
   visible chip, so the chips widen when others hide.
 - Click toggles a chip, and several chips can be on at once: the list shows the
@@ -258,9 +260,10 @@ Known limitations:
 - The search placeholder and label are English ("Search…", "Search the
   sidebar"), the chip names too.
 
-Upgrading a host that still runs v1 or a v2 build, or v3 before the auto-clear
-(LUBOS-2317, which changed only regions 1 and 5): their digests are recognised
-(`legacy_sha256`), and the patch stops with "an
+Upgrading a host that still runs v1 or a v2 build, v3 before the auto-clear
+(LUBOS-2317, which changed only regions 1 and 5) or the first auto-clear
+(history not bound to the store instance, region 5 only): their digests are
+recognised (`legacy_sha256`), and the patch stops with "an
 older --sidebar-status-filter generation is applied". Run `--revert`, then the
 full command again. `--revert` undoes only the last apply (it restores the
 newest backup whose manifest matches the current bundle); if a later run of
