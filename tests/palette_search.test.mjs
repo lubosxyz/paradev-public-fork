@@ -29,7 +29,9 @@ function load(sources, mocks, names) {
 }
 
 const jsx = (type, props, key) => ({ type, props, key });
-const CATALOG = { "-0B-ue": "Projects", pmt7u4: "Workspaces", "4cEClj": "Sessions", ZX8Apr: "No results" };
+const CATALOG = { "-0B-ue": "Projects", pmt7u4: "Workspaces", "4cEClj": "Sessions", ZX8Apr: "No results", curoK5: "New workspace" };
+// Lingui with values, as the compiled catalog renders S9bzia ("New workspace in {name}").
+const translate = (d) => (d.id === "S9bzia" ? `New workspace in ${d.values.name}` : CATALOG[d.id] ?? d.id);
 
 // projectIconUrl is what useAccessibleV2Workspaces resolves without projectKey: under
 // --custom-project-icons its GitHub fallback reads ".../undefined", so the rows must not use it.
@@ -74,20 +76,37 @@ const WORKSPACES = [
 ];
 
 function harness({ v2 = true, query = "", path = "/v2-workspace/w3", icons = "custom" } = {}) {
-  const calls = { navigate: [], open: [], hook: [], providers: [] };
+  // `order` records the new-workspace side effects in sequence (draft, palette close, create surface).
+  const calls = { navigate: [], open: [], hook: [], providers: [], order: [], listeners: [], removed: [], queries: [] };
   const navigate = () => {};
   const mocks = {
     jsxRuntimeExports: { jsx, jsxs: jsx, Fragment: "Fragment" },
-    reactExports: { useMemo: (fn) => fn(), useCallback: (fn) => fn },
-    useLingui: () => ({ _: (d) => CATALOG[d.id] ?? d.id, i18n: { _: (d) => CATALOG[d.id] ?? d.id } }),
+    reactExports: {
+      useMemo: (fn) => fn(),
+      useCallback: (fn) => fn,
+      useEffect: (fn, deps) => calls.listeners.push({ cleanup: fn(), deps }),
+    },
+    addEventListener: (type, listener, capture) => calls.listeners.push({ type, listener, capture }),
+    removeEventListener: (type, listener, capture) => calls.removed.push({ type, listener, capture }),
+    // Recorded only: the Cmd+Enter listener must look inside the palette root, never the whole document.
+    document: { querySelector: (selector) => (calls.queries.push(selector), null) },
+    useLingui: () => ({ _: translate, i18n: { _: translate } }),
+    // Filtered in the hook's own useMemo, in the same render as the query (upstream workspaceMatchesSearch).
     useAccessibleV2Workspaces: (options = {}) => {
       calls.hook.push(options);
       const filters = options.projectFilters ?? [];
-      return { all: WORKSPACES.filter((w) => filters.length === 0 || filters.includes(w.projectId)) };
+      const q = (options.searchQuery ?? "").trim().toLowerCase();
+      const matches = (w) => !q || [w.name, w.projectName ?? "", w.branch, w.hostName].some((field) => field.toLowerCase().includes(q));
+      return { all: WORKSPACES.filter((w) => (filters.length === 0 || filters.includes(w.projectId)) && matches(w)) };
     },
     useLocation: ({ select }) => select({ pathname: path }),
     useNavigate: () => navigate,
-    useFrameStackStore: (select) => select({ setOpen: (open) => calls.open.push(open) }),
+    useFrameStackStore: (select) => select({ setOpen: (open) => (calls.open.push(open), calls.order.push(["setOpen", open])) }),
+    // The sidebar project row's "+" hook (useOpenNewWorkspace) and the create surface's draft store.
+    useOpenNewWorkspace: () => (projectId) => calls.order.push(["openNewWorkspace", projectId]),
+    useNewWorkspaceDraftStore: { getState: () => ({ updateDraft: (patch) => calls.order.push(["updateDraft", patch]) }) },
+    HiMiniPlus: "HiMiniPlus",
+    HiChevronRight: "HiChevronRight",
     navigateToV2Workspace: (id, nav) => calls.navigate.push([id, nav === navigate]),
     getV2WorkspaceDisplayName: (w) => w.name || w.branch,
     useIsV2CloudEnabled: () => v2,
@@ -107,9 +126,12 @@ function harness({ v2 = true, query = "", path = "/v2-workspace/w3", icons = "cu
     Trans: "Trans",
   };
   const layout = load(
-    [read("superset-1.37.0-palette-r2.v3-patched.js"), read("superset-1.37.0-palette-r3.patched.js")],
+    ["r2.v5-", "r3.", "r4.", "r5.", "r6.", "r7."].map((region) => read(`superset-1.37.0-palette-${region}patched.js`)),
     mocks,
-    ["SspPaletteSearch", "SspPaletteResults", "SspProjectFrame", "sspScore", "sspProvider", "V2WorkspaceList", "registerAllModules"],
+    [
+      "SspPaletteSearch", "SspPaletteResults", "SspProjectFrame", "sspScore", "sspProvider", "V2WorkspaceList", "registerAllModules",
+      "SspPlus", "sspUseCreate", "sspUseMetaEnter",
+    ],
   );
   return { calls, layout, mocks };
 }
@@ -117,6 +139,10 @@ function harness({ v2 = true, query = "", path = "/v2-workspace/w3", icons = "cu
 const groups = (tree) => tree.props.children.filter(Boolean);
 const rows = (group) => group.props.children;
 const ids = (group) => rows(group).map((row) => row.key);
+// The CommandItems of a rendered list in DOM order; cmdk highlights the first one on every query change
+// (and again when the highlighted one unmounts), so items(...)[0] is what Enter selects.
+const items = (node) =>
+  Array.isArray(node) ? node.flatMap(items) : !node || typeof node !== "object" ? [] : node.type === "CommandItem" ? [node] : items(node.props?.children);
 
 test("an empty or blank query and v1 workspaces render nothing", () => {
   const { layout } = harness();
@@ -256,20 +282,221 @@ test("Enter on a project drills into a frame with only that project's workspaces
   assert.deepEqual(command.title, { id: "pmt7u4" });
   const frame = command.renderFrame();
   assert.equal(frame.type, layout.SspProjectFrame);
+  assert.deepEqual(frame.props, { projectId: "p-fork", name: "superset-private-fork" });
   const list = layout.SspProjectFrame(frame.props);
   assert.equal(list.type, layout.V2WorkspaceList);
-  assert.deepEqual(list.props, { query: "fix", projectId: "p-fork" });
+  assert.equal(list.props.query, "fix");
+  assert.equal(list.props.projectId, "p-fork");
   calls.hook.length = 0;
   const rendered = layout.V2WorkspaceList(list.props);
   assert.deepEqual(calls.hook, [{ searchQuery: "fix", projectFilters: ["p-fork"] }]);
-  const [group] = rendered.props.children[1];
-  assert.deepEqual(ids(group), ["w1", "w2"]);
+  const [group] = rendered.props.children[2];
+  assert.deepEqual(ids(group), ["w2"]);
 });
 
-test("the Workspaces frame without a project keeps the upstream hook options", () => {
+// The SspPlus element of a project row, rendered: the "+ ⌘↵" button.
+const plusOf = (layout, row) => {
+  const plus = row.props.children.find((child) => child?.type === layout.SspPlus);
+  return { plus, button: plus && plus.type(plus.props) };
+};
+
+test("a project row ends with a + button (⌘↵ hint) before the drill-down chevron; workspace rows do not", () => {
+  const { layout } = harness();
+  const [projects, workspaces] = groups(layout.SspPaletteResults({ query: "superset", onSelect() {} }));
+  const row = rows(projects)[0];
+  const [icon, name, plusElement, chevron] = row.props.children;
+  assert.equal(icon.type, ProjectThumbnail);
+  assert.equal(name.props.children, "superset-private-fork");
+  assert.equal(plusElement.type, layout.SspPlus);
+  assert.deepEqual(plusElement.props, { projectId: "p-fork" });
+  assert.equal(chevron.type, "HiChevronRight");
+  const { button } = plusOf(layout, row);
+  assert.equal(button.type, "button");
+  assert.equal(button.props.type, "button");
+  assert.equal(button.props.title, "New workspace");
+  // Not a Tab stop: focus stays in the palette input, where cmdk handles the keys.
+  assert.equal(button.props.tabIndex, -1);
+  assert.match(button.props.className, /(?:^| )ssp-plus(?: |$)/);
+  const [plusIcon, hint] = button.props.children;
+  assert.equal(plusIcon.type, "HiMiniPlus");
+  assert.equal(hint, "⌘↵");
+  for (const workspaceRow of rows(workspaces)) assert.equal(plusOf(layout, workspaceRow).plus, undefined);
+});
+
+test("clicking + closes the palette and opens the native create surface for that project, without drilling down", () => {
   const { layout, calls } = harness();
-  layout.V2WorkspaceList({ query: "x" });
-  assert.deepEqual(calls.hook, [{ searchQuery: "x", projectFilters: [] }]);
+  const selected = [];
+  const [projects] = groups(layout.SspPaletteResults({ query: "dashboard", onSelect: (command) => selected.push(command) }));
+  const { button } = plusOf(layout, rows(projects)[0]);
+  let stopped = 0;
+  button.props.onClick({ stopPropagation: () => stopped++ });
+  // stopPropagation keeps cmdk's item click (onSelect = drill down) from running too.
+  assert.equal(stopped, 1);
+  assert.deepEqual(selected, []);
+  // setOpen(false) also clears the frame stack; then the sidebar "+" hook with the project id. No draft change.
+  assert.deepEqual(calls.order, [["setOpen", false], ["openNewWorkspace", "p-dsd"]]);
+});
+
+// A keydown target: inside the palette, `closest("[cmdk-root]")` finds the cmdk root (the palette's
+// Command wraps its input), whose querySelector finds the highlighted row's "+" (or none); outside it,
+// closest finds nothing; a window or document target has no closest at all.
+function keyTarget(selected, inPalette = true) {
+  const queries = [];
+  const root = { querySelector: (selector) => (queries.push(["root", selector]), selected) };
+  return { queries, target: { tagName: inPalette ? "INPUT" : "TEXTAREA", closest: (selector) => (queries.push(["closest", selector]), inPalette ? root : null) } };
+}
+
+test("Cmd+Enter on a highlighted project clicks its +; plain Enter and other rows pass through to cmdk", () => {
+  const press = (event) => {
+    const { layout, calls } = harness();
+    layout.SspPaletteResults({ query: "superset", onSelect() {} });
+    // One capture listener per mounted results list (mount-only effect), removed on unmount.
+    const effects = calls.listeners.filter((entry) => "deps" in entry);
+    const listeners = calls.listeners.filter((entry) => entry.type);
+    assert.equal(effects.length, 1);
+    assert.deepEqual(effects[0].deps, []);
+    assert.equal(listeners.length, 1);
+    assert.equal(listeners[0].type, "keydown");
+    assert.equal(listeners[0].capture, true);
+    const handled = { prevented: 0, stopped: 0 };
+    listeners[0].listener({ metaKey: false, ...event, preventDefault: () => handled.prevented++, stopPropagation: () => handled.stopped++ });
+    effects[0].cleanup();
+    assert.deepEqual(calls.removed, [{ type: "keydown", listener: listeners[0].listener, capture: true }]);
+    // Never the whole document: the "+" is looked up only inside the palette the key came from.
+    assert.deepEqual(calls.queries, []);
+    return { handled, calls };
+  };
+  let clicks = 0;
+  const plus = { click: () => clicks++ };
+  const inside = keyTarget(plus);
+  const meta = press({ key: "Enter", metaKey: true, target: inside.target });
+  assert.deepEqual(inside.queries, [["closest", "[cmdk-root]"], ["root", "[cmdk-item][aria-selected=true] .ssp-plus"]]);
+  assert.equal(clicks, 1);
+  // Swallowed before cmdk's Enter (drill down) can see it.
+  assert.deepEqual(meta.handled, { prevented: 1, stopped: 1 });
+  // Plain Enter keeps the drill-down; Cmd+Enter on a workspace row (no + there) keeps the switch.
+  for (const [event, selected] of [[{ key: "Enter" }, plus], [{ key: "Enter", metaKey: true }, null], [{ key: "k", metaKey: true }, plus]]) {
+    const { handled } = press({ ...event, target: keyTarget(selected).target });
+    assert.deepEqual(handled, { prevented: 0, stopped: 0 }, JSON.stringify(event));
+  }
+  assert.equal(clicks, 1);
+});
+
+test("Cmd+Enter outside the palette is never touched while the results are mounted (Codex round 1)", () => {
+  let clicks = 0;
+  const plus = { click: () => clicks++ };
+  // A textarea elsewhere in the window (the review's repro), and a key whose target is the window itself.
+  const outside = keyTarget(plus, false);
+  for (const target of [outside.target, {}]) {
+    const { layout, calls } = harness();
+    layout.SspPaletteResults({ query: "superset", onSelect() {} });
+    const [{ listener }] = calls.listeners.filter((entry) => entry.type);
+    const handled = { prevented: 0, stopped: 0 };
+    listener({ key: "Enter", metaKey: true, target, preventDefault: () => handled.prevented++, stopPropagation: () => handled.stopped++ });
+    assert.deepEqual(handled, { prevented: 0, stopped: 0 });
+    assert.deepEqual(calls.order, []);
+    assert.deepEqual(calls.queries, []);
+  }
+  assert.deepEqual(outside.queries, [["closest", "[cmdk-root]"]]);
+  assert.equal(clicks, 0);
+});
+
+// The drill-down frame of a project, rendered: [CommandEmpty, lead before, groups, lead after].
+function drillDown(query, projectId = "p-fork", name = "superset-private-fork") {
+  const { layout, calls } = harness({ query });
+  const list = layout.SspProjectFrame({ projectId, name });
+  assert.equal(list.type, layout.V2WorkspaceList);
+  const tree = layout.V2WorkspaceList(list.props);
+  return { calls, tree, children: tree.props.children, items: items(tree) };
+}
+
+// The "New workspace in" item and its parts.
+function assertNewItem(item, projectId, name) {
+  assert.equal(item.type, "CommandItem");
+  assert.equal(item.props.value, `ssp new ${projectId}`);
+  const [plusIcon, label] = item.props.children;
+  assert.equal(plusIcon.type, "HiMiniPlus");
+  assert.equal(label.props.children, `New workspace in ${name}`);
+}
+
+test("drill-down on an empty query: New workspace in <project> is the first item, headed by the project", () => {
+  const { calls, children: [empty, lead, [workspaces], after], items: list } = drillDown("");
+  assert.equal(empty.type, "CommandEmpty");
+  // The lead group carries the project heading; the list's own group of that project drops it, so the
+  // item and the workspaces read as one group.
+  assert.equal(lead.type, "CommandGroup");
+  assert.equal(lead.props.heading, "superset-private-fork");
+  assert.equal(workspaces.props.heading, false);
+  assert.deepEqual(ids(workspaces), ["w1", "w2"]);
+  assert.equal(after, false);
+  assert.deepEqual(list.map((item) => item.props.value.split(" ").slice(0, 3).join(" ")), ["ssp new p-fork", "workspace v2 w1", "workspace v2 w2"]);
+  assertNewItem(list[0], "p-fork", "superset-private-fork");
+  // Enter on the first item: no query, so the draft keeps its name; the palette closes, the create surface opens.
+  list[0].props.onSelect();
+  assert.deepEqual(calls.order, [["setOpen", false], ["openNewWorkspace", "p-fork"]]);
+  assert.deepEqual(calls.navigate, []);
+});
+
+test("drill-down on a query that matches: the workspaces come first and Enter switches, New workspace is the last item", () => {
+  const { calls, children: [, lead, [workspaces], after], items: list } = drillDown("fix");
+  // Nothing before the matches; the list keeps its project heading and the new item follows without one.
+  assert.equal(lead, false);
+  assert.equal(workspaces.props.heading, "superset-private-fork");
+  assert.deepEqual(ids(workspaces), ["w2"]);
+  assert.equal(after.type, "CommandGroup");
+  assert.equal(after.props.heading, false);
+  assert.equal(list.length, 2);
+  assert.equal(list.at(-1), after.props.children);
+  assertNewItem(list.at(-1), "p-fork", "superset-private-fork");
+  // Enter on the highlighted first item switches to the matching workspace, as in the Workspaces frame.
+  list[0].props.onSelect();
+  assert.deepEqual(calls.navigate, [["w2", true]]);
+  assert.deepEqual(calls.order, [["setOpen", false]]);
+  // The last item, reached with the arrows, still creates and prefills the query as the name.
+  calls.order.length = 0;
+  list.at(-1).props.onSelect();
+  assert.deepEqual(calls.order, [
+    ["updateDraft", { workspaceName: "fix", workspaceNameEdited: true }],
+    ["setOpen", false],
+    ["openNewWorkspace", "p-fork"],
+  ]);
+});
+
+test("drill-down on a query without a match: New workspace is the first (only) item and Enter opens it prefilled", () => {
+  const { calls, children: [, lead, workspaceGroups, after], items: list } = drillDown("fix-login", "p-ops", "komfi-ops");
+  assert.deepEqual(workspaceGroups, []);
+  assert.equal(after, false);
+  assert.equal(lead.props.heading, "komfi-ops");
+  assert.deepEqual(list, [lead.props.children]);
+  assertNewItem(list[0], "p-ops", "komfi-ops");
+  list[0].props.onSelect();
+  assert.deepEqual(calls.order, [
+    ["updateDraft", { workspaceName: "fix-login", workspaceNameEdited: true }],
+    ["setOpen", false],
+    ["openNewWorkspace", "p-ops"],
+  ]);
+  assert.deepEqual(calls.navigate, []);
+});
+
+test("a blank drill-down query counts as empty: the item leads and leaves the draft alone", () => {
+  const blank = harness({ query: "   " });
+  const frame = blank.layout.SspProjectFrame({ projectId: "p-ops", name: "komfi-ops" });
+  assert.equal(frame.props.query, "");
+  const [first] = items(blank.layout.V2WorkspaceList(frame.props));
+  assert.equal(first.props.value, "ssp new p-ops");
+  first.props.onSelect();
+  assert.deepEqual(blank.calls.order, [["setOpen", false], ["openNewWorkspace", "p-ops"]]);
+});
+
+test("the Workspaces frame without a project keeps the upstream hook options, groups and headings", () => {
+  const { layout, calls } = harness();
+  const rendered = layout.V2WorkspaceList({ query: "" });
+  assert.deepEqual(calls.hook, [{ searchQuery: "", projectFilters: [] }]);
+  const [empty, lead, groups, after] = rendered.props.children;
+  assert.equal(empty.type, "CommandEmpty");
+  assert.equal(lead, undefined);
+  assert.equal(after, undefined);
+  assert.deepEqual(groups.map((group) => group.props.heading), ["superset-private-fork", "dev-setup-dashboard", "Sessions", "komfi-ops"]);
 });
 
 test("registerAllModules registers the search provider after the upstream ones", () => {

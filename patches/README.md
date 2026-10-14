@@ -451,7 +451,7 @@ compact header, and rebase the failing optional family per `REBASE.md`.
 
 ### Command palette on Cmd+K and workspace search (opt-in, desktop-v1.37.0)
 
-Two optional flags (LUBOS-2290, icons LUBOS-2406, icon size LUBOS-2414). Like every new optional flag they stay
+Two optional flags (LUBOS-2290, icons LUBOS-2406, icon size LUBOS-2414, new workspace LUBOS-2423). Like every new optional flag they stay
 **outside** the approved set (`approved-flags.json`, `PATCH_OPTIONS`, the
 re-apply after an update) until Lubos confirms them visually; until then they
 are applied by hand on top of the approved set:
@@ -465,7 +465,7 @@ python3 patch-asar.py --size 6 --hide-tray --custom-project-icons \
 python3 patch-asar.py --revert   # undoes exactly this step
 ```
 
-On a bundle that already carries the approved set the plan has only the five
+On a bundle that already carries the approved set the plan has only the nine
 palette writes, so the backup of this step is the approved bundle and
 `--revert` returns its SHA-256. A re-run is a no-op. A later re-apply without
 the two flags keeps them (sticky, like `--hide-nav-buttons`); only `--revert`
@@ -513,52 +513,127 @@ the 20 px text line decides the row height and the 24 px icon centres in the
 Both classes are in the bundle's `index-*.css`; a class the stylesheet lacks
 would not be generated, so no other utility is used.
 
-Region 2 has three generations. Generation 1 (LUBOS-2290, digest `b7fdc42d…`)
+**New workspace from the palette** (LUBOS-2423). Each search result can start a
+new workspace (worktree) in its project, through the same action as the `+` of
+the sidebar project row: `useOpenNewWorkspace()(projectId)`, which on v2 opens
+Superset's own create surface (`/new-workspace`) with the project selected. No
+own dialog, no direct worktree call; the palette closes first
+(`setOpen(false)`, which also clears the frame stack).
+
+- Projects group: every project row ends with a **`+ ⌘↵`** button before the
+  drill-down chevron (title "New workspace", catalog `curoK5`). A click creates;
+  its `stopPropagation` keeps cmdk's row click (the drill-down) away.
+  **⌘Enter** on the highlighted project does the same: while the results are
+  mounted, one capture-phase `keydown` listener on the window clicks the `+`
+  of the highlighted row (`[cmdk-item][aria-selected=true] .ssp-plus`) and
+  swallows the key before cmdk sees it. It acts only on a key whose target is
+  inside a cmdk root (`e.target.closest("[cmdk-root]")`; the palette's
+  `Command` wraps its input) and looks for the `+` only in that root, so ⌘Enter
+  in any other field of the window passes untouched. Plain Enter still drills down, and
+  ⌘Enter on a workspace row (no `+` there) still switches. No hotkey in the
+  registry uses Enter.
+- Project drill-down: the frame has a **New workspace in <project>** item
+  (catalog `S9bzia`, so it follows the locale) with the sidebar's plus icon.
+  Where it stands keeps "type to filter, Enter switches" (PR #8): on an empty
+  query, or when the query matches no workspace, it is the first item, in a
+  group headed by the project (the frame's own group of that project drops its
+  heading, so the item and the workspaces read as one group); when the query
+  matches workspaces, they come first under their usual project heading and
+  the item is the last one, reachable with the arrows. cmdk highlights the
+  first item on every query change and again when the highlighted item
+  unmounts, and `useAccessibleV2Workspaces` filters in the same render as the
+  query, so Enter after typing part of a workspace name switches to it. A
+  typed query is put into the create surface's draft as the workspace name
+  first (`updateDraft({ workspaceName, workspaceNameEdited: true })`, the same
+  way upstream prefills it from a Linear issue); an empty query leaves the
+  draft alone. `V2WorkspaceList` calls the frame's `lead` before its groups and
+  again after them (`lead?.(projectGroups, 1)`); the lead returns its group in
+  only one of the two places.
+- Workspace rows are unchanged.
+
+Region 2 has five generations (the region set six). Generation 1 (LUBOS-2290, digest `b7fdc42d…`)
 drew a plain `<img>` of the workspace's `projectIconUrl` or a folder glyph;
 that URL is resolved without `projectKey`, so under `--custom-project-icons`
 the avatar fallback pointed at `superset-icon://projects/undefined`.
 Generation 2 (LUBOS-2406, `7bfae0c3…`, PR #9) drew the sidebar's
-`ProjectThumbnail` at `size-4`. Generation 3 (LUBOS-2414, `4a37960c…`) is the
-`size-6` icon above. A plain re-run of the command above upgrades a generation
-1 or 2 bundle in place: region 2 matches a pinned earlier digest
-(`RegionRewrite.upgrades`), its padding is trimmed, the exact edits of that
-edge are applied (generation 2 → 3: the two icon class strings; generation 1
-→ 3: the four generation 1 edits with the current icon) and the result must
-hit the pinned generation 3 digest. The plan has one write (`command palette:
-workspace and project results`), no other region or family changes, no
-`--revert` of the set is needed, and `--revert` afterwards returns the SHA-256
-of the generation the run started from. Any other bytes, including a
-partially upgraded or tampered generation, fail closed (`neither stock nor
-patched`) before a write.
+`ProjectThumbnail` at `size-4`. Generation 3 (LUBOS-2414, `4a37960c…`, PR #10,
+live as app.asar `185592b5…`) has the `size-6` icon. Generation 4 (LUBOS-2423,
+`0839b0cd…`, PR #11 ready #1, live as app.asar `14793dad…`) added the
+new-workspace entry points with the drill-down item always first. Generation 5
+(LUBOS-2423, `2e042af9…`, ready #2, live as app.asar `a6c34c59…`) puts it last
+after matching workspaces; generation 6 keeps region 2 and limits the ⌘Enter
+listener to the palette (region 6). A plain re-run of the command above
+upgrades a generation 1–5 bundle in place: region 2
+matches a pinned earlier digest (`RegionRewrite.upgrades`), its padding is
+trimmed, the exact edits of that edge are applied (generation 3 → 5: the `+`
+in the project row, the project name for the frame, `sspUseMetaEnter()` in the
+results, `SspProjectFrame` moved out to region 4, `V2WorkspaceList` takes a
+`lead` and calls it before and after its groups; generation 2 → 5 and 1 → 5
+first apply their icon edits, then the same generation 3 → 5 edits; generation
+4 → 5: the two lead calls) and the result must hit the pinned generation 5
+digest. Regions 4–7 did not exist before generation 4, so on a generation 1–3
+host they are stock and get their ordinary rewrite: five writes (`command
+palette: workspace and project results` and the four `command palette: new
+workspace …` regions). On a generation 4 host region 4 upgrades in place too
+(`eec8e209…` → `1067a06e…`: the lead becomes a function of the groups) and
+regions 5–7 are already current: two writes (`… workspace and project results`,
+`… new workspace frame`); region 6 of generations 4 and 5 (`c8f03060…`, the
+listener on any target) upgrades to `cc38de68…`, so a generation 4 host gets
+three writes and a generation 5 host one (`… new workspace key`). No other
+region or family changes, no `--revert` of the set is needed, and `--revert`
+afterwards returns the SHA-256 of the generation the run started from. Any
+other bytes, including a partially upgraded or tampered region, fail closed
+(`neither stock nor patched`) before a write. The seven region states must
+also form one whole generation (`PALETTE_SEARCH_GENERATIONS`: stock, 1–6);
+any other mix, such as region 2 at generation 5 with region 4 at generation 4,
+fails closed (`the palette regions mix generations`) before a write.
 
-It is a region rewrite (§Region rewrite) of three hash-pinned regions:
+It is a region rewrite (§Region rewrite) of seven hash-pinned regions:
 
 | # | chunk | region | bytes | free after rewrite | role |
 |---|---|---|---|---|---|
 | 1 | `AppMenuButton-*.js` | `useActiveCommands` … `SubPaletteView` | 2,758 | 58 | `CommandListView` renders each provider's optional `paletteSearch` before the ranked sections |
-| 2 | `layout-*.js` | `ThemeFrame` … `useDestroyDialogState` | 63,723 | 53 | `sspProvider` registered in `registerAllModules`, `V2WorkspaceList({ query, projectId })` → `projectFilters`, `SspPaletteResults` (with the project icons), `SspProjectFrame` |
+| 2 | `layout-*.js` | `ThemeFrame` … `useDestroyDialogState` | 63,723 | 22 | `sspProvider` registered in `registerAllModules`, `V2WorkspaceList({ query, projectId, lead })` → `projectFilters` and the lead group, `SspPaletteResults` (project icons, `+`, ⌘Enter listener) |
 | 3 | `layout-*.js` | `ProjectHeader` (v1 sidebar) | 12,292 | 383 | room only: `SspPaletteSearch` (mount guard), `sspScore` |
+| 4 | `layout-*.js` | `WorkspaceContextMenu` (v1 sidebar) | 8,096 | 4 | room only: `SspProjectFrame` (drill-down with the New workspace item first or last) |
+| 5 | `layout-*.js` | `WorkspaceHoverCardContent` (v1 sidebar) | 7,549 | 160 | room only: `SspPlus` (the `+ ⌘↵` button) |
+| 6 | `layout-*.js` | `WorkspaceListItem` (v1 sidebar) | 13,914 | 127 | room only: `sspUseMetaEnter` (the ⌘Enter listener, palette only) |
+| 7 | `layout-*.js` | `WorkspaceSidebarFooter` (v1 sidebar) | 6,571 | 204 | room only: `sspUseCreate` (draft name, close, `useOpenNewWorkspace`) |
+
+Regions 4–7 are the v1 sidebar functions with the most strippable comments
+that no other family touches (no anchor of any flag lies inside them; the full
+plan with every flag on the stock 1.37.0 snapshot is disjoint). Each keeps its
+function unchanged and gets one helper appended after it.
 
 No other family writes inside these regions (`_require_disjoint` refuses an
 overlap). Before any write the patcher checks that each chunk imports or
 defines every name the injected code reads and that no injected name
 (`sspProvider`, `SspPaletteResults`, `SspProjectFrame`, `SspPaletteSearch`,
-`sspScore`) occurs in the chunk outside its regions. Tests:
+`sspScore`, `SspPlus`, `sspUseCreate`, `sspUseMetaEnter`) occurs in the chunk
+outside its regions. Tests:
 `tests/test_superset_palette_patch.py` (real 1.37.0 fixtures
-`superset-1.37.0-palette-r{1,2,3}[.patched].js`,
-`superset-1.37.0-palette-r2.v3-patched.js` (current; `.patched.js` is generation 1,
-`.v2-patched.js` generation 2) and
+`superset-1.37.0-palette-r{1,…,7}[.patched].js`,
+`superset-1.37.0-palette-r2.v5-patched.js` (current; `.patched.js` is generation 1,
+`.v2-patched.js` generation 2, `.v3-patched.js` generation 3, `.v4-patched.js`
+generation 4, as is `superset-1.37.0-palette-r4.v4-patched.js`;
+`superset-1.37.0-palette-r6.v5-patched.js` is region 6 of generations 4 and 5) and
 `superset-1.37.0-hotkeys-registry[.patched].js`, fail-closed states,
-apply / re-run / revert on a real ASAR layout, the generation 1 → 3 and 2 → 3
-upgrades with partial and tampered inputs and their reverts, `LIVE_HOST_ONLY`:
-the stock snapshot plans the five writes, the installed sidebar project row and
-the palette icon use the same size class that the stylesheet ships, a re-run on
-the installed bundle leaves whole chunks that pass `node --check`)
+apply / re-run / revert on a real ASAR layout, the generation 1–5 → 6
+upgrades with partial and tampered inputs and their reverts, mixed generations
+refused before a write, where each helper
+lands and that the action is `useOpenNewWorkspace`, `LIVE_HOST_ONLY`:
+the stock snapshot plans the nine writes, the installed sidebar project row and
+the palette icon use the same size class that the stylesheet ships, every class
+of the `+` button is in the stylesheet, a re-run on the installed bundle leaves
+whole chunks that pass `node --check`)
 and `tests/palette_search.test.mjs` (the patched bytes rendered with stubbed
 React and the real 1.37.0 `ProjectThumbnail` and `resolveProjectIconUrl`
 chunks: filter, ranking, project icons at 24 px with local icon / avatar /
 `--custom-project-icons` / coloured initial, workspace switch, project
-drill-down, empty query, hotkey swap).
+drill-down, empty query, hotkey swap, the `+` button and its click, ⌘Enter vs
+Enter, ⌘Enter from outside the palette untouched, the drill-down New workspace item: first on an empty or blank query
+and without a match, last after matching workspaces with Enter switching to the
+first match, prefilled name).
 
 `project-icons/komfi-ops.svg` is an intentional palette exception: its
 slate-900 (`#0f172a`) background and slate-200 (`#e2e8f0`) gear stroke retain

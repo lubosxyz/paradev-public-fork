@@ -5,7 +5,7 @@ The selected patches cover the compact sidebar, 24 px project icons,
 project-owned icon URLs, project icons retained on hover, icon-only pinned
 workspace rows, sidebar status filter chips, notification sound only while an agent
 waits, no menu-bar tray icon, the command palette on Cmd+K and project and
-workspace search in the palette. Every replacement has exactly the
+workspace search in the palette, with a new workspace per project. Every replacement has exactly the
 same byte length as its source. That preserves ASAR offsets, but any app.asar
 mutation still invalidates Apple's resource seal and therefore requires an
 explicit production acknowledgement.
@@ -1334,7 +1334,7 @@ def _plan_command_palette_cmd_k(data) -> list[tuple[int, bytes, bytes, str]]:
 # Workspaces (Enter switches, as V2WorkspaceList does). cmdk runs with
 # shouldFilter false, keeps DOM order and selects the first row, so a match is
 # one Enter away. Region rewrites as for --sidebar-status-filter (README
-# §Region rewrite), three regions in two chunks:
+# §Region rewrite), seven regions in two chunks:
 #   1. AppMenuButton: CommandListView renders every registered provider's
 #      optional `paletteSearch` component before the ranked sections. The
 #      provider registry is the palette's own extension point, so the chunk
@@ -1346,6 +1346,8 @@ def _plan_command_palette_cmd_k(data) -> list[tuple[int, bytes, bytes, str]]:
 #      component lives here.
 #   3. layout: ProjectHeader (the v1 sidebar, untouched by every other family)
 #      only for room: the mount guard and the ranking.
+#   4.-7. layout: four more v1 sidebar functions, only for room: the
+#      new-workspace helpers (LUBOS-2423, PALETTE_NEW_WORKSPACE_*).
 # Workspaces come from useAccessibleV2Workspaces, the hook of the Workspaces
 # frame, so the rows are the same; v1 workspaces are skipped
 # (useIsV2CloudEnabled). An empty query renders nothing, so the palette is then
@@ -1377,6 +1379,7 @@ function SspPaletteResults({
   const currentPath = useLocation({ select: (loc) => loc.pathname });
   const navigate = useNavigate();
   const setOpen = useFrameStackStore((s) => s.setOpen);
+  sspUseMetaEnter();
   const { jsx, jsxs, Fragment } = jsxRuntimeExports;
   const byKey = new Map(hostProjects.map((p) => [p.projectKey, p]));
   const icon = (w, p = byKey.get(w.projectId)) => p ? jsx(ProjectThumbnail, { projectName: p.name, iconUrl: resolveProjectIconUrl(p), color: p.color, className: "size-6 -my-2" }) : jsx("span", { className: "size-6 -my-2 shrink-0" });
@@ -1384,9 +1387,10 @@ function SspPaletteResults({
   const projects = [...new Map(workspaces.filter((w) => w.projectId && tokens.every((t) => w.projectName.toLowerCase().includes(t))).map((w) => [w.projectId, w])).values()].slice(0, 5);
   const matches = workspaces.map((w) => [sspScore(w, tokens), w]).filter(([score]) => score > 0).sort((a, b) => b[0] - a[0]).slice(0, 8).map(([, w]) => w);
   return jsxs(Fragment, { children: [
-    projects.length > 0 && jsx(CommandGroup, { heading: _t({ id: "-0B-ue" }), children: projects.map((w) => jsxs(CommandItem, { value: `ssp project ${w.projectId}`, onSelect: () => onSelect({ id: `ssp.project.${w.projectId}`, title: { id: "pmt7u4" }, renderFrame: () => jsx(SspProjectFrame, { projectId: w.projectId }) }), className: ROW_CLASS, children: [
+    projects.length > 0 && jsx(CommandGroup, { heading: _t({ id: "-0B-ue" }), children: projects.map((w) => jsxs(CommandItem, { value: `ssp project ${w.projectId}`, onSelect: () => onSelect({ id: `ssp.project.${w.projectId}`, title: { id: "pmt7u4" }, renderFrame: () => jsx(SspProjectFrame, { projectId: w.projectId, name: w.projectName }) }), className: ROW_CLASS, children: [
       icon(w),
       jsx("span", { className: "min-w-0 flex-1 truncate font-normal", children: w.projectName }),
+      jsx(SspPlus, { projectId: w.projectId }),
       jsx(HiChevronRight, { className: "text-muted-foreground" })
     ] }, w.projectId)) }, "ssp-projects"),
     matches.length > 0 && jsx(CommandGroup, { heading: _t({ id: "pmt7u4" }), children: matches.map((w) => jsxs(CommandItem, { value: `ssp workspace ${w.id}`, onSelect: () => {
@@ -1401,11 +1405,6 @@ function SspPaletteResults({
       ] })
     ] }, w.id)) }, "ssp-workspaces")
   ] });
-}
-function SspProjectFrame({
-  projectId
-}) {
-  return jsxRuntimeExports.jsx(V2WorkspaceList, { query: useCommandPaletteQuery().trim(), projectId });
 }
 '''
 # Earlier generations of the results region. Generation 1 (LUBOS-2290) drew a
@@ -1442,6 +1441,56 @@ PALETTE_SEARCH_RESULTS_V1_UPGRADE = (
     ),
     _insert_after(b'currentPath === `/v2-workspace/${w.id}` && "bg-accent/50"), children: [\n', b"      icon(w),\n"),
 )
+# Generation 3 (LUBOS-2414, size-6 icons, live as 185592b5…) had no way to
+# create a workspace from a project. Generation 4 (LUBOS-2423) adds SspPlus to
+# the project row, passes the project name to the drill-down frame and moves
+# SspProjectFrame to the new-workspace region (PALETTE_NEW_WORKSPACE_JS); the
+# frame's V2WorkspaceList takes a `lead`, called with the project groups at the
+# top and again (last = 1) after them: the "New workspace in" group that comes
+# first and replaces the group heading on an empty query or with no match, and
+# comes last after the matching workspaces otherwise (generation 5, below).
+PALETTE_PROJECT_FRAME_V3 = (
+    b"function SspProjectFrame({\n  projectId\n}) {\n"
+    b"  return jsxRuntimeExports.jsx(V2WorkspaceList, { query: useCommandPaletteQuery().trim(), projectId });\n}\n"
+)
+PALETTE_WORKSPACE_LIST_ARGS = (
+    b"function V2WorkspaceList({\n  query,\n  projectId\n}) {\n",
+    b"function V2WorkspaceList({\n  query,\n  projectId,\n  lead\n}) {\n",
+)
+PALETTE_WORKSPACE_LIST_LEAD = (
+    b"    projectGroups.map((group) => jsxRuntimeExports.jsx(CommandGroup, { heading: group.projectName, "
+    b"children: group.workspaces.map((workspace) => {\n",
+    b"    lead?.(projectGroups),\n    projectGroups.map((group) => jsxRuntimeExports.jsx(CommandGroup, "
+    b"{ heading: !lead?.(projectGroups) && group.projectName, children: group.workspaces.map((workspace) => {\n",
+)
+PALETTE_WORKSPACE_LIST_TAIL = _insert_before(
+    b"\n  ] });\n}\nconst navigationProvider = {\n", b",\n    lead?.(projectGroups, 1)",
+)
+PALETTE_SEARCH_RESULTS_V3_UPGRADE = (
+    (
+        b"renderFrame: () => jsx(SspProjectFrame, { projectId: w.projectId }) })",
+        b"renderFrame: () => jsx(SspProjectFrame, { projectId: w.projectId, name: w.projectName }) })",
+    ),
+    _insert_before(b'      jsx(HiChevronRight, { className: "text-muted-foreground" })\n', b"      jsx(SspPlus, { projectId: w.projectId }),\n"),
+    (PALETTE_PROJECT_FRAME_V3, b""),
+    PALETTE_WORKSPACE_LIST_ARGS,
+    PALETTE_WORKSPACE_LIST_LEAD,
+    PALETTE_WORKSPACE_LIST_TAIL,
+    _insert_before(b"  const { jsx, jsxs, Fragment } = jsxRuntimeExports;\n", b"  sspUseMetaEnter();\n"),
+)
+# Generation 4 (LUBOS-2423 ready #1, live as 14793dad…) always put the "New
+# workspace in" item first, so with a query that matched a workspace Enter
+# created instead of switching (orchestrator REJECT). Generation 5 calls the
+# lead before and after the groups; the item comes last whenever a query has
+# matches.
+PALETTE_SEARCH_RESULTS_V4_UPGRADE = (
+    (
+        b"    lead,\n    projectGroups.map((group) => jsxRuntimeExports.jsx(CommandGroup, { heading: !lead && group.projectName, "
+        b"children: group.workspaces.map((workspace) => {\n",
+        PALETTE_WORKSPACE_LIST_LEAD[1],
+    ),
+    PALETTE_WORKSPACE_LIST_TAIL,
+)
 # Mount the results only for a non-empty query on v2 (the hook is not free),
 # and score one workspace: 0 unless every token is in its display name, name,
 # branch or project; then 4 display name starts with the query, 3 display name
@@ -1461,6 +1510,93 @@ function sspScore(w, tokens) {
   return !tokens.every((token) => fields.some((field) => field.includes(token))) ? 0 : fields[0].startsWith(phrase) ? 4 : fields[0].includes(phrase) || fields[1].includes(phrase) ? 3 : fields[2].includes(phrase) ? 2 : 1;
 }
 '''
+
+# New workspace from the palette (LUBOS-2423), with the action of the sidebar
+# project row's "+" (useOpenNewWorkspace(projectId): on v2 the /new-workspace
+# create surface with the project selected). sspUseCreate closes the palette
+# (setOpen(false) also clears the frames) and opens it; given a name it first
+# fills the draft's workspace name as upstream's own prefills do
+# (LinearStatusMenu: updateDraft({ workspaceName, workspaceNameEdited })).
+#   - project row: SspPlus, a "+ ⌘↵" button; a click creates instead of
+#     drilling down (stopPropagation keeps cmdk's item click away).
+#   - Cmd+Enter: one capture listener while the results are mounted clicks the
+#     SspPlus of the highlighted row and swallows the key, so cmdk's Enter
+#     (drill down) never sees it; on any other row the key passes through. It
+#     acts only on a key from inside a cmdk root (the palette's Command wraps
+#     its input) and looks for the "+" in that root, so Cmd+Enter in any other
+#     field of the window is never touched.
+#   - drill-down: SspProjectFrame hands V2WorkspaceList a `lead`, a group
+#     with "New workspace in <project>" (catalog S9bzia). On an empty query or
+#     with no match it is the first item, headed by the project, and the list
+#     drops its own heading, so the item and the workspaces read as one group;
+#     when a query matches workspaces they come first (Enter switches, as in the
+#     Workspaces frame) and the item is last, under the list's own heading. It
+#     never disappears, and a typed query becomes the workspace name. cmdk
+#     selects the first item on every query change and again when the selected
+#     item unmounts, so the item moving to the end never keeps the selection.
+# Four v1 sidebar functions (dead on v2, untouched by every other family)
+# give the room, one helper each.
+PALETTE_NEW_WORKSPACE_FRAME_JS = b'''// patch-asar.py --command-palette-workspace-search
+function SspProjectFrame({ projectId, name }) {
+  const { _: _t } = useLingui();
+  const query = useCommandPaletteQuery().trim();
+  const create = sspUseCreate();
+  const { jsx, jsxs } = jsxRuntimeExports;
+  return jsx(V2WorkspaceList, { query, projectId, lead: (groups, last) => !(query && groups.length) == !last && jsx(CommandGroup, { heading: !last && name, children: jsxs(CommandItem, { value: `ssp new ${projectId}`, onSelect: () => create(projectId, query), className: ROW_CLASS, children: [
+    jsx(HiMiniPlus, { className: "text-muted-foreground" }),
+    jsx("span", { className: "min-w-0 flex-1 truncate font-normal", children: _t({ id: "S9bzia", values: { name } }) })
+  ] }) }) });
+}
+'''
+# Generation 4 of the frame (LUBOS-2423 ready #1, live as eec8e209…): the lead
+# was one group, always first.
+PALETTE_NEW_WORKSPACE_FRAME_V4_UPGRADE = (
+    (
+        b"lead: jsx(CommandGroup, { heading: name, children: ",
+        b"lead: (groups, last) => !(query && groups.length) == !last && jsx(CommandGroup, { heading: !last && name, children: ",
+    ),
+)
+PALETTE_NEW_WORKSPACE_PLUS_JS = b'''// patch-asar.py --command-palette-workspace-search
+function SspPlus({ projectId }) {
+  const { _: _t } = useLingui();
+  const create = sspUseCreate();
+  return jsxRuntimeExports.jsxs("button", { type: "button", tabIndex: -1, title: _t({ id: "curoK5" }), onClick: (e) => {
+    e.stopPropagation();
+    create(projectId);
+  }, className: "ssp-plus flex items-center gap-1 rounded px-1 text-muted-foreground text-xs hover:bg-accent hover:text-foreground", children: [jsxRuntimeExports.jsx(HiMiniPlus, { className: "!size-3.5" }), "\\u2318\\u21b5"] });
+}
+'''
+PALETTE_NEW_WORKSPACE_CREATE_JS = b'''// patch-asar.py --command-palette-workspace-search
+function sspUseCreate() {
+  const openNew = useOpenNewWorkspace();
+  const setOpen = useFrameStackStore((s) => s.setOpen);
+  return (projectId, name) => {
+    name && useNewWorkspaceDraftStore.getState().updateDraft({ workspaceName: name, workspaceNameEdited: true });
+    setOpen(false);
+    openNew(projectId);
+  };
+}
+'''
+PALETTE_NEW_WORKSPACE_KEY_JS = b'''// patch-asar.py --command-palette-workspace-search
+function sspUseMetaEnter() {
+  reactExports.useEffect(() => {
+    const onKey = (e) => {
+      const plus = e.key === "Enter" && e.metaKey && e.target.closest?.("[cmdk-root]")?.querySelector("[cmdk-item][aria-selected=true] .ssp-plus");
+      plus && (e.preventDefault(), e.stopPropagation(), plus.click());
+    };
+    addEventListener("keydown", onKey, true);
+    return () => removeEventListener("keydown", onKey, true);
+  }, []);
+}
+'''
+
+# Generations 4 and 5 of the key region (LUBOS-2423 ready #1 and #2, live as
+# c8f03060…): the listener took Cmd+Enter from any target in the window and
+# searched the whole document for the highlighted "+" (Codex round 1, P2).
+PALETTE_NEW_WORKSPACE_KEY_V5_UPGRADE = (
+    (b'document.querySelector("[cmdk-item][aria-selected=true] .ssp-plus")',
+     b'e.target.closest?.("[cmdk-root]")?.querySelector("[cmdk-item][aria-selected=true] .ssp-plus")'),
+)
 
 PALETTE_SEARCH_REGIONS = (
     RegionRewrite(
@@ -1485,9 +1621,9 @@ PALETTE_SEARCH_REGIONS = (
         end=b"function useDestroyDialogState({\n",
         length=63723,
         stock_sha256="5f99eb751101fa5b44b48aa06b0f9e2cbd4e63c30514d8cc8cfcf7d7f9c0c4cc",
-        patched_sha256="4a37960c0c055c407f867651f4ab538cd7c68997b831e9db45163ab5c0e2e5ac",
+        patched_sha256="2e042af923e3d6ad6c8a93516d8762c11d7a2b0158a1336c4665a4bf03dbfbbb",
         edits=(
-            (b"function V2WorkspaceList({\n  query\n}) {\n", b"function V2WorkspaceList({\n  query,\n  projectId\n}) {\n"),
+            (b"function V2WorkspaceList({\n  query\n}) {\n", b"function V2WorkspaceList({\n  query,\n  projectId,\n  lead\n}) {\n"),
             (
                 b"  } = useAccessibleV2Workspaces({\n    searchQuery: query\n  });\n",
                 b"  } = useAccessibleV2Workspaces({\n    searchQuery: query,\n"
@@ -1497,13 +1633,22 @@ PALETTE_SEARCH_REGIONS = (
                 b"registerProvider(addProjectProvider)];\n",
                 b"registerProvider(addProjectProvider), registerProvider(sspProvider)];\n",
             ),
+            PALETTE_WORKSPACE_LIST_LEAD,
+            PALETTE_WORKSPACE_LIST_TAIL,
             (b"function CommandPaletteTrigger() {\n", PALETTE_SEARCH_RESULTS_JS + b"function CommandPaletteTrigger() {\n"),
         ),
-        # Generation 1 (LUBOS-2290, plain <img> or folder glyph) and generation 2
-        # (LUBOS-2406, ProjectThumbnail at size-4, live as 61695378…).
+        # Generation 1 (LUBOS-2290, plain <img> or folder glyph), generation 2
+        # (LUBOS-2406, ProjectThumbnail at size-4, live as 61695378…),
+        # generation 3 (LUBOS-2414, size-6, live as 185592b5…): each edge ends
+        # with the generation 3 -> 5 edits; generation 4 (LUBOS-2423 ready #1,
+        # New workspace always first, live as 14793dad…).
         upgrades=(
-            ("b7fdc42d1f7ca39415c90b0e2e3e1e2f43d606c5f078a466dd0b816efff0aa81", PALETTE_SEARCH_RESULTS_V1_UPGRADE),
-            ("7bfae0c354d57472676ee07c88387c76ad82753b23884ed91368267507bdab62", PALETTE_SEARCH_RESULTS_V2_UPGRADE),
+            ("b7fdc42d1f7ca39415c90b0e2e3e1e2f43d606c5f078a466dd0b816efff0aa81",
+             PALETTE_SEARCH_RESULTS_V1_UPGRADE + PALETTE_SEARCH_RESULTS_V3_UPGRADE),
+            ("7bfae0c354d57472676ee07c88387c76ad82753b23884ed91368267507bdab62",
+             PALETTE_SEARCH_RESULTS_V2_UPGRADE + PALETTE_SEARCH_RESULTS_V3_UPGRADE),
+            ("4a37960c0c055c407f867651f4ab538cd7c68997b831e9db45163ab5c0e2e5ac", PALETTE_SEARCH_RESULTS_V3_UPGRADE),
+            ("0839b0cd8821bef8991fd104ac20105730def41aaf6007e0bc56fb6c61930735", PALETTE_SEARCH_RESULTS_V4_UPGRADE),
         ),
     ),
     RegionRewrite(
@@ -1520,7 +1665,88 @@ PALETTE_SEARCH_REGIONS = (
             ),
         ),
     ),
+    # LUBOS-2423: room for the new-workspace helpers (PALETTE_NEW_WORKSPACE_*).
+    RegionRewrite(
+        label="command palette: new workspace frame",
+        start=b"function WorkspaceContextMenu({\n",
+        end=b"function WorkspaceStatusBadge({\n",
+        length=8096,
+        stock_sha256="8561e4c7941a23926223ca8c5116d0359a8bfe3412745200519ea8b8b856a4c9",
+        patched_sha256="1067a06ecc30f688d58abfa92e8eaf3e68f728fd91c1f128ef257204e6efc63c",
+        edits=(
+            _insert_after(
+                b"      if (!open) setRenameBranchTarget(null);\n    } })\n  ] });\n}\n", PALETTE_NEW_WORKSPACE_FRAME_JS,
+            ),
+        ),
+        upgrades=(("eec8e209a1d0a90ae8fc826c572488ecf277da2d213b9d0f2fe968cbca55f675", PALETTE_NEW_WORKSPACE_FRAME_V4_UPGRADE),),
+    ),
+    RegionRewrite(
+        label="command palette: new workspace button",
+        start=b"function WorkspaceHoverCardContent({\n",
+        end=b"function RxDot(props) {\n",
+        length=7549,
+        stock_sha256="a032bf434da88b3cc64741dc3bd141eea420f65c84ca6df6d3f58fcf8cb63031",
+        patched_sha256="a739c1170ea70323f7d1ca092414189f00a8307c911e8558bbfd792a8fd9de77",
+        edits=(
+            _insert_after(
+                b'"No PR for this branch" }),\n      previewButton\n    ] }) : null\n  ] });\n}\n',
+                PALETTE_NEW_WORKSPACE_PLUS_JS,
+            ),
+        ),
+    ),
+    RegionRewrite(
+        label="command palette: new workspace key",
+        start=b"function WorkspaceListItem({\n",
+        end=b"function WorkspaceList({\n",
+        length=13914,
+        stock_sha256="a0bf1ae826477781e75767b1db0704d72a52a2d4718f40e1f002ca6da7a3afb3",
+        patched_sha256="cc38de683eb21d1fafe4ba3033ee51f1d8fc75f7bd5d7102500cb26141e36150",
+        edits=(
+            _insert_after(
+                b"open: showDeleteDialog, onOpenChange: setShowDeleteDialog })\n  ] });\n}\n", PALETTE_NEW_WORKSPACE_KEY_JS,
+            ),
+        ),
+        upgrades=(("c8f030601dea242ac4372b8a6db9bf2fb616bf22befed5161601cea35e67ab0b", PALETTE_NEW_WORKSPACE_KEY_V5_UPGRADE),),
+    ),
+    RegionRewrite(
+        label="command palette: new workspace action",
+        start=b"function WorkspaceSidebarFooter({\n",
+        end=b"function NewWorkspaceButton({\n",
+        length=6571,
+        stock_sha256="4c484d56019ee1e1badc369c1c5d578e47b019a320a271a6b844195710fe898e",
+        patched_sha256="25482ad96fb72d24add64bc88aec801db58369983b2c9be04cbbc90ddecae2d7",
+        edits=(
+            _insert_after(
+                b'iconClassName: "size-4", iconStrokeWidth: STROKE_WIDTH$2 })\n  ] });\n}\n', PALETTE_NEW_WORKSPACE_CREATE_JS,
+            ),
+        ),
+    ),
 )
+# The region sets a host can carry, each the seven region digests in order
+# (Codex round 1, P2): every region is planned on its own, so without this a mix
+# such as region 2 at generation 5 and region 4 at generation 4 would be
+# rewritten region by region. Stock; generations 1-3 (LUBOS-2290, -2406, -2414:
+# regions 1-3 only, 4-7 stock); 4 (ready #1: results, frame and key regions
+# older); 5 (ready #2: key region older); 6, the current one. Any other mix (a
+# partial upgrade, a region edited or reverted by hand) fails closed before a
+# write.
+def _palette_search_generations() -> dict[str, tuple[str, ...]]:
+    stock = tuple(region.stock_sha256 for region in PALETTE_SEARCH_REGIONS)
+    current = tuple(region.patched_sha256 for region in PALETTE_SEARCH_REGIONS)
+    results, frame, key = (dict(PALETTE_SEARCH_REGIONS[i].upgrades) for i in (1, 3, 5))
+    gen1, gen2, gen3, gen4 = results
+    [frame4] = frame
+    [key5] = key
+    generations = {"stock": stock}
+    for name, digest in (("generation 1", gen1), ("generation 2", gen2), ("generation 3", gen3)):
+        generations[name] = (current[0], digest, current[2], *stock[3:])
+    generations["generation 4"] = (current[0], gen4, current[2], frame4, current[4], key5, current[6])
+    generations["generation 5"] = (*current[:5], key5, current[6])
+    generations["generation 6"] = current
+    return generations
+
+
+PALETTE_SEARCH_GENERATIONS = _palette_search_generations()
 # Per chunk: the regions it holds and the module-scope names the injected JS
 # reads there (Rollup aliases differ per chunk, so each is checked by name).
 PALETTE_SEARCH_CHUNKS = (
@@ -1532,12 +1758,16 @@ PALETTE_SEARCH_CHUNKS = (
             "useFrameStackStore", "useCommandPaletteQuery", "registerProvider", "CommandGroup", "CommandItem",
             "cn", "getV2WorkspaceDisplayName", "navigateToV2Workspace", "useIsV2CloudEnabled", "LuGitBranch",
             "HiChevronRight", "useHostProjects", "resolveProjectIconUrl", "ProjectThumbnail",
+            "reactExports", "HiMiniPlus", "useOpenNewWorkspace", "useNewWorkspaceDraftStore",
         ),
         ("ROW_CLASS", "V2WorkspaceList"),
     ),
 )
 # Names the injected JS declares; none may occur in its chunk outside the regions.
-PALETTE_SEARCH_NEW_NAMES = ("sspProvider", "SspPaletteResults", "SspProjectFrame", "SspPaletteSearch", "sspScore")
+PALETTE_SEARCH_NEW_NAMES = (
+    "sspProvider", "SspPaletteResults", "SspProjectFrame", "SspPaletteSearch", "sspScore",
+    "SspPlus", "sspUseCreate", "sspUseMetaEnter",
+)
 
 
 def _plan_command_palette_workspace_search(data) -> list[tuple[int, bytes, bytes, str]]:
@@ -1556,9 +1786,16 @@ def _plan_command_palette_workspace_search(data) -> list[tuple[int, bytes, bytes
         for name in PALETTE_SEARCH_NEW_NAMES:
             if re.search(rf"(?<![\w$]){name}(?![\w$])".encode(), outside):
                 raise RuntimeError(f"command palette: {path} already uses {name}; bundle structure may have changed")
-    replacements = []
+    replacements, state = [], []
     for region in PALETTE_SEARCH_REGIONS:
-        replacements.extend(_plan_region_rewrite(data, region))
+        planned = _plan_region_rewrite(data, region)
+        state.append(hashlib.sha256(planned[0][1]).hexdigest() if planned else region.patched_sha256)
+        replacements.extend(planned)
+    if tuple(state) not in PALETTE_SEARCH_GENERATIONS.values():
+        raise RuntimeError(
+            "command palette: the palette regions mix generations (a partial upgrade or a hand edit); "
+            "run --revert to the backup of one whole generation first"
+        )
     return replacements
 
 
@@ -2254,7 +2491,7 @@ def main(argv=None):
     parser.add_argument(
         "--command-palette-workspace-search",
         action="store_true",
-        help="command palette: typing lists matching projects and workspaces above the commands",
+        help="command palette: typing lists matching projects and workspaces above the commands; + / Cmd+Enter on a project opens New workspace",
     )
     parser.add_argument("--revert", action="store_true")
     parser.add_argument("--asar", type=Path, default=DEFAULT_ASAR)

@@ -1,4 +1,4 @@
-"""Tests for --command-palette-cmd-k and --command-palette-workspace-search (LUBOS-2290, LUBOS-2406, LUBOS-2414).
+"""Tests for --command-palette-cmd-k and --command-palette-workspace-search (LUBOS-2290, LUBOS-2406, LUBOS-2414, LUBOS-2423).
 
 Byte-level safety lives here (pinned regions, fail-closed anchors, names, apply / re-run /
 revert); the rendered behaviour of the patched bytes is tests/palette_search.test.mjs.
@@ -31,12 +31,32 @@ from test_superset_icon_patch import installed_stock_snapshot, node_check  # noq
 isolate(MODULE)
 
 REGIONS = MODULE.PALETTE_SEARCH_REGIONS
-STOCK = [(FIXTURES / f"superset-1.37.0-palette-r{n}.js").read_bytes() for n in (1, 2, 3)]
-PATCHED = [(FIXTURES / f"superset-1.37.0-palette-r{n}{gen}patched.js").read_bytes() for n, gen in ((1, "."), (2, ".v3-"), (3, "."))]
-# Generation 1 (LUBOS-2290, PR #8) and generation 2 (LUBOS-2406, PR #9, size-4 icons): the bytes live on
-# hosts that applied those PRs; the results region upgrades in place from either.
-PATCHED_V1 = [*PATCHED[:1], (FIXTURES / "superset-1.37.0-palette-r2.patched.js").read_bytes(), *PATCHED[2:]]
-PATCHED_V2 = [*PATCHED[:1], (FIXTURES / "superset-1.37.0-palette-r2.v2-patched.js").read_bytes(), *PATCHED[2:]]
+STOCK = [(FIXTURES / f"superset-1.37.0-palette-r{n}.js").read_bytes() for n in range(1, 8)]
+PATCHED = [
+    (FIXTURES / f"superset-1.37.0-palette-r{n}{'.v5-' if n == 2 else '.'}patched.js").read_bytes() for n in range(1, 8)
+]
+NEW_WORKSPACE = slice(3, 7)
+# Generation 1 (LUBOS-2290, PR #8), 2 (LUBOS-2406, PR #9, size-4 icons) and 3 (LUBOS-2414, PR #10, size-6
+# icons): the bytes live on hosts that applied those PRs. They had regions 1-3 only (4-7 stock); the
+# results region upgrades in place from each, the new-workspace regions 4-7 are written from stock.
+# Generation 4 (LUBOS-2423 ready #1, live as 14793dad...) had all seven regions with the "New workspace
+# in" item always first and the window-wide Cmd+Enter listener: regions 2, 4 and 6 upgrade in place.
+# Generation 5 (ready #2, live as a6c34c59...) had only that listener: region 6 upgrades in place.
+def earlier_generation(r2_fixture, new_workspace=STOCK[NEW_WORKSPACE]):
+    return [PATCHED[0], (FIXTURES / r2_fixture).read_bytes(), PATCHED[2], *new_workspace]
+
+
+KEY_V5 = (FIXTURES / "superset-1.37.0-palette-r6.v5-patched.js").read_bytes()
+
+
+PATCHED_V1 = earlier_generation("superset-1.37.0-palette-r2.patched.js")
+PATCHED_V2 = earlier_generation("superset-1.37.0-palette-r2.v2-patched.js")
+PATCHED_V3 = earlier_generation("superset-1.37.0-palette-r2.v3-patched.js")
+PATCHED_V4 = earlier_generation(
+    "superset-1.37.0-palette-r2.v4-patched.js",
+    [(FIXTURES / "superset-1.37.0-palette-r4.v4-patched.js").read_bytes(), PATCHED[4], KEY_V5, PATCHED[6]],
+)
+PATCHED_V5 = earlier_generation("superset-1.37.0-palette-r2.v5-patched.js", [*PATCHED[3:5], KEY_V5, PATCHED[6]])
 HOTKEYS = (FIXTURES / "superset-1.37.0-hotkeys-registry.js").read_bytes()
 HOTKEYS_PATCHED = (FIXTURES / "superset-1.37.0-hotkeys-registry.patched.js").read_bytes()
 SEARCH_LABELS = [region.label for region in REGIONS]
@@ -46,7 +66,9 @@ SWAP_LABELS = ["command palette: Clear Terminal on Cmd+Shift+K", "command palett
 MENU_NAMES = b'import { j as jsxRuntimeExports } from "./index.js";\nfunction getProviders() {}\n'
 LAYOUT_NAMES = (
     b'import { j as jsxRuntimeExports, b as useLingui, u as useNavigate, a as useIsV2CloudEnabled, c as cn, '
-    b'n as navigateToV2Workspace, l as LuGitBranch, h as HiChevronRight } from "./index.js";\n'
+    b'n as navigateToV2Workspace, l as LuGitBranch, h as HiChevronRight, r as reactExports, m as HiMiniPlus } from "./index.js";\n'
+    b'import { a as useOpenNewWorkspace } from "./useOpenNewWorkspace.js";\n'
+    b'import { u as useNewWorkspaceDraftStore } from "./new-workspace-draft.js";\n'
     b'import { u as useHostProjects } from "./useHostProjects.js";\n'
     b'import { r as resolveProjectIconUrl } from "./resolveProjectIconUrl.js";\n'
     b'import { P as ProjectThumbnail } from "./ProjectThumbnail.js";\n'
@@ -70,8 +92,9 @@ def menu_chunk(region=STOCK[0], names=MENU_NAMES):
     return names + region + REGIONS[0].end + b"  parent,\n}) {}\n"
 
 
-def layout_chunk(r2=STOCK[1], r3=STOCK[2], names=LAYOUT_NAMES):
-    return names + r2 + REGIONS[1].end + b"}) {}\n" + r3 + REGIONS[2].end + b"(set) => ({}));\n"
+def layout_chunk(r2=STOCK[1], r3=STOCK[2], names=LAYOUT_NAMES, new_workspace=STOCK[NEW_WORKSPACE]):
+    tail = b"".join(region + spec.end + b"}) {}\n" for spec, region in zip(REGIONS[NEW_WORKSPACE], new_workspace))
+    return names + r2 + REGIONS[1].end + b"}) {}\n" + r3 + REGIONS[2].end + b"(set) => ({}));\n" + tail
 
 
 def asar(*files: tuple[str, bytes]) -> bytes:
@@ -88,7 +111,7 @@ def asar(*files: tuple[str, bytes]) -> bytes:
 
 def old_bundle(generation):
     """A bundle as an earlier PR left it on the host: both flags applied at that generation."""
-    return bundle(menu=menu_chunk(generation[0]), layout=layout_chunk(*generation[1:]), hotkeys=HOTKEYS_PATCHED)
+    return bundle(menu=menu_chunk(generation[0]), layout=layout_chunk(*generation[1:3], new_workspace=generation[3:]), hotkeys=HOTKEYS_PATCHED)
 
 
 def bundle(menu=None, layout=None, hotkeys=HOTKEYS):
@@ -108,7 +131,7 @@ def patch(data, cmd_k=True, search=True):
 
 
 class PaletteSearchRegionTest(unittest.TestCase):
-    """The three real 1.37.0 regions are hash-pinned, rewritten in place and parse."""
+    """The seven real 1.37.0 regions are hash-pinned, rewritten in place and parse."""
 
     # Value: protects=the shipped rewrite is exactly the reviewed fixture, keeps the region length and is a no-op on re-run; fails_when=an edit, the injected JS or a digest changes without the fixture, or a re-run rewrites again; why_new=new family; seam=real 1.37.0 bytes
     def test_real_regions_are_pinned_idempotent_and_parseable(self):
@@ -135,10 +158,10 @@ class PaletteSearchRegionTest(unittest.TestCase):
 
     # Value: protects=each edit lands once where intended and the injected JS sits above the commands; fails_when=an anchor drifts so an edit is skipped or duplicated; why_new=new family; seam=real fixture
     def test_edits_land_where_intended(self):
-        menu, layout, helpers = PATCHED
+        menu, layout, helpers, *_new_workspace = PATCHED
         slot = menu.index(b"provider.paletteSearch && jsxRuntimeExports.jsx(provider.paletteSearch")
         self.assertLess(slot, menu.index(b"ranked.map((section)"))
-        self.assertIn(b"function V2WorkspaceList({\n  query,\n  projectId\n}) {\n", layout)
+        self.assertIn(b"function V2WorkspaceList({\n  query,\n  projectId,\n  lead\n}) {\n", layout)
         self.assertIn(b"projectFilters: projectId ? [projectId] : []", layout)
         self.assertIn(b"registerProvider(addProjectProvider), registerProvider(sspProvider)];", layout)
         self.assertLess(layout.index(b"function SspPaletteResults("), layout.index(b"function CommandPaletteTrigger()"))
@@ -152,24 +175,67 @@ class PaletteSearchRegionTest(unittest.TestCase):
         self.assertIn(b'className: "size-6 -my-2" })', layout)
         self.assertIn(b'jsx("span", { className: "size-6 -my-2 shrink-0" })', layout)
         self.assertEqual(sidebar, 'className: "size-6 group-hover:!block"')
-        self.assertNotIn(b"size-4", layout[layout.index(b"function SspPaletteResults(") : layout.index(b"function SspProjectFrame(")])
+        self.assertNotIn(b"size-4", layout[layout.index(b"function SspPaletteResults(") : layout.index(b"function CommandPaletteTrigger(")])
         self.assertNotIn(b"projectIconUrl", layout)
         self.assertNotIn(b"LuFolderOpen", layout[layout.index(b"function SspPaletteResults(") :])
         self.assertIn(b"function sspScore(", helpers)
         for name in MODULE.PALETTE_SEARCH_NEW_NAMES:
             self.assertNotIn(name.encode(), b"".join(STOCK), name)
 
+    # Value: protects=the new-workspace entry points land once each: the "+" in the project row before the chevron, the Cmd+Enter listener in the results, the frame's lead group in V2WorkspaceList, and one helper per room region appended after its untouched v1 function; fails_when=an anchor drifts, a helper lands twice or in the wrong region, or the frame keeps its own heading; why_new=LUBOS-2423; seam=real 1.37.0 bytes
+    def test_new_workspace_edits_land_where_intended(self):
+        layout = PATCHED[1]
+        row = layout[layout.index(b"value: `ssp project ${w.projectId}`") : layout.index(b'}, "ssp-projects")')]
+        self.assertLess(row.index(b"children: w.projectName"), row.index(b"jsx(SspPlus, { projectId: w.projectId })"))
+        self.assertLess(row.index(b"jsx(SspPlus, { projectId: w.projectId })"), row.index(b"jsx(HiChevronRight"))
+        self.assertIn(b"renderFrame: () => jsx(SspProjectFrame, { projectId: w.projectId, name: w.projectName })", row)
+        results = layout[layout.index(b"function SspPaletteResults(") : layout.index(b"function CommandPaletteTrigger(")]
+        self.assertEqual(results.count(b"  sspUseMetaEnter();\n"), 1)
+        self.assertNotIn(b"function SspProjectFrame(", layout)
+        # The lead is called before the groups (it heads the list on an empty query or with no match, and the
+        # list then drops its heading) and once more after them (last, after matching workspaces).
+        workspace_list = layout[layout.index(b"function V2WorkspaceList(") : layout.index(b"const navigationProvider = {")]
+        self.assertLess(workspace_list.index(b"    lead?.(projectGroups),\n    projectGroups.map((group) =>"),
+                        workspace_list.index(b"    }) }, group.projectId)),\n    lead?.(projectGroups, 1)\n  ] });\n}\n"))
+        self.assertIn(b"{ heading: !lead?.(projectGroups) && group.projectName, children:", workspace_list)
+        self.assertIn(b"lead: (groups, last) => !(query && groups.length) == !last && jsx(CommandGroup, { heading: !last && name,",
+                      MODULE.PALETTE_NEW_WORKSPACE_FRAME_JS)
+        helpers = {
+            "SspProjectFrame": MODULE.PALETTE_NEW_WORKSPACE_FRAME_JS,
+            "SspPlus": MODULE.PALETTE_NEW_WORKSPACE_PLUS_JS,
+            "sspUseMetaEnter": MODULE.PALETTE_NEW_WORKSPACE_KEY_JS,
+            "sspUseCreate": MODULE.PALETTE_NEW_WORKSPACE_CREATE_JS,
+        }
+        for (name, js), region, stock, patched in zip(helpers.items(), REGIONS[NEW_WORKSPACE], STOCK[NEW_WORKSPACE], PATCHED[NEW_WORKSPACE]):
+            with self.subTest(region=region.label):
+                self.assertEqual(patched.count(js), 1)
+                self.assertEqual(b"".join(PATCHED).count(b"function %s(" % name.encode()), 1)
+                # Only the no-op comments go and the helper is appended after the untouched function.
+                body = stock
+                for comment in MODULE.JS_NOOP_COMMENTS:
+                    body = body.replace(comment, b"")
+                self.assertEqual(patched.rstrip(b" "), body + js)
+        # The action is the sidebar "+" hook, never a hand-made dialog or a direct worktree call.
+        create = MODULE.PALETTE_NEW_WORKSPACE_CREATE_JS
+        self.assertIn(b"const openNew = useOpenNewWorkspace();", create)
+        self.assertIn(b"openNew(projectId);", create)
+        injected = b"".join(helpers.values()) + MODULE.PALETTE_SEARCH_RESULTS_JS
+        self.assertNotRegex(injected, rb"worktree|createWorkspace|Trpc|Dialog")
+
 
 class PaletteSearchUpgradeTest(unittest.TestCase):
-    """Generations 1 (PR #8) and 2 (PR #9, live) move to the current generation on a plain re-run."""
+    """Generations 1 (PR #8), 2 (PR #9), 3 (PR #10), 4 and 5 (PR #11 ready #1 and #2, live) move to the current generation on a plain re-run."""
 
-    GENERATIONS = (("generation 1", PATCHED_V1), ("generation 2", PATCHED_V2))
+    # Generations whose results region (2) is older than the current one, in the order of its upgrade edges.
+    RESULTS_GENERATIONS = (("generation 1", PATCHED_V1), ("generation 2", PATCHED_V2), ("generation 3", PATCHED_V3),
+                           ("generation 4", PATCHED_V4))
+    GENERATIONS = (*RESULTS_GENERATIONS, ("generation 5", PATCHED_V5))
 
-    # Value: protects=each earlier region generation upgrades in place to exactly the bytes a stock apply gives, and only the results region changes; fails_when=an upgrade edit drifts from the current JS, a digest key is wrong or an upgrade needs a revert; why_new=LUBOS-2414 changes a region that is live; seam=real 1.37.0 bytes
+    # Value: protects=each earlier region generation upgrades in place to exactly the bytes a stock apply gives, and only the results region changes; fails_when=an upgrade edit drifts from the current JS, a digest key is wrong or an upgrade needs a revert; why_new=LUBOS-2414 changes a region that is live, LUBOS-2423 adds the generation 3 edge; seam=real 1.37.0 bytes
     def test_earlier_generations_upgrade_to_the_current_bytes(self):
         region = REGIONS[1]
-        self.assertEqual(len(region.upgrades), 2)
-        for (name, generation), (digest, edits) in zip(self.GENERATIONS, region.upgrades):
+        self.assertEqual(len(region.upgrades), 4)
+        for (name, generation), (digest, edits) in zip(self.RESULTS_GENERATIONS, region.upgrades, strict=True):
             with self.subTest(generation=name):
                 self.assertEqual(hashlib.sha256(generation[1]).hexdigest(), digest)
                 [(offset, old, new, label)] = MODULE._plan_region_rewrite(generation[1] + region.end, region)
@@ -177,14 +243,35 @@ class PaletteSearchUpgradeTest(unittest.TestCase):
                 self.assertEqual(MODULE.upgrade_region(region, generation[1], edits), MODULE.rewrite_region(region, STOCK[1]))
                 for unchanged, current in ((generation[0], PATCHED[0]), (generation[2], PATCHED[2])):
                     self.assertEqual(unchanged, current)
-        self.assertEqual(len({hashlib.sha256(g[1]).hexdigest() for _n, g in self.GENERATIONS} | {region.patched_sha256}), 3)
+        self.assertEqual(len({hashlib.sha256(g[1]).hexdigest() for _n, g in self.RESULTS_GENERATIONS} | {region.patched_sha256}), 5)
+        # Generation 3 was the live 185592b5... bundle (PR #10), generation 4 the live 14793dad... one (PR #11
+        # ready #1): their region 2 digests are the old pinned ones.
+        self.assertEqual(region.upgrades[2][0], "4a37960c0c055c407f867651f4ab538cd7c68997b831e9db45163ab5c0e2e5ac")
+        self.assertEqual(region.upgrades[3][0], "0839b0cd8821bef8991fd104ac20105730def41aaf6007e0bc56fb6c61930735")
+        # Generation 4's frame region and the key region of generations 4 and 5 upgrade in place too; the
+        # button and action regions were already current.
+        for index, digest, olds in (
+            (3, "eec8e209a1d0a90ae8fc826c572488ecf277da2d213b9d0f2fe968cbca55f675", (PATCHED_V4[3],)),
+            (5, "c8f030601dea242ac4372b8a6db9bf2fb616bf22befed5161601cea35e67ab0b", (PATCHED_V4[5], PATCHED_V5[5])),
+        ):
+            spec = REGIONS[index]
+            [(key, edits)] = spec.upgrades
+            self.assertEqual(key, digest)
+            for old_bytes in olds:
+                with self.subTest(region=spec.label):
+                    self.assertEqual(hashlib.sha256(old_bytes).hexdigest(), digest)
+                    self.assertEqual(MODULE.upgrade_region(spec, old_bytes, edits), PATCHED[index])
+                    [(offset, old, new, label)] = MODULE._plan_region_rewrite(old_bytes + spec.end, spec)
+                    self.assertEqual((offset, old, new, label), (0, old_bytes, PATCHED[index], spec.label))
+        for generation in (PATCHED_V4, PATCHED_V5):
+            self.assertEqual((generation[4], generation[6]), (PATCHED[4], PATCHED[6]))
 
     # Value: protects=an earlier generation with any foreign byte, or only part of its upgrade, is refused, not upgraded; fails_when=the upgrade path skips the digest key or the final pinned digest; why_new=new upgrade path; seam=none
     def test_changed_or_partly_upgraded_bytes_fail_closed(self):
         region = REGIONS[1]
         for name, generation in self.GENERATIONS:
             with self.subTest(generation=name):
-                changed = generation[1].replace(b"function SspProjectFrame", b"function SspProjectFrane", 1)
+                changed = generation[1].replace(b"function SspPaletteResults", b"function SspPaletteResultz", 1)
                 self.assertNotEqual(changed, generation[1])
                 with self.assertRaisesRegex(RuntimeError, "neither stock nor patched"):
                     MODULE._plan_region_rewrite(changed + region.end, region)
@@ -194,8 +281,22 @@ class PaletteSearchUpgradeTest(unittest.TestCase):
         self.assertNotEqual(half, PATCHED_V2[1])
         with self.assertRaisesRegex(RuntimeError, "neither stock nor patched"):
             MODULE._plan_region_rewrite(half + region.end, region)
+        # Generation 4 with only the tail call of the generation 5 edits: refused the same way.
+        tail = MODULE.PALETTE_SEARCH_RESULTS_V4_UPGRADE[1]
+        part = PATCHED_V4[1].rstrip(b" ").replace(*tail)
+        part += b" " * (len(PATCHED_V4[1]) - len(part))
+        self.assertNotEqual(part, PATCHED_V4[1])
+        with self.assertRaisesRegex(RuntimeError, "neither stock nor patched"):
+            MODULE._plan_region_rewrite(part + region.end, region)
+        # Generation 3 with part of the generation 4 edits (the "+" only): refused the same way.
+        plus = MODULE.PALETTE_SEARCH_RESULTS_V3_UPGRADE[1]
+        part = PATCHED_V3[1].rstrip(b" ").replace(*plus)
+        part += b" " * (len(PATCHED_V3[1]) - len(part))
+        self.assertNotEqual(part, PATCHED_V3[1])
+        with self.assertRaisesRegex(RuntimeError, "neither stock nor patched"):
+            MODULE._plan_region_rewrite(part + region.end, region)
         # The digest key matches but the edits no longer produce the pinned bytes: internal error, no write.
-        for index, (name, generation) in enumerate(self.GENERATIONS):
+        for index, (name, generation) in enumerate(self.RESULTS_GENERATIONS):
             with self.subTest(drifted=name):
                 key, edits = region.upgrades[index]
                 edits = edits[:-1] if len(edits) > 1 else ((edits[0][0], edits[0][1].replace(b"-my-2", b"-my-1")),)
@@ -203,7 +304,7 @@ class PaletteSearchUpgradeTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "does not match its pinned digest"):
                     MODULE._plan_region_rewrite(generation[1] + region.end, drifted)
 
-    # Value: protects=the documented host transition: on a bundle carrying an earlier generation the re-run writes only the results region, a second re-run is a no-op and --revert returns that generation's SHA-256; fails_when=the upgrade rewrites other families or regions, or revert lands elsewhere; why_new=LUBOS-2414 transition; seam=temp ASAR
+    # Value: protects=the documented host transition: on a bundle carrying an earlier generation the re-run writes only the regions that differ (generations 1-3: the results region and the four new-workspace regions; generation 4: the results, frame and key regions; generation 5: the key region), a second re-run is a no-op and --revert returns that generation's SHA-256; fails_when=the upgrade rewrites other families or regions, or revert lands elsewhere; why_new=LUBOS-2414 transition, LUBOS-2423 regions 4-7 and the generation 4 and 5 edges; seam=temp ASAR
     def test_rerun_on_earlier_generation_bundles_then_revert(self):
         for name, generation in self.GENERATIONS:
             with self.subTest(generation=name), tempfile.TemporaryDirectory() as tmp:
@@ -214,13 +315,49 @@ class PaletteSearchUpgradeTest(unittest.TestCase):
                 options = dict(size=6, hide_tray=False, custom_project_icons=False, keep_icon_on_hover=False,
                                command_palette_cmd_k=True, command_palette_workspace_search=True)
                 _backup, changes = MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options)
-                self.assertEqual(changes, [REGIONS[1].label])
+                differs = [(r, old, new) for r, old, new in zip(REGIONS, generation, PATCHED) if old != new]
+                expected_regions = {"generation 4": [1, 3, 5], "generation 5": [5]}.get(name, [1, 3, 4, 5, 6])
+                self.assertEqual([r.label for r, _o, _n in differs], [REGIONS[i].label for i in expected_regions])
+                self.assertEqual(sorted(changes), sorted(r.label for r, _o, _n in differs))
                 patched = target.read_bytes()
                 self.assertEqual(len(patched), len(original))
-                self.assertEqual(patched, original.replace(generation[1], PATCHED[1]))
+                expected = original
+                for _r, old, new in differs:
+                    expected = expected.replace(old, new)
+                self.assertEqual(patched, expected)
                 self.assertEqual(MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options), (None, []))
                 MODULE.revert(target, backups)
                 self.assertEqual(hashlib.sha256(target.read_bytes()).hexdigest(), hashlib.sha256(original).hexdigest())
+
+    # Value: protects=the palette regions are planned only as one whole generation (stock, 1-6): a mix such as region 2 at generation 5 with region 4 at generation 4 (Codex round 1, P2), a generation 3 bundle with one new-workspace region, the generation 5 frame with the generation 4 results, or a stock provider slot under patched results is refused before any write, and the file is untouched; fails_when=regions are again accepted one by one or the allowed set lists a mix; why_new=LUBOS-2423 review round 1; seam=temp ASAR
+    def test_mixed_generations_fail_closed_before_a_write(self):
+        self.assertEqual(len(set(MODULE.PALETTE_SEARCH_GENERATIONS.values())), 7)
+        self.assertEqual(MODULE.PALETTE_SEARCH_GENERATIONS["generation 6"], tuple(r.patched_sha256 for r in REGIONS))
+        for name, generation in (("stock", STOCK), *self.GENERATIONS, ("generation 6", PATCHED)):
+            with self.subTest(allowed=name):
+                state = tuple(hashlib.sha256(region).hexdigest() for region in generation)
+                self.assertEqual(MODULE.PALETTE_SEARCH_GENERATIONS[name], state)
+        mixes = {
+            "results 5, frame 4 (review repro)": [*PATCHED[:3], PATCHED_V4[3], *PATCHED[4:]],
+            "results 5, frame 4, key 5": [*PATCHED_V5[:3], PATCHED_V4[3], *PATCHED_V5[4:]],
+            "results 4, frame 5": [*PATCHED_V4[:3], PATCHED[3], *PATCHED_V4[4:]],
+            "generation 3 plus one new-workspace region": [*PATCHED_V3[:4], PATCHED[4], *PATCHED_V3[5:]],
+            "generation 6 with a stock action region": [*PATCHED[:6], STOCK[6]],
+            "stock provider slot under patched results": [STOCK[0], *PATCHED[1:]],
+        }
+        options = dict(size=6, hide_tray=False, custom_project_icons=False, keep_icon_on_hover=False,
+                       command_palette_cmd_k=True, command_palette_workspace_search=True)
+        for name, generation in mixes.items():
+            with self.subTest(mix=name), tempfile.TemporaryDirectory() as tmp:
+                original = old_bundle(generation)
+                with self.assertRaisesRegex(RuntimeError, "mix generations"):
+                    MODULE._plan_command_palette_workspace_search(original)
+                target, backups = Path(tmp) / "app.asar", Path(tmp) / "backups"
+                target.write_bytes(original)
+                with self.assertRaisesRegex(RuntimeError, "mix generations"):
+                    MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options)
+                self.assertEqual(target.read_bytes(), original)
+                self.assertFalse(backups.exists() and any(backups.iterdir()))
 
 
 class CommandPaletteHotkeyTest(unittest.TestCase):
@@ -257,7 +394,7 @@ class CommandPaletteHotkeyTest(unittest.TestCase):
 class PaletteBundleTest(unittest.TestCase):
     """Both flags on a real ASAR layout: names, apply, re-run and revert."""
 
-    # Value: protects=the documented lifecycle: five writes, a re-run is a no-op without a second backup, --revert restores the original SHA-256; fails_when=the flags are not wired, a write is not length-preserving, or revert does not restore; why_new=new family; seam=temp ASAR
+    # Value: protects=the documented lifecycle: nine writes, a re-run is a no-op without a second backup, --revert restores the original SHA-256; fails_when=the flags are not wired, a write is not length-preserving, or revert does not restore; why_new=new family; seam=temp ASAR
     def test_apply_rerun_and_revert(self):
         original = bundle()
         with tempfile.TemporaryDirectory() as tmp:
@@ -310,7 +447,8 @@ class PaletteBundleTest(unittest.TestCase):
     def test_split_layout_regions_are_refused(self):
         data = asar(("index.js", BASE), ("AppMenuButton-oyEJ62pt.js", menu_chunk()),
                     ("layout-a.js", LAYOUT_NAMES + STOCK[1] + REGIONS[1].end + b"}) {}\n"),
-                    ("layout-b.js", STOCK[2] + REGIONS[2].end + b"(set) => ({}));\n"),
+                    ("layout-b.js", STOCK[2] + REGIONS[2].end + b"(set) => ({}));\n"
+                     + b"".join(r + spec.end + b"}) {}\n" for spec, r in zip(REGIONS[NEW_WORKSPACE], STOCK[NEW_WORKSPACE]))),
                     ("useRecordHotkeys-CZvWFcmR.js", HOTKEYS))
         with self.assertRaisesRegex(RuntimeError, "regions span several files"):
             patch(data)
@@ -385,6 +523,21 @@ class InstalledPaletteTest(unittest.TestCase):
         self.assertEqual(palette.group(1), sidebar.group(1))
         for cls in (rb".size-6 ", rb".-my-2 "):
             self.assertIn(cls, css)
+
+    # Value: protects=every utility class of the new-workspace "+" button is generated in the installed index-*.css (a missing one would silently not style); fails_when=the button uses a class the stylesheet lacks or upstream drops one; why_new=LUBOS-2423 adds a button; seam=installed bundle
+    def test_installed_css_has_the_plus_button_classes(self):
+        import mmap
+
+        with MODULE.DEFAULT_ASAR.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            css = b"".join(bytes(data[start : start + size]) for path, start, size in MODULE._asar_entries(data) if re.search(r"/index-[^/]+\.css$", path))
+        classes = re.search(rb'className: "ssp-plus ([^"]+)"', MODULE.PALETTE_NEW_WORKSPACE_PLUS_JS).group(1).split()
+        classes += re.findall(rb'HiMiniPlus, \{ className: "([^"]+)" \}', MODULE.PALETTE_NEW_WORKSPACE_PLUS_JS)
+        self.assertIn(b"!size-3.5", classes)
+        for cls in classes:
+            with self.subTest(cls=cls):
+                variant, _, utility = cls.rpartition(b":")
+                selector = b"." + re.sub(rb"([:!.])", rb"\\\1", cls) + (b":" + variant if variant else b"")
+                self.assertRegex(css, re.escape(selector) + rb"[\s,{]")
 
     # Value: protects=the re-run on the installed bundle (stock, generation 1 of PR #8 or generation 2 of PR #9) yields chunks that parse whole, so the in-place upgrade cannot break the live layout module; fails_when=an upgrade edit or the padding leaves the live chunk unparseable; why_new=LUBOS-2406 upgrades a live region; seam=installed bundle
     def test_installed_bundle_rerun_parses(self):
