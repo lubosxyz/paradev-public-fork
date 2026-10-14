@@ -2,15 +2,22 @@
 
 import importlib.util
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from isolated_locks import TEST_HOME, isolate  # noqa: E402  (tests/isolated_locks.py)
 
 
 MODULE_PATH = Path(__file__).parents[1] / "patches/patch-tray-icon.py"
 SPEC = importlib.util.spec_from_file_location("patch_tray_icon", MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+# combined_patcher() loads a fresh patch-asar.py on every call; isolate each copy.
+_load_combined_patcher = MODULE.combined_patcher
+MODULE.combined_patcher = lambda: isolate(_load_combined_patcher())
 
 
 class SupersetTrayPatchTest(unittest.TestCase):
@@ -47,6 +54,9 @@ class SupersetTrayPatchTest(unittest.TestCase):
 
     def test_non_default_fixture_does_not_need_signature_ack(self):
         MODULE.require_signature_ack(Path("/tmp/fixture.app.asar"), False)
+
+    def test_suite_locks_stay_out_of_the_real_home(self):
+        self.assertTrue(MODULE.lock_path(Path("/tmp/fixture.app.asar")).is_relative_to(TEST_HOME))
 
     def test_lock_path_matches_the_target_bound_combined_patcher_contract(self):
         target = Path("/tmp/fixture.app.asar")

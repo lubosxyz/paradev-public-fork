@@ -22,7 +22,10 @@ SPEC.loader.exec_module(MODULE)
 
 import sys  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from isolated_locks import TEST_HOME, isolate  # noqa: E402  (tests/isolated_locks.py)
 from live_host import live_host_only  # noqa: E402  (LIVE_HOST_ONLY, tests/live_host.py)
+
+isolate(MODULE)
 
 
 @functools.lru_cache(maxsize=1)
@@ -58,6 +61,11 @@ class SupersetIconPatchSafetyTest(unittest.TestCase):
 
     def test_non_default_fixture_does_not_need_signature_ack(self):
         MODULE.require_signature_ack(Path("/tmp/fixture.app.asar"), False)
+
+    def test_suite_locks_stay_out_of_the_real_home(self):
+        lock = MODULE._lock_path(Path("/tmp/fixture.app.asar"))
+        self.assertTrue(lock.is_relative_to(TEST_HOME), lock)
+        self.assertEqual(MODULE.DEFAULT_BACKUP_DIR, Path.home() / ".superset")
 
     def test_lock_path_depends_on_target_not_backup_directory(self):
         target = Path("/tmp/fixture.app.asar")

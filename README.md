@@ -51,7 +51,7 @@ scripts/gate.sh          # rychlá brána (výchozí)
 scripts/gate.sh --live   # + LIVE_HOST_ONLY testy proti nainstalovanému bundlu
 ```
 
-Obsah: `node --check` všech fixtures a `tools/*.{js,mjs}` (kromě výslovně vyjmenovaných bajtových výřezů), kompilace všech `*.py`, validace `patches/*.json`, `node --test` pro `*.test.mjs` (pokud existují) a `python3 -m unittest discover -s tests`. Jen stdlib Python 3.10+ a Node 22; žádná instalace, síť ani DSD toolchain.
+Obsah: `node --check` všech fixtures a `tools/*.{js,mjs}` (kromě výslovně vyjmenovaných bajtových výřezů), kompilace všech `*.py`, validace `patches/*.json`, `node --test` pro `*.test.mjs` (pokud existují) a `python3 -m unittest discover -s tests`. Jen stdlib Python 3.10+ a Node 22; žádná instalace, síť ani DSD toolchain. Brána selže, když chybí skenovaný adresář, krok najde 0 souborů nebo se nenačte některý povinný testovací modul (`REQUIRED_TEST_MODULES` v `scripts/gate.sh`, nový modul tam přidej). Testy berou locky z dočasného rootu (`tests/isolated_locks.py`), nikdy ze skutečného `~/.superset/patch-locks`.
 
 **Spouštěč `--live`:** změna kotev, regionů, digestů nebo flagů v `patches/*.py`, změna `patches/approved-flags.json`, nové fixtures z nového Superset releasu, nebo ověření před re-apply na `/Applications`. Live testy jen čtou nainstalovaný bundle a jeho stock zálohu (copy-on-write mapování), nikdy do nich nezapisují; každý mapuje ~1 GB, takže sada trvá minuty (měřeno 2026-10-13: 7 live testů ≈ 1200 s z 1266 s pod loadem 100–290, zbytek ≈ 70 s). Bez nainstalovaného bundlu se přeskočí. Docs-only, `tools/` a test-only změny bez nových kotev stačí rychlá brána; v ready komentáři uveď, který režim běžel a proč.
 

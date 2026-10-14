@@ -18,8 +18,12 @@ import json
 import os
 import pathlib
 import subprocess
+import sys
 import tempfile
 import unittest
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from isolated_locks import LOCK_ROOT, subprocess_env  # noqa: E402  (tests/isolated_locks.py)
 
 REPO_ROOT = pathlib.Path(__file__).parents[1]
 SCRIPT = REPO_ROOT / "patches" / "prune-asar-backups.py"
@@ -54,8 +58,8 @@ class PruneAsarBackupsTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
         self.asar_tmp.cleanup()
-        # drop the per-test lock file created under ~/.superset/patch-locks
-        lock = (pathlib.Path.home() / ".superset" / "patch-locks" /
+        # drop the per-test lock file the script created under the test lock root
+        lock = (LOCK_ROOT /
                 (hashlib.sha256(os.fsencode(self.asar.resolve())).hexdigest()
                  + ".lock"))
         lock.unlink(missing_ok=True)
@@ -65,7 +69,7 @@ class PruneAsarBackupsTest(unittest.TestCase):
         return subprocess.run(
             ["python3", str(SCRIPT), "--dir", str(self.dir),
              "--asar", str(self.asar), *args],
-            capture_output=True, text=True,
+            capture_output=True, text=True, env=subprocess_env(),
         )
 
     def names(self):
@@ -486,14 +490,13 @@ class PruneAsarBackupsTest(unittest.TestCase):
         r = subprocess.run(
             ["python3", str(SCRIPT), "--dir", str(self.dir / "nope"),
              "--asar", str(self.asar), "--apply"],
-            capture_output=True, text=True)
+            capture_output=True, text=True, env=subprocess_env())
         self.assertEqual(r.returncode, 2)
 
     def test_held_patch_lock_blocks_prune(self):
         # simulate a concurrent patch-asar run holding the shared per-asar lock
-        lock_dir = pathlib.Path.home() / ".superset" / "patch-locks"
-        lock_dir.mkdir(parents=True, exist_ok=True)
-        lock_file = lock_dir / (
+        LOCK_ROOT.mkdir(parents=True, exist_ok=True)
+        lock_file = LOCK_ROOT / (
             hashlib.sha256(os.fsencode(self.asar.resolve())).hexdigest() + ".lock")
         mkset(self.dir, "20260601-000000")
         mkset(self.dir, "20260702-000000")
