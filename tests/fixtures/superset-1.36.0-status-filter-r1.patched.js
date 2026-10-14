@@ -395,8 +395,12 @@ function SsfStatusChips({
   sessionWorkspaces,
   groups
 }) {
+  const store = reactExports.useContext(StatusStoreContext);
   const workspaces = reactExports.useMemo(() => [...new Map([...pinnedWorkspaces, ...sessionWorkspaces, ...groups.flatMap((project) => getProjectChildrenWorkspaces(project.children))].map((workspace) => [workspace.id, workspace])).values()], [pinnedWorkspaces, sessionWorkspaces, groups]);
   const [mask, ...counts] = ssfUseCounts(workspaces);
+  reactExports.useEffect(() => {
+    ssfClear(store, counts);
+  });
   const chips = SSF_CHIPS.map(([bit, name, hue, pr], index) => ({ bit, name, hue, pr, mask, count: counts[index] })).filter((chip) => chip.count || mask & chip.bit);
   return chips.length > 0 && jsxRuntimeExports.jsx("div", { role: "group", "aria-label": "Workspace status filter", className: "grid shrink-0 gap-1 px-2 pb-2", style: { gridTemplateColumns: `repeat(${chips.length}, minmax(0, 1fr))` }, children: chips.map((chip) => jsxRuntimeExports.jsx(SsfStatusChip, chip, chip.bit)) });
 }
@@ -486,4 +490,4 @@ function DashboardSidebarExpandedProjectContent({
     ) })
   ] }) }) }) });
 }
-                                                                                                                                                                                                                                                                                                                                          
+                                                                                                                                                                                                         
