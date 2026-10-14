@@ -522,6 +522,11 @@ class RegionRewrite:
     # Digests of earlier patch generations of this region (v1 header button):
     # recognised so the error says how to upgrade instead of "unknown bytes".
     legacy_sha256: tuple[str, ...] = ()
+    # Earlier generations that upgrade in place: (their patched digest, edits
+    # that turn their rewrite into this one). The padding is trimmed, each edit
+    # applied once and the result padded and checked against patched_sha256,
+    # so a re-run moves the live bundle forward without a revert.
+    upgrades: tuple[tuple[str, tuple[tuple[bytes, bytes], ...]], ...] = ()
     # (stock, variant) anchors another flag owns inside this region. The digest
     # is taken with each variant mapped back to its stock bytes, and the
     # rewrite keeps the variant, so that flag works with or without the filter.
@@ -1088,14 +1093,23 @@ def rewrite_region(region: RegionRewrite, stock: bytes) -> bytes:
     rewritten = stock
     for comment in JS_NOOP_COMMENTS:
         rewritten = rewritten.replace(comment, b"")
-    for anchor, replacement in region.edits:
-        found = rewritten.count(anchor)
+    return _edit_and_pad(region, rewritten, region.edits, len(stock))
+
+
+def upgrade_region(region: RegionRewrite, patched: bytes, edits: tuple[tuple[bytes, bytes], ...]) -> bytes:
+    """Turn an earlier generation's rewrite into this one: trim the padding, apply each edit once, pad."""
+    return _edit_and_pad(region, patched.rstrip(b" "), edits, len(patched))
+
+
+def _edit_and_pad(region: RegionRewrite, body: bytes, edits, length: int) -> bytes:
+    for anchor, replacement in edits:
+        found = body.count(anchor)
         if found != 1:
             raise RuntimeError(f"{region.label}: edit anchor found {found} times")
-        rewritten = rewritten.replace(anchor, replacement)
-    if len(rewritten) > len(stock):
-        raise RuntimeError(f"{region.label}: rewrite exceeds the region by {len(rewritten) - len(stock)} bytes")
-    return rewritten + b" " * (len(stock) - len(rewritten))
+        body = body.replace(anchor, replacement)
+    if len(body) > length:
+        raise RuntimeError(f"{region.label}: rewrite exceeds the region by {len(body) - length} bytes")
+    return body + b" " * (length - len(body))
 
 
 def _plan_region_rewrite(
@@ -1133,9 +1147,13 @@ def _plan_region_rewrite(
             f"{region.label}: an older --sidebar-status-filter generation is applied; "
             "run --revert to the pre-filter backup first, then re-apply"
         )
-    if digest != region.stock_sha256:
+    upgrade = dict(region.upgrades).get(digest)
+    if upgrade is not None:
+        rewritten = upgrade_region(region, canonical, upgrade)
+    elif digest != region.stock_sha256:
         raise RuntimeError(f"{region.label}: region is neither stock nor patched; bundle structure may have changed")
-    rewritten = rewrite_region(region, canonical)
+    else:
+        rewritten = rewrite_region(region, canonical)
     if hashlib.sha256(rewritten).hexdigest() != region.patched_sha256:
         raise RuntimeError(f"internal error: {region.label} rewrite does not match its pinned digest")
     for stock, variant in kept:
@@ -1334,7 +1352,13 @@ def _plan_command_palette_cmd_k(data) -> list[tuple[int, bytes, bytes, str]]:
 # upstream behaviour. Group headings reuse the catalog's own "Projects"
 # (-0B-ue), "Workspaces" (pmt7u4) and "Sessions" (4cEClj) messages; the
 # drill-down frame title is "Workspaces" because Lingui has no message that is
-# only a value.
+# only a value. Each project and workspace row leads with its project's icon
+# exactly as the v2 sidebar project row draws it (useDashboardSidebarData):
+# the host project by projectKey from useHostProjects, resolveProjectIconUrl
+# (local icon, i.e. superset-icon://…?v=<buster>, else the GitHub owner avatar,
+# which --custom-project-icons rewrites) and ProjectThumbnail with the
+# project's colour, which falls back to the coloured initial when there is no
+# URL or the image fails. A workspace without a project keeps an empty cell.
 PALETTE_SEARCH_RESULTS_JS = b'''// patch-asar.py --command-palette-workspace-search
 const sspProvider = { id: "ssp-workspace-search", provide: () => [], paletteSearch: SspPaletteSearch };
 function SspPaletteResults({
@@ -1343,16 +1367,19 @@ function SspPaletteResults({
 }) {
   const { _: _t } = useLingui();
   const { all: workspaces } = useAccessibleV2Workspaces();
+  const { projects: hostProjects } = useHostProjects();
   const currentPath = useLocation({ select: (loc) => loc.pathname });
   const navigate = useNavigate();
   const setOpen = useFrameStackStore((s) => s.setOpen);
   const { jsx, jsxs, Fragment } = jsxRuntimeExports;
+  const byKey = new Map(hostProjects.map((p) => [p.projectKey, p]));
+  const icon = (w, p = byKey.get(w.projectId)) => p ? jsx(ProjectThumbnail, { projectName: p.name, iconUrl: resolveProjectIconUrl(p), color: p.color, className: "size-4" }) : jsx("span", { className: "size-4 shrink-0" });
   const tokens = query.trim().toLowerCase().split(/\\s+/);
   const projects = [...new Map(workspaces.filter((w) => w.projectId && tokens.every((t) => w.projectName.toLowerCase().includes(t))).map((w) => [w.projectId, w])).values()].slice(0, 5);
   const matches = workspaces.map((w) => [sspScore(w, tokens), w]).filter(([score]) => score > 0).sort((a, b) => b[0] - a[0]).slice(0, 8).map(([, w]) => w);
   return jsxs(Fragment, { children: [
     projects.length > 0 && jsx(CommandGroup, { heading: _t({ id: "-0B-ue" }), children: projects.map((w) => jsxs(CommandItem, { value: `ssp project ${w.projectId}`, onSelect: () => onSelect({ id: `ssp.project.${w.projectId}`, title: { id: "pmt7u4" }, renderFrame: () => jsx(SspProjectFrame, { projectId: w.projectId }) }), className: ROW_CLASS, children: [
-      w.projectIconUrl ? jsx("img", { src: w.projectIconUrl, alt: "", className: "size-4 shrink-0 object-contain" }) : jsx(LuFolderOpen, {}),
+      icon(w),
       jsx("span", { className: "min-w-0 flex-1 truncate font-normal", children: w.projectName }),
       jsx(HiChevronRight, { className: "text-muted-foreground" })
     ] }, w.projectId)) }, "ssp-projects"),
@@ -1360,6 +1387,7 @@ function SspPaletteResults({
       void navigateToV2Workspace(w.id, navigate);
       setOpen(false);
     }, className: cn(ROW_CLASS, currentPath === `/v2-workspace/${w.id}` && "bg-accent/50"), children: [
+      icon(w),
       jsx("span", { className: "min-w-0 flex-1 truncate font-normal", children: getV2WorkspaceDisplayName(w) }),
       jsxs("span", { className: "flex min-w-0 max-w-56 items-center gap-1 text-muted-foreground text-xs", children: [
         jsx(LuGitBranch, { className: "!size-3 shrink-0" }),
@@ -1374,6 +1402,31 @@ function SspProjectFrame({
   return jsxRuntimeExports.jsx(V2WorkspaceList, { query: useCommandPaletteQuery().trim(), projectId });
 }
 '''
+# Generation 1 of the results (LUBOS-2290) drew a plain <img> of the
+# workspace's projectIconUrl or a folder glyph, and no icon on workspace rows.
+# useAccessibleV2Workspaces resolves that URL without projectKey, so under
+# --custom-project-icons the GitHub fallback pointed at
+# superset-icon://projects/undefined. These edits turn a generation 1 region
+# into the current one (RegionRewrite.upgrades).
+PALETTE_SEARCH_RESULTS_V1_UPGRADE = (
+    _insert_after(
+        b"  const { all: workspaces } = useAccessibleV2Workspaces();\n",
+        b"  const { projects: hostProjects } = useHostProjects();\n",
+    ),
+    _insert_after(
+        b"  const { jsx, jsxs, Fragment } = jsxRuntimeExports;\n",
+        b"  const byKey = new Map(hostProjects.map((p) => [p.projectKey, p]));\n"
+        b"  const icon = (w, p = byKey.get(w.projectId)) => p ? jsx(ProjectThumbnail, { projectName: p.name, "
+        b'iconUrl: resolveProjectIconUrl(p), color: p.color, className: "size-4" }) : '
+        b'jsx("span", { className: "size-4 shrink-0" });\n',
+    ),
+    (
+        b'      w.projectIconUrl ? jsx("img", { src: w.projectIconUrl, alt: "", '
+        b'className: "size-4 shrink-0 object-contain" }) : jsx(LuFolderOpen, {}),\n',
+        b"      icon(w),\n",
+    ),
+    _insert_after(b'currentPath === `/v2-workspace/${w.id}` && "bg-accent/50"), children: [\n', b"      icon(w),\n"),
+)
 # Mount the results only for a non-empty query on v2 (the hook is not free),
 # and score one workspace: 0 unless every token is in its display name, name,
 # branch or project; then 4 display name starts with the query, 3 display name
@@ -1417,7 +1470,7 @@ PALETTE_SEARCH_REGIONS = (
         end=b"function useDestroyDialogState({\n",
         length=63723,
         stock_sha256="5f99eb751101fa5b44b48aa06b0f9e2cbd4e63c30514d8cc8cfcf7d7f9c0c4cc",
-        patched_sha256="b7fdc42d1f7ca39415c90b0e2e3e1e2f43d606c5f078a466dd0b816efff0aa81",
+        patched_sha256="7bfae0c354d57472676ee07c88387c76ad82753b23884ed91368267507bdab62",
         edits=(
             (b"function V2WorkspaceList({\n  query\n}) {\n", b"function V2WorkspaceList({\n  query,\n  projectId\n}) {\n"),
             (
@@ -1431,6 +1484,8 @@ PALETTE_SEARCH_REGIONS = (
             ),
             (b"function CommandPaletteTrigger() {\n", PALETTE_SEARCH_RESULTS_JS + b"function CommandPaletteTrigger() {\n"),
         ),
+        # Generation 1 (LUBOS-2290, plain <img> or folder glyph, live as 9a4d446d…).
+        upgrades=(("b7fdc42d1f7ca39415c90b0e2e3e1e2f43d606c5f078a466dd0b816efff0aa81", PALETTE_SEARCH_RESULTS_V1_UPGRADE),),
     ),
     RegionRewrite(
         label="command palette: search helpers",
@@ -1457,7 +1512,7 @@ PALETTE_SEARCH_CHUNKS = (
             "jsxRuntimeExports", "useLingui", "useAccessibleV2Workspaces", "useLocation", "useNavigate",
             "useFrameStackStore", "useCommandPaletteQuery", "registerProvider", "CommandGroup", "CommandItem",
             "cn", "getV2WorkspaceDisplayName", "navigateToV2Workspace", "useIsV2CloudEnabled", "LuGitBranch",
-            "LuFolderOpen", "HiChevronRight",
+            "HiChevronRight", "useHostProjects", "resolveProjectIconUrl", "ProjectThumbnail",
         ),
         ("ROW_CLASS", "V2WorkspaceList"),
     ),

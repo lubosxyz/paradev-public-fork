@@ -31,9 +31,37 @@ function load(sources, mocks, names) {
 const jsx = (type, props, key) => ({ type, props, key });
 const CATALOG = { "-0B-ue": "Projects", pmt7u4: "Workspaces", "4cEClj": "Sessions", ZX8Apr: "No results" };
 
+// projectIconUrl is what useAccessibleV2Workspaces resolves without projectKey: under
+// --custom-project-icons its GitHub fallback reads ".../undefined", so the rows must not use it.
 function workspace(id, name, branch, projectId, projectName, createdAt) {
-  return { id, name, branch, projectId, projectName, projectIconUrl: null, createdAt, hostName: "M5" };
+  return { id, name, branch, projectId, projectName, projectIconUrl: "superset-icon://projects/undefined?v=64", createdAt, hostName: "M5" };
 }
+
+// The real 1.37.0 chunks the v2 sidebar draws project icons with, imports and exports cut.
+function realChunk(fixture, names, mocks, rewrite = (source) => source) {
+  const source = rewrite(read(fixture)).replace(/^import .*;$/gm, "").replace(/^export \{[\s\S]*?\};$/m, "");
+  return load([source], mocks, names);
+}
+const cn = (...parts) => parts.filter(Boolean).join(" ");
+const { ProjectThumbnail } = realChunk("superset-1.37.0-project-thumbnail.js", ["ProjectThumbnail"], {
+  reactExports: { useState: (value) => [value, () => {}] },
+  jsxRuntimeExports: { jsx, jsxs: jsx },
+  cn,
+});
+const resolvers = {
+  upstream: realChunk("superset-1.37.0-resolve-project-icon-url.js", ["resolveProjectIconUrl"], {}).resolveProjectIconUrl,
+  // patch-asar.py --custom-project-icons (PROJECT_ICON_UPSTREAM -> PROJECT_ICON_CUSTOM).
+  custom: realChunk("superset-1.37.0-resolve-project-icon-url.js", ["resolveProjectIconUrl"], {}, (source) =>
+    source.replace("https://github.com/${project.repoOwner}.png?size=64", "superset-icon://projects/${project.projectKey}?v=64"),
+  ).resolveProjectIconUrl,
+};
+
+// useHostProjects rows (projectKey = workspace.projectId): a local icon, a GitHub owner only, neither.
+const HOST_PROJECTS = [
+  { projectKey: "p-fork", name: "superset-private-fork", icon: "superset-icon://projects/p-fork?v=1729", repoOwner: "lubosxyz", color: "#3b82f6" },
+  { projectKey: "p-dsd", name: "dev-setup-dashboard", icon: null, repoOwner: "lubosxyz", color: null },
+  { projectKey: "p-ops", name: "komfi-ops", icon: null, repoOwner: null, color: "#22c55e" },
+];
 
 // Newest first, as useAccessibleV2Workspaces sorts by createdAt.
 const WORKSPACES = [
@@ -42,9 +70,10 @@ const WORKSPACES = [
   workspace("w3", "palette docs", "docs/palette", "p-dsd", "dev-setup-dashboard", 7),
   workspace("w4", "scratch", "main", null, null, 6),
   workspace("w5", "cmdk spike", "spike/cmdk", "p-dsd", "dev-setup-dashboard", 5),
+  workspace("w6", "ops notes", "notes", "p-ops", "komfi-ops", 4),
 ];
 
-function harness({ v2 = true, query = "", path = "/v2-workspace/w3" } = {}) {
+function harness({ v2 = true, query = "", path = "/v2-workspace/w3", icons = "custom" } = {}) {
   const calls = { navigate: [], open: [], hook: [], providers: [] };
   const navigate = () => {};
   const mocks = {
@@ -67,7 +96,10 @@ function harness({ v2 = true, query = "", path = "/v2-workspace/w3" } = {}) {
       calls.providers.push(provider);
       return () => {};
     },
-    cn: (...parts) => parts.filter(Boolean).join(" "),
+    cn,
+    useHostProjects: () => ({ projects: HOST_PROJECTS }),
+    resolveProjectIconUrl: resolvers[icons],
+    ProjectThumbnail,
     CommandGroup: "CommandGroup",
     CommandItem: "CommandItem",
     CommandList: "CommandList",
@@ -75,7 +107,7 @@ function harness({ v2 = true, query = "", path = "/v2-workspace/w3" } = {}) {
     Trans: "Trans",
   };
   const layout = load(
-    [read("superset-1.37.0-palette-r2.patched.js"), read("superset-1.37.0-palette-r3.patched.js")],
+    [read("superset-1.37.0-palette-r2.v2-patched.js"), read("superset-1.37.0-palette-r3.patched.js")],
     mocks,
     ["SspPaletteSearch", "SspPaletteResults", "SspProjectFrame", "sspScore", "sspProvider", "V2WorkspaceList", "registerAllModules"],
   );
@@ -131,6 +163,44 @@ test("projects whose name holds every token come first, one row per project", ()
   assert.deepEqual(ids(projects), ["p-fork"]);
   assert.deepEqual(ids(workspaces), ["w1", "w2"]);
   assert.ok(tree.props.children.indexOf(projects) < tree.props.children.indexOf(workspaces));
+});
+
+test("project and workspace rows lead with their project's sidebar icon", () => {
+  const { layout } = harness();
+  const [projects, workspaces] = groups(layout.SspPaletteResults({ query: "superset", onSelect() {} }));
+  const [projectIcon] = rows(projects)[0].props.children;
+  assert.equal(projectIcon.type, ProjectThumbnail);
+  // The v2 sidebar project row: ProjectThumbnail { projectName, iconUrl, color, className: "size-4" }.
+  assert.deepEqual(projectIcon.props, {
+    projectName: "superset-private-fork", iconUrl: "superset-icon://projects/p-fork?v=1729", color: "#3b82f6", className: "size-4",
+  });
+  for (const row of rows(workspaces)) assert.deepEqual(row.props.children[0], projectIcon);
+  // A workspace of another project gets that project's icon; one without a project keeps an empty cell.
+  const [mixed] = groups(layout.SspPaletteResults({ query: "s", onSelect() {} })).slice(-1);
+  const icons = Object.fromEntries(rows(mixed).map((row) => [row.key, row.props.children[0]]));
+  assert.equal(icons.w3.props.projectName, "dev-setup-dashboard");
+  assert.deepEqual(icons.w4, { type: "span", props: { className: "size-4 shrink-0" }, key: undefined });
+});
+
+test("icons resolve like the sidebar: local icon, then the owner avatar, else the coloured initial", () => {
+  const draw = (icons, workspaceId) => {
+    const { layout } = harness({ icons });
+    const [workspaces] = groups(layout.SspPaletteResults({ query: "o", onSelect() {} })).slice(-1);
+    const icon = rows(workspaces).find((row) => row.key === workspaceId).props.children[0];
+    return icon.type(icon.props);
+  };
+  const image = (tree) => tree.props.children.props.src;
+  // Local icon_url (superset-icon://…?v=<buster>) wins with and without --custom-project-icons.
+  assert.equal(image(draw("custom", "w1")), "superset-icon://projects/p-fork?v=1729");
+  assert.equal(image(draw("upstream", "w1")), "superset-icon://projects/p-fork?v=1729");
+  // No local icon: the GitHub owner avatar, which --custom-project-icons serves locally by projectKey.
+  assert.equal(image(draw("upstream", "w5")), "https://github.com/lubosxyz.png?size=64");
+  assert.equal(image(draw("custom", "w5")), "superset-icon://projects/p-dsd?v=64");
+  // Neither: the project's initial in its colour, as in the sidebar.
+  const initial = draw("custom", "w6");
+  assert.equal(initial.props.children, "K");
+  assert.match(initial.props.className, /size-4/);
+  assert.deepEqual(initial.props.style, { borderColor: "rgba(34, 197, 94, 0.6)", backgroundColor: "rgba(34, 197, 94, 0.15)", color: "#22c55e" });
 });
 
 test("Enter on a workspace switches to it and closes the palette; the open one is highlighted", () => {

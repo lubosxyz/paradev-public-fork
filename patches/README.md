@@ -300,7 +300,11 @@ Each region:
 1. starts at a unique top-level anchor and has a fixed length. The end anchor
    must follow it immediately.
 2. has its stock and rewritten bytes pinned by SHA-256. A region that is neither
-   fails closed, and a patched region is a no-op.
+   fails closed, and a patched region is a no-op. A region may also list
+   earlier generations it upgrades in place (`upgrades`: their pinned digest
+   and the exact edits to the current bytes, checked against the current
+   digest; used by the palette search, §Command palette); `legacy_sha256`
+   generations need `--revert` first.
 3. gets its space back by deleting the no-op comment tokens `/* @__PURE__ */ `
    (a bundler tree-shaking hint) and `/** i18n */` (a Lingui extraction
    marker). Neither token affects runtime, and neither contains a newline, so
@@ -491,12 +495,32 @@ so the best match is one Enter away. An empty query renders nothing (upstream
 palette). v1 workspaces are not searched. Group headings reuse the catalog's
 "Projects", "Workspaces" and "Sessions" messages, so they follow the locale.
 
+Every project and workspace row leads with its project's icon, drawn exactly
+like the v2 sidebar project row (LUBOS-2406): the host project by
+`projectKey` from `useHostProjects`, `resolveProjectIconUrl` (the local
+`icon_url`, i.e. `superset-icon://projects/<id>?v=<buster>`, else the GitHub
+owner avatar, which `--custom-project-icons` serves locally) and the sidebar's
+`ProjectThumbnail` at `size-4` with the project colour. Without a URL, or when
+the image fails, it is the project's initial in that colour, as in the sidebar.
+A workspace without a project (Sessions) keeps an empty icon cell.
+
+Generation 2 (icons) replaces generation 1 of LUBOS-2290 (a plain `<img>` of
+the workspace's `projectIconUrl` or a folder glyph; that URL is resolved
+without `projectKey`, so under `--custom-project-icons` the avatar fallback
+pointed at `superset-icon://projects/undefined`). A plain re-run of the command
+above upgrades a generation 1 bundle in place: region 2 matches the pinned
+generation 1 digest (`RegionRewrite.upgrades`), its padding is trimmed, four
+exact edits are applied and the result must hit the pinned generation 2
+digest, so the plan has one write (`command palette: workspace and project
+results`), no other region or family changes, no `--revert` of the set is
+needed, and `--revert` afterwards returns the generation 1 SHA-256.
+
 It is a region rewrite (§Region rewrite) of three hash-pinned regions:
 
 | # | chunk | region | bytes | free after rewrite | role |
 |---|---|---|---|---|---|
 | 1 | `AppMenuButton-*.js` | `useActiveCommands` … `SubPaletteView` | 2,758 | 58 | `CommandListView` renders each provider's optional `paletteSearch` before the ranked sections |
-| 2 | `layout-*.js` | `ThemeFrame` … `useDestroyDialogState` | 63,723 | 300 | `sspProvider` registered in `registerAllModules`, `V2WorkspaceList({ query, projectId })` → `projectFilters`, `SspPaletteResults`, `SspProjectFrame` |
+| 2 | `layout-*.js` | `ThemeFrame` … `useDestroyDialogState` | 63,723 | 65 | `sspProvider` registered in `registerAllModules`, `V2WorkspaceList({ query, projectId })` → `projectFilters`, `SspPaletteResults` (with the project icons), `SspProjectFrame` |
 | 3 | `layout-*.js` | `ProjectHeader` (v1 sidebar) | 12,292 | 383 | room only: `SspPaletteSearch` (mount guard), `sspScore` |
 
 No other family writes inside these regions (`_require_disjoint` refuses an
@@ -505,13 +529,17 @@ defines every name the injected code reads and that no injected name
 (`sspProvider`, `SspPaletteResults`, `SspProjectFrame`, `SspPaletteSearch`,
 `sspScore`) occurs in the chunk outside its regions. Tests:
 `tests/test_superset_palette_patch.py` (real 1.37.0 fixtures
-`superset-1.37.0-palette-r{1,2,3}[.patched].js` and
+`superset-1.37.0-palette-r{1,2,3}[.patched].js`,
+`superset-1.37.0-palette-r2.v2-patched.js` (current) and
 `superset-1.37.0-hotkeys-registry[.patched].js`, fail-closed states,
-apply / re-run / revert on a real ASAR layout, `LIVE_HOST_ONLY`: the stock
-snapshot plans the five writes and each whole patched chunk passes
-`node --check`) and `tests/palette_search.test.mjs` (the patched bytes rendered
-with stubbed React: filter, ranking, workspace switch, project drill-down,
-empty query, hotkey swap).
+apply / re-run / revert on a real ASAR layout, the generation 1 → 2 upgrade and
+its revert, `LIVE_HOST_ONLY`: the stock snapshot plans the five writes, a
+re-run on the installed bundle leaves whole chunks that pass `node --check`)
+and `tests/palette_search.test.mjs` (the patched bytes rendered with stubbed
+React and the real 1.37.0 `ProjectThumbnail` and `resolveProjectIconUrl`
+chunks: filter, ranking, project icons with local icon / avatar /
+`--custom-project-icons` / coloured initial, workspace switch, project
+drill-down, empty query, hotkey swap).
 
 `project-icons/komfi-ops.svg` is an intentional palette exception: its
 slate-900 (`#0f172a`) background and slate-200 (`#e2e8f0`) gear stroke retain

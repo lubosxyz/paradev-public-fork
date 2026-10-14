@@ -1,9 +1,10 @@
-"""Tests for --command-palette-cmd-k and --command-palette-workspace-search (LUBOS-2290).
+"""Tests for --command-palette-cmd-k and --command-palette-workspace-search (LUBOS-2290, LUBOS-2406).
 
 Byte-level safety lives here (pinned regions, fail-closed anchors, names, apply / re-run /
 revert); the rendered behaviour of the patched bytes is tests/palette_search.test.mjs.
 """
 
+import dataclasses
 import hashlib
 import importlib.util
 import json
@@ -31,7 +32,9 @@ isolate(MODULE)
 
 REGIONS = MODULE.PALETTE_SEARCH_REGIONS
 STOCK = [(FIXTURES / f"superset-1.37.0-palette-r{n}.js").read_bytes() for n in (1, 2, 3)]
-PATCHED = [(FIXTURES / f"superset-1.37.0-palette-r{n}.patched.js").read_bytes() for n in (1, 2, 3)]
+PATCHED = [(FIXTURES / f"superset-1.37.0-palette-r{n}{gen}patched.js").read_bytes() for n, gen in ((1, "."), (2, ".v2-"), (3, "."))]
+# Generation 1 (LUBOS-2290): the bytes live on hosts that applied PR #8; the region upgrades in place.
+PATCHED_V1 = [*PATCHED[:1], (FIXTURES / "superset-1.37.0-palette-r2.patched.js").read_bytes(), *PATCHED[2:]]
 HOTKEYS = (FIXTURES / "superset-1.37.0-hotkeys-registry.js").read_bytes()
 HOTKEYS_PATCHED = (FIXTURES / "superset-1.37.0-hotkeys-registry.patched.js").read_bytes()
 SEARCH_LABELS = [region.label for region in REGIONS]
@@ -41,7 +44,10 @@ SWAP_LABELS = ["command palette: Clear Terminal on Cmd+Shift+K", "command palett
 MENU_NAMES = b'import { j as jsxRuntimeExports } from "./index.js";\nfunction getProviders() {}\n'
 LAYOUT_NAMES = (
     b'import { j as jsxRuntimeExports, b as useLingui, u as useNavigate, a as useIsV2CloudEnabled, c as cn, '
-    b'n as navigateToV2Workspace, l as LuGitBranch, f as LuFolderOpen, h as HiChevronRight } from "./index.js";\n'
+    b'n as navigateToV2Workspace, l as LuGitBranch, h as HiChevronRight } from "./index.js";\n'
+    b'import { u as useHostProjects } from "./useHostProjects.js";\n'
+    b'import { r as resolveProjectIconUrl } from "./resolveProjectIconUrl.js";\n'
+    b'import { P as ProjectThumbnail } from "./ProjectThumbnail.js";\n'
     b'import { b as useFrameStackStore, c as useCommandPaletteQuery, r as registerProvider } from "./AppMenuButton.js";\n'
     b'import { b as CommandGroup, e as CommandItem } from "./command.js";\n'
     b'import { u as useLocation } from "./useLocation.js";\n'
@@ -76,6 +82,11 @@ def asar(*files: tuple[str, bytes]) -> bytes:
     padded = header + b"\0" * (-len(header) % 4)
     size = 8 + len(padded)
     return (4).to_bytes(4, "little") + size.to_bytes(4, "little") + (size - 4).to_bytes(4, "little") + len(header).to_bytes(4, "little") + padded + payload
+
+
+def v1_bundle():
+    """A bundle as PR #8 left it on the host: both flags applied at generation 1."""
+    return bundle(menu=menu_chunk(PATCHED_V1[0]), layout=layout_chunk(*PATCHED_V1[1:]), hotkeys=HOTKEYS_PATCHED)
 
 
 def bundle(menu=None, layout=None, hotkeys=HOTKEYS):
@@ -130,9 +141,58 @@ class PaletteSearchRegionTest(unittest.TestCase):
         self.assertIn(b"registerProvider(addProjectProvider), registerProvider(sspProvider)];", layout)
         self.assertLess(layout.index(b"function SspPaletteResults("), layout.index(b"function CommandPaletteTrigger()"))
         self.assertIn(b"function SspPaletteSearch(", helpers)
+        # Both row kinds lead with the sidebar's project icon (ProjectThumbnail), the old <img> is gone.
+        self.assertEqual(layout.count(b"      icon(w),\n"), 2)
+        self.assertIn(b"jsx(ProjectThumbnail, { projectName: p.name, iconUrl: resolveProjectIconUrl(p), color: p.color", layout)
+        self.assertNotIn(b"projectIconUrl", layout)
+        self.assertNotIn(b"LuFolderOpen", layout[layout.index(b"function SspPaletteResults(") :])
         self.assertIn(b"function sspScore(", helpers)
         for name in MODULE.PALETTE_SEARCH_NEW_NAMES:
             self.assertNotIn(name.encode(), b"".join(STOCK), name)
+
+
+class PaletteSearchUpgradeTest(unittest.TestCase):
+    """Generation 1 (PR #8, live) moves to the current generation on a plain re-run."""
+
+    # Value: protects=the live generation-1 region upgrades in place to exactly the bytes a stock apply gives, and only the results region changes; fails_when=the upgrade edits drift from the current JS, the digest key is wrong or the upgrade needs a revert; why_new=LUBOS-2406 changes a region that is live; seam=real 1.37.0 bytes
+    def test_generation_1_upgrades_to_the_current_bytes(self):
+        region = REGIONS[1]
+        [(digest, edits)] = region.upgrades
+        self.assertEqual(hashlib.sha256(PATCHED_V1[1]).hexdigest(), digest)
+        [(offset, old, new, label)] = MODULE._plan_region_rewrite(PATCHED_V1[1] + region.end, region)
+        self.assertEqual((offset, old, new, label), (0, PATCHED_V1[1], PATCHED[1], region.label))
+        self.assertEqual(MODULE.upgrade_region(region, PATCHED_V1[1], edits), MODULE.rewrite_region(region, STOCK[1]))
+        for unchanged, current in ((PATCHED_V1[0], PATCHED[0]), (PATCHED_V1[2], PATCHED[2])):
+            self.assertEqual(unchanged, current)
+
+    # Value: protects=a generation-1 region with any foreign byte is refused, not upgraded; fails_when=the upgrade path skips the digest key or the final pinned digest; why_new=new upgrade path; seam=none
+    def test_changed_generation_1_bytes_fail_closed(self):
+        region = REGIONS[1]
+        changed = PATCHED_V1[1].replace(b"size-4 shrink-0 object-contain", b"size-5 shrink-0 object-contain")
+        with self.assertRaisesRegex(RuntimeError, "neither stock nor patched"):
+            MODULE._plan_region_rewrite(changed + region.end, region)
+        # The digest key matches but the edits no longer produce the pinned bytes: internal error, no write.
+        drifted = dataclasses.replace(region, upgrades=((region.upgrades[0][0], region.upgrades[0][1][:-1]),))
+        with self.assertRaisesRegex(RuntimeError, "does not match its pinned digest"):
+            MODULE._plan_region_rewrite(PATCHED_V1[1] + region.end, drifted)
+
+    # Value: protects=the documented host transition: on a bundle carrying PR #8 the re-run writes only the results region, a second re-run is a no-op and --revert returns the generation-1 SHA-256; fails_when=the upgrade rewrites other families or regions, or revert lands elsewhere; why_new=LUBOS-2406 transition; seam=temp ASAR
+    def test_rerun_on_generation_1_bundle_then_revert(self):
+        original = v1_bundle()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target, backups = root / "app.asar", root / "backups"
+            target.write_bytes(original)
+            options = dict(size=6, hide_tray=False, custom_project_icons=False, keep_icon_on_hover=False,
+                           command_palette_cmd_k=True, command_palette_workspace_search=True)
+            _backup, changes = MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options)
+            self.assertEqual(changes, [REGIONS[1].label])
+            patched = target.read_bytes()
+            self.assertEqual(len(patched), len(original))
+            self.assertEqual(patched, original.replace(PATCHED_V1[1], PATCHED[1]))
+            self.assertEqual(MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options), (None, []))
+            MODULE.revert(target, backups)
+            self.assertEqual(hashlib.sha256(target.read_bytes()).hexdigest(), hashlib.sha256(original).hexdigest())
 
 
 class CommandPaletteHotkeyTest(unittest.TestCase):
@@ -282,6 +342,23 @@ class InstalledPaletteTest(unittest.TestCase):
             both = MODULE.plan_replacements(data, **options, command_palette_cmd_k=True, command_palette_workspace_search=True)
         extra = sorted(w[3] for w in both if w not in approved)
         self.assertTrue(set(extra) <= set(SEARCH_LABELS + SWAP_LABELS), extra)
+
+    # Value: protects=the re-run on the installed bundle (stock or generation 1 of PR #8) yields chunks that parse whole, so the in-place upgrade cannot break the live layout module; fails_when=an upgrade edit or the padding leaves the live chunk unparseable; why_new=LUBOS-2406 upgrades a live region; seam=installed bundle
+    def test_installed_bundle_rerun_parses(self):
+        import mmap
+
+        with MODULE.DEFAULT_ASAR.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_COPY) as data:
+            writes = MODULE._plan_command_palette_workspace_search(data)
+            if not writes:
+                self.skipTest("installed bundle already carries the current generation")
+            for path, start, size in MODULE._asar_entries(data):
+                touched = [w for w in writes if start <= w[0] < start + size]
+                if touched:
+                    with self.subTest(path=path):
+                        chunk = bytearray(data[start : start + size])
+                        for offset, old, new, _label in touched:
+                            chunk[offset - start : offset - start + len(old)] = new
+                        node_check(self, bytes(chunk))
 
 
 if __name__ == "__main__":
