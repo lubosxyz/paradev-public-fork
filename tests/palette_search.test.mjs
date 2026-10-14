@@ -107,7 +107,7 @@ function harness({ v2 = true, query = "", path = "/v2-workspace/w3", icons = "cu
     Trans: "Trans",
   };
   const layout = load(
-    [read("superset-1.37.0-palette-r2.v2-patched.js"), read("superset-1.37.0-palette-r3.patched.js")],
+    [read("superset-1.37.0-palette-r2.v3-patched.js"), read("superset-1.37.0-palette-r3.patched.js")],
     mocks,
     ["SspPaletteSearch", "SspPaletteResults", "SspProjectFrame", "sspScore", "sspProvider", "V2WorkspaceList", "registerAllModules"],
   );
@@ -170,16 +170,43 @@ test("project and workspace rows lead with their project's sidebar icon", () => 
   const [projects, workspaces] = groups(layout.SspPaletteResults({ query: "superset", onSelect() {} }));
   const [projectIcon] = rows(projects)[0].props.children;
   assert.equal(projectIcon.type, ProjectThumbnail);
-  // The v2 sidebar project row: ProjectThumbnail { projectName, iconUrl, color, className: "size-4" }.
+  // The v2 sidebar project row: ProjectThumbnail { projectName, iconUrl, color } at size-6 (24 px, what
+  // --size 6 writes); "-my-2" only takes the icon out of the row height (see the next test).
   assert.deepEqual(projectIcon.props, {
-    projectName: "superset-private-fork", iconUrl: "superset-icon://projects/p-fork?v=1729", color: "#3b82f6", className: "size-4",
+    projectName: "superset-private-fork", iconUrl: "superset-icon://projects/p-fork?v=1729", color: "#3b82f6", className: "size-6 -my-2",
   });
   for (const row of rows(workspaces)) assert.deepEqual(row.props.children[0], projectIcon);
   // A workspace of another project gets that project's icon; one without a project keeps an empty cell.
   const [mixed] = groups(layout.SspPaletteResults({ query: "s", onSelect() {} })).slice(-1);
   const icons = Object.fromEntries(rows(mixed).map((row) => [row.key, row.props.children[0]]));
   assert.equal(icons.w3.props.projectName, "dev-setup-dashboard");
-  assert.deepEqual(icons.w4, { type: "span", props: { className: "size-4 shrink-0" }, key: undefined });
+  assert.deepEqual(icons.w4, { type: "span", props: { className: "size-6 -my-2 shrink-0" }, key: undefined });
+});
+
+test("every icon is 24 px like the sidebar: project and workspace rows, image, initial and empty cell", () => {
+  // The sidebar project row draws ProjectThumbnail with "size-6" (--size 6); the thumbnail's own base
+  // class is size-6 too, so the className argument must not shrink it (twMerge would let "size-4" win).
+  const { layout } = harness();
+  const [projects, workspaces] = groups(layout.SspPaletteResults({ query: "o", onSelect() {} }));
+  assert.equal(projects.props.heading, "Projects");
+  const all = [...rows(projects), ...rows(workspaces)].map((row) => row.props.children[0]);
+  assert.ok(all.length >= 6);
+  for (const icon of all) {
+    const { className } = icon.props;
+    assert.match(className, /(?:^| )size-6(?: |$)/);
+    assert.doesNotMatch(className, /size-[1-5]\b/);
+    // The icon leaves the row height to the text line, so the 24 px box does not grow the row.
+    assert.match(className, /(?:^| )-my-2(?: |$)/);
+  }
+  // A drawn thumbnail keeps the sidebar markup: size-6 box, rounded-sm, image fills it (or initial in text-xs).
+  const thumbnail = all.find((icon) => icon.type === ProjectThumbnail);
+  const drawn = thumbnail.type(thumbnail.props);
+  assert.match(drawn.props.className, /relative size-6 rounded-sm .*size-6 -my-2/);
+  assert.equal(drawn.props.children.props.className, "size-full object-cover");
+  // Row text stays after the icon, in the same cell order as before: icon, name, trailing detail.
+  const [icon, name] = rows(workspaces)[0].props.children;
+  assert.equal(icon, all[rows(projects).length]);
+  assert.equal(name.props.className, "min-w-0 flex-1 truncate font-normal");
 });
 
 test("icons resolve like the sidebar: local icon, then the owner avatar, else the coloured initial", () => {
@@ -199,7 +226,8 @@ test("icons resolve like the sidebar: local icon, then the owner avatar, else th
   // Neither: the project's initial in its colour, as in the sidebar.
   const initial = draw("custom", "w6");
   assert.equal(initial.props.children, "K");
-  assert.match(initial.props.className, /size-4/);
+  assert.match(initial.props.className, /(?:^| )size-6(?: |$)/);
+  assert.doesNotMatch(initial.props.className, /size-4/);
   assert.deepEqual(initial.props.style, { borderColor: "rgba(34, 197, 94, 0.6)", backgroundColor: "rgba(34, 197, 94, 0.15)", color: "#22c55e" });
 });
 

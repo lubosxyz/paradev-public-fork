@@ -1359,6 +1359,12 @@ def _plan_command_palette_cmd_k(data) -> list[tuple[int, bytes, bytes, str]]:
 # which --custom-project-icons rewrites) and ProjectThumbnail with the
 # project's colour, which falls back to the coloured initial when there is no
 # URL or the image fails. A workspace without a project keeps an empty cell.
+# The thumbnail is size-6 (24 px), the class the sidebar project row carries
+# once --size 6 is applied (ProjectThumbnail className "size-6 group-hover:!block").
+# The row keeps its 40 px height: `-my-2` shrinks the icon's layout box to 8 px,
+# so the 20 px text line decides the height and the icon centres in the row's
+# 10 px padding (8 px clear above and below). Classes are the bundle's own CSS
+# (size-6 and -my-2 ship in index-*.css; a new class would not be generated).
 PALETTE_SEARCH_RESULTS_JS = b'''// patch-asar.py --command-palette-workspace-search
 const sspProvider = { id: "ssp-workspace-search", provide: () => [], paletteSearch: SspPaletteSearch };
 function SspPaletteResults({
@@ -1373,7 +1379,7 @@ function SspPaletteResults({
   const setOpen = useFrameStackStore((s) => s.setOpen);
   const { jsx, jsxs, Fragment } = jsxRuntimeExports;
   const byKey = new Map(hostProjects.map((p) => [p.projectKey, p]));
-  const icon = (w, p = byKey.get(w.projectId)) => p ? jsx(ProjectThumbnail, { projectName: p.name, iconUrl: resolveProjectIconUrl(p), color: p.color, className: "size-4" }) : jsx("span", { className: "size-4 shrink-0" });
+  const icon = (w, p = byKey.get(w.projectId)) => p ? jsx(ProjectThumbnail, { projectName: p.name, iconUrl: resolveProjectIconUrl(p), color: p.color, className: "size-6 -my-2" }) : jsx("span", { className: "size-6 -my-2 shrink-0" });
   const tokens = query.trim().toLowerCase().split(/\\s+/);
   const projects = [...new Map(workspaces.filter((w) => w.projectId && tokens.every((t) => w.projectName.toLowerCase().includes(t))).map((w) => [w.projectId, w])).values()].slice(0, 5);
   const matches = workspaces.map((w) => [sspScore(w, tokens), w]).filter(([score]) => score > 0).sort((a, b) => b[0] - a[0]).slice(0, 8).map(([, w]) => w);
@@ -1402,12 +1408,24 @@ function SspProjectFrame({
   return jsxRuntimeExports.jsx(V2WorkspaceList, { query: useCommandPaletteQuery().trim(), projectId });
 }
 '''
-# Generation 1 of the results (LUBOS-2290) drew a plain <img> of the
-# workspace's projectIconUrl or a folder glyph, and no icon on workspace rows.
-# useAccessibleV2Workspaces resolves that URL without projectKey, so under
-# --custom-project-icons the GitHub fallback pointed at
-# superset-icon://projects/undefined. These edits turn a generation 1 region
-# into the current one (RegionRewrite.upgrades).
+# Earlier generations of the results region. Generation 1 (LUBOS-2290) drew a
+# plain <img> of the workspace's projectIconUrl or a folder glyph, and no icon
+# on workspace rows. useAccessibleV2Workspaces resolves that URL without
+# projectKey, so under --custom-project-icons the GitHub fallback pointed at
+# superset-icon://projects/undefined. Generation 2 (LUBOS-2406) drew the
+# sidebar's ProjectThumbnail at size-4. These edits turn a generation 1 or 2
+# region into the current one (RegionRewrite.upgrades).
+PALETTE_ICON_V2 = (
+    b"  const icon = (w, p = byKey.get(w.projectId)) => p ? jsx(ProjectThumbnail, { projectName: p.name, "
+    b'iconUrl: resolveProjectIconUrl(p), color: p.color, className: "size-4" }) : '
+    b'jsx("span", { className: "size-4 shrink-0" });\n'
+)
+PALETTE_ICON = (
+    b"  const icon = (w, p = byKey.get(w.projectId)) => p ? jsx(ProjectThumbnail, { projectName: p.name, "
+    b'iconUrl: resolveProjectIconUrl(p), color: p.color, className: "size-6 -my-2" }) : '
+    b'jsx("span", { className: "size-6 -my-2 shrink-0" });\n'
+)
+PALETTE_SEARCH_RESULTS_V2_UPGRADE = ((PALETTE_ICON_V2, PALETTE_ICON),)
 PALETTE_SEARCH_RESULTS_V1_UPGRADE = (
     _insert_after(
         b"  const { all: workspaces } = useAccessibleV2Workspaces();\n",
@@ -1415,10 +1433,7 @@ PALETTE_SEARCH_RESULTS_V1_UPGRADE = (
     ),
     _insert_after(
         b"  const { jsx, jsxs, Fragment } = jsxRuntimeExports;\n",
-        b"  const byKey = new Map(hostProjects.map((p) => [p.projectKey, p]));\n"
-        b"  const icon = (w, p = byKey.get(w.projectId)) => p ? jsx(ProjectThumbnail, { projectName: p.name, "
-        b'iconUrl: resolveProjectIconUrl(p), color: p.color, className: "size-4" }) : '
-        b'jsx("span", { className: "size-4 shrink-0" });\n',
+        b"  const byKey = new Map(hostProjects.map((p) => [p.projectKey, p]));\n" + PALETTE_ICON,
     ),
     (
         b'      w.projectIconUrl ? jsx("img", { src: w.projectIconUrl, alt: "", '
@@ -1470,7 +1485,7 @@ PALETTE_SEARCH_REGIONS = (
         end=b"function useDestroyDialogState({\n",
         length=63723,
         stock_sha256="5f99eb751101fa5b44b48aa06b0f9e2cbd4e63c30514d8cc8cfcf7d7f9c0c4cc",
-        patched_sha256="7bfae0c354d57472676ee07c88387c76ad82753b23884ed91368267507bdab62",
+        patched_sha256="4a37960c0c055c407f867651f4ab538cd7c68997b831e9db45163ab5c0e2e5ac",
         edits=(
             (b"function V2WorkspaceList({\n  query\n}) {\n", b"function V2WorkspaceList({\n  query,\n  projectId\n}) {\n"),
             (
@@ -1484,8 +1499,12 @@ PALETTE_SEARCH_REGIONS = (
             ),
             (b"function CommandPaletteTrigger() {\n", PALETTE_SEARCH_RESULTS_JS + b"function CommandPaletteTrigger() {\n"),
         ),
-        # Generation 1 (LUBOS-2290, plain <img> or folder glyph, live as 9a4d446d…).
-        upgrades=(("b7fdc42d1f7ca39415c90b0e2e3e1e2f43d606c5f078a466dd0b816efff0aa81", PALETTE_SEARCH_RESULTS_V1_UPGRADE),),
+        # Generation 1 (LUBOS-2290, plain <img> or folder glyph) and generation 2
+        # (LUBOS-2406, ProjectThumbnail at size-4, live as 61695378…).
+        upgrades=(
+            ("b7fdc42d1f7ca39415c90b0e2e3e1e2f43d606c5f078a466dd0b816efff0aa81", PALETTE_SEARCH_RESULTS_V1_UPGRADE),
+            ("7bfae0c354d57472676ee07c88387c76ad82753b23884ed91368267507bdab62", PALETTE_SEARCH_RESULTS_V2_UPGRADE),
+        ),
     ),
     RegionRewrite(
         label="command palette: search helpers",

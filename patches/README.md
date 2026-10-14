@@ -451,7 +451,7 @@ compact header, and rebase the failing optional family per `REBASE.md`.
 
 ### Command palette on Cmd+K and workspace search (opt-in, desktop-v1.37.0)
 
-Two optional flags (LUBOS-2290). Like every new optional flag they stay
+Two optional flags (LUBOS-2290, icons LUBOS-2406, icon size LUBOS-2414). Like every new optional flag they stay
 **outside** the approved set (`approved-flags.json`, `PATCH_OPTIONS`, the
 re-apply after an update) until Lubos confirms them visually; until then they
 are applied by hand on top of the approved set:
@@ -500,27 +500,43 @@ like the v2 sidebar project row (LUBOS-2406): the host project by
 `projectKey` from `useHostProjects`, `resolveProjectIconUrl` (the local
 `icon_url`, i.e. `superset-icon://projects/<id>?v=<buster>`, else the GitHub
 owner avatar, which `--custom-project-icons` serves locally) and the sidebar's
-`ProjectThumbnail` at `size-4` with the project colour. Without a URL, or when
-the image fails, it is the project's initial in that colour, as in the sidebar.
-A workspace without a project (Sessions) keeps an empty icon cell.
+`ProjectThumbnail` at `size-6` (24 px) with the project colour. Without a URL,
+or when the image fails, it is the project's initial in that colour, as in the
+sidebar. A workspace without a project (Sessions) keeps an empty icon cell of
+the same size. `size-6` is the class the sidebar project row carries once
+`--size 6` is applied (`ProjectThumbnail … className: "size-6
+group-hover:!block"`); the palette icon is fixed at that value and does not
+follow a different `--size`. The row keeps its 40 px height and its 10 px gap
+to the text: the icon adds `-my-2`, which shrinks its layout box to 8 px, so
+the 20 px text line decides the row height and the 24 px icon centres in the
+10 px row padding (8 px clear above and below, the sidebar row leaves 4 px).
+Both classes are in the bundle's `index-*.css`; a class the stylesheet lacks
+would not be generated, so no other utility is used.
 
-Generation 2 (icons) replaces generation 1 of LUBOS-2290 (a plain `<img>` of
-the workspace's `projectIconUrl` or a folder glyph; that URL is resolved
-without `projectKey`, so under `--custom-project-icons` the avatar fallback
-pointed at `superset-icon://projects/undefined`). A plain re-run of the command
-above upgrades a generation 1 bundle in place: region 2 matches the pinned
-generation 1 digest (`RegionRewrite.upgrades`), its padding is trimmed, four
-exact edits are applied and the result must hit the pinned generation 2
-digest, so the plan has one write (`command palette: workspace and project
-results`), no other region or family changes, no `--revert` of the set is
-needed, and `--revert` afterwards returns the generation 1 SHA-256.
+Region 2 has three generations. Generation 1 (LUBOS-2290, digest `b7fdc42d…`)
+drew a plain `<img>` of the workspace's `projectIconUrl` or a folder glyph;
+that URL is resolved without `projectKey`, so under `--custom-project-icons`
+the avatar fallback pointed at `superset-icon://projects/undefined`.
+Generation 2 (LUBOS-2406, `7bfae0c3…`, PR #9) drew the sidebar's
+`ProjectThumbnail` at `size-4`. Generation 3 (LUBOS-2414, `4a37960c…`) is the
+`size-6` icon above. A plain re-run of the command above upgrades a generation
+1 or 2 bundle in place: region 2 matches a pinned earlier digest
+(`RegionRewrite.upgrades`), its padding is trimmed, the exact edits of that
+edge are applied (generation 2 → 3: the two icon class strings; generation 1
+→ 3: the four generation 1 edits with the current icon) and the result must
+hit the pinned generation 3 digest. The plan has one write (`command palette:
+workspace and project results`), no other region or family changes, no
+`--revert` of the set is needed, and `--revert` afterwards returns the SHA-256
+of the generation the run started from. Any other bytes, including a
+partially upgraded or tampered generation, fail closed (`neither stock nor
+patched`) before a write.
 
 It is a region rewrite (§Region rewrite) of three hash-pinned regions:
 
 | # | chunk | region | bytes | free after rewrite | role |
 |---|---|---|---|---|---|
 | 1 | `AppMenuButton-*.js` | `useActiveCommands` … `SubPaletteView` | 2,758 | 58 | `CommandListView` renders each provider's optional `paletteSearch` before the ranked sections |
-| 2 | `layout-*.js` | `ThemeFrame` … `useDestroyDialogState` | 63,723 | 65 | `sspProvider` registered in `registerAllModules`, `V2WorkspaceList({ query, projectId })` → `projectFilters`, `SspPaletteResults` (with the project icons), `SspProjectFrame` |
+| 2 | `layout-*.js` | `ThemeFrame` … `useDestroyDialogState` | 63,723 | 53 | `sspProvider` registered in `registerAllModules`, `V2WorkspaceList({ query, projectId })` → `projectFilters`, `SspPaletteResults` (with the project icons), `SspProjectFrame` |
 | 3 | `layout-*.js` | `ProjectHeader` (v1 sidebar) | 12,292 | 383 | room only: `SspPaletteSearch` (mount guard), `sspScore` |
 
 No other family writes inside these regions (`_require_disjoint` refuses an
@@ -530,14 +546,17 @@ defines every name the injected code reads and that no injected name
 `sspScore`) occurs in the chunk outside its regions. Tests:
 `tests/test_superset_palette_patch.py` (real 1.37.0 fixtures
 `superset-1.37.0-palette-r{1,2,3}[.patched].js`,
-`superset-1.37.0-palette-r2.v2-patched.js` (current) and
+`superset-1.37.0-palette-r2.v3-patched.js` (current; `.patched.js` is generation 1,
+`.v2-patched.js` generation 2) and
 `superset-1.37.0-hotkeys-registry[.patched].js`, fail-closed states,
-apply / re-run / revert on a real ASAR layout, the generation 1 → 2 upgrade and
-its revert, `LIVE_HOST_ONLY`: the stock snapshot plans the five writes, a
-re-run on the installed bundle leaves whole chunks that pass `node --check`)
+apply / re-run / revert on a real ASAR layout, the generation 1 → 3 and 2 → 3
+upgrades with partial and tampered inputs and their reverts, `LIVE_HOST_ONLY`:
+the stock snapshot plans the five writes, the installed sidebar project row and
+the palette icon use the same size class that the stylesheet ships, a re-run on
+the installed bundle leaves whole chunks that pass `node --check`)
 and `tests/palette_search.test.mjs` (the patched bytes rendered with stubbed
 React and the real 1.37.0 `ProjectThumbnail` and `resolveProjectIconUrl`
-chunks: filter, ranking, project icons with local icon / avatar /
+chunks: filter, ranking, project icons at 24 px with local icon / avatar /
 `--custom-project-icons` / coloured initial, workspace switch, project
 drill-down, empty query, hotkey swap).
 
