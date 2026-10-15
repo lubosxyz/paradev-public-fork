@@ -38,7 +38,7 @@ function DashboardSidebarProjectSection({
   } = useDashboardSidebarProjectSectionActions({
     project
   });
-  const ssfV = ssfUseShow(flattenedCollapsedWorkspaces);
+  const ssfV = ssfUseShow(flattenedCollapsedWorkspaces, project.id);
   if (!ssfV && !isSidebarCollapsed && !isDeleteDialogOpen && !importableWorktrees && !isRenaming) return null;
   const totalWorkspaceCount = flattenedCollapsedWorkspaces.length;
   const deleteProjectDialog = canDeleteProject && jsxRuntimeExports.jsx(DeleteProjectDialog, { open: isDeleteDialogOpen, onOpenChange: setIsDeleteDialogOpen, projectId: project.id, projectName: project.name, hostIds: projectHostIds, onDeleted: leaveProjectIfActive, onHide: hideProject });
@@ -53,7 +53,7 @@ function DashboardSidebarProjectSection({
     ] }) });
   }
   return jsxRuntimeExports.jsxs("div", { className: "mt-1 first:mt-0", children: [
-    jsxRuntimeExports.jsx(DashboardSidebarProjectContextMenu, { projectId: project.id, onCreateSection: handleNewSection, onImportWorktrees: handleImportWorktrees, onOpenInFinder: handleOpenInFinder, onOpenSettings: handleOpenSettings, onHide: hideProject, onDelete: canDeleteProject ? openDeleteDialog : null, onRename: startRename, children: jsxRuntimeExports.jsx(DashboardSidebarProjectRow, { projectName: project.name, iconUrl: project.iconUrl, projectColor: project.color, isCollapsed: project.isCollapsed && ssfV < 2, isRenaming, renameValue, onRenameValueChange: setRenameValue, onSubmitRename: submitRename, onCancelRename: cancelRename, onStartRename: startRename, onToggleCollapse: () => onToggleCollapse(project.id), onNewWorkspace: handleNewWorkspace, ...dragHandleAttributes ?? {}, ...dragHandleListeners ?? {} }) }),
+    jsxRuntimeExports.jsx(DashboardSidebarProjectContextMenu, { projectId: project.id, onCreateSection: handleNewSection, onImportWorktrees: handleImportWorktrees, onOpenInFinder: handleOpenInFinder, onOpenSettings: handleOpenSettings, onHide: hideProject, onDelete: canDeleteProject ? openDeleteDialog : null, onRename: startRename, children: jsxRuntimeExports.jsx(DashboardSidebarProjectRow, { projectName: project.name, iconUrl: project.iconUrl, projectColor: project.color, isCollapsed: ssfV > 1 ? ssfV > 2 : project.isCollapsed, isRenaming, renameValue, onRenameValueChange: setRenameValue, onSubmitRename: submitRename, onCancelRename: cancelRename, onStartRename: startRename, onToggleCollapse: () => ssfV > 1 ? ssfFlip(project.id) : onToggleCollapse(project.id), onNewWorkspace: handleNewWorkspace, ...dragHandleAttributes ?? {}, ...dragHandleListeners ?? {} }) }),
     jsxRuntimeExports.jsx(AnimatePresence, { initial: false, children: !isDraggingProject && jsxRuntimeExports.jsx(motion.div, { initial: {
       height: 0,
       opacity: 0
@@ -66,7 +66,7 @@ function DashboardSidebarProjectSection({
     }, transition: {
       duration: 0.15,
       ease: "easeOut"
-    }, className: "overflow-hidden", children: jsxRuntimeExports.jsx(DashboardSidebarExpandedProjectContent, { containerId: project.id, projectId: project.id, isCollapsed: project.isCollapsed && ssfV < 2, workspaceShortcutLabels, onWorkspaceHover, onDeleteSection: deleteSection, onRenameSection: renameSection, onToggleSectionCollapse: toggleSectionCollapsed }) }) }),
+    }, className: "overflow-hidden", children: jsxRuntimeExports.jsx(DashboardSidebarExpandedProjectContent, { containerId: project.id, projectId: project.id, isCollapsed: ssfV > 1 ? ssfV > 2 : project.isCollapsed, workspaceShortcutLabels, onWorkspaceHover, onDeleteSection: deleteSection, onRenameSection: renameSection, onToggleSectionCollapse: toggleSectionCollapsed }) }) }),
     importWorktreesDialog,
     deleteProjectDialog
   ] });
@@ -89,7 +89,7 @@ function DashboardSidebarSessionsSection({
     activeWorkspaceHome
   } = useDashboardSidebarDnd();
   const isSectionCollapsed = useSidebarSectionsCollapseStore((s) => s.collapsed.sessions);
-  const ssfV = ssfUseShow(sessionWorkspaces);
+  const ssfV = ssfUseShow(sessionWorkspaces, "sessions");
   if (!ssfV && !isCollapsed) return null;
   const collapsedDropZoneEligible = !isCollapsed && isSectionCollapsed && sessionItems.length === 0 && activeWorkspaceHome === SESSIONS_CONTAINER;
   if (isCollapsed) {
@@ -105,7 +105,7 @@ function DashboardSidebarSessionsSection({
       {
         id: "4cEClj"
       }
-    ), section: "sessions", children: jsxRuntimeExports.jsxs(Tooltip, { delayDuration: 700, children: [
+    ), section: "sessions", ssfV, children: jsxRuntimeExports.jsxs(Tooltip, { delayDuration: 700, children: [
       jsxRuntimeExports.jsx(TooltipTrigger, { asChild: true, children: jsxRuntimeExports.jsx("button", { type: "button", "aria-label": _t(
         
         {
@@ -120,7 +120,7 @@ function DashboardSidebarSessionsSection({
         id: "YkvmF4"
       } }) })
     ] }) }),
-    jsxRuntimeExports.jsx(DashboardSidebarExpandedProjectContent, { containerId: SESSIONS_CONTAINER, projectId: null, isCollapsed: isSectionCollapsed && ssfV < 2, topLevelIndentation: "top-level", groupedIndentation: "workspace", workspaceShortcutLabels, onWorkspaceHover, onDeleteSection, onRenameSection, onToggleSectionCollapse }),
+    jsxRuntimeExports.jsx(DashboardSidebarExpandedProjectContent, { containerId: SESSIONS_CONTAINER, projectId: null, isCollapsed: ssfV > 1 ? ssfV > 2 : isSectionCollapsed, topLevelIndentation: "top-level", groupedIndentation: "workspace", workspaceShortcutLabels, onWorkspaceHover, onDeleteSection, onRenameSection, onToggleSectionCollapse }),
     collapsedDropZoneEligible && jsxRuntimeExports.jsx(SidebarDropZone$1, { dropZoneId: dropZoneId(SESSIONS_CONTAINER), label: _t(
       
       {
@@ -147,6 +147,10 @@ function SsfStatusChip({
     ] }) }),
     jsxRuntimeExports.jsx(TooltipContent, { side: "bottom", children: label })
   ] });
+}
+function ssfSubscribe(listener) {
+  ssfListeners.add(listener);
+  return () => ssfListeners.delete(listener);
 }
 function DashboardSidebarProjectsFilterInput({
   query,
@@ -434,4 +438,4 @@ function DashboardSidebarWorkspacesHeader({
     ] })
   ] });
 }
-                                                                                                                                                                                                                                                              
+                                                 

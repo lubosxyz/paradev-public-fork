@@ -145,7 +145,7 @@ function DashboardSidebarBulkActions({
     }
   ) });
 }
-// patch-asar.py --sidebar-status-filter v3
+// patch-asar.py --sidebar-status-filter v5
 let ssfMask = 0;
 let ssfQ = "";
 let ssfHide = new Set();
@@ -158,6 +158,7 @@ try {
 } catch {
 }
 function ssfEmit() {
+  if (!ssfMask && !ssfQ) ssfShut.clear();
   for (const listener of [...ssfListeners]) listener();
 }
 function ssfToggle(bit, solo) {
@@ -168,4 +169,4 @@ function ssfToggle(bit, solo) {
   }
   ssfEmit();
 }
-                                                     
+           

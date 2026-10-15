@@ -11,7 +11,8 @@ function SortableWorkspaceItem({
   isDragPlaceholder = false,
   isSelected = false,
   onSelectionClick,
-  pinnedContext
+  pinnedContext,
+  ssfK
 }) {
   const {
     isChildDragDisabled
@@ -28,9 +29,9 @@ function SortableWorkspaceItem({
     disabled: disabled || isChildDragDisabled
   });
   const row = reactExports.useMemo(() => jsxRuntimeExports.jsx(DashboardSidebarWorkspaceItem, { workspace, onHoverCardOpen, shortcutLabel, isInSection, indentation, isSelected, onSelectionClick, pinnedContext }), [workspace, onHoverCardOpen, shortcutLabel, isInSection, indentation, isSelected, onSelectionClick, pinnedContext]);
-  const ssfV = ssfUseShow([workspace]);
+  const ssfV = ssfUseShow([workspace], ssfK);
   if (!ssfV) return null;
-  collapsed &&= ssfV < 2;
+  if (ssfV > 1) collapsed = ssfV > 2;
   return jsxRuntimeExports.jsx("div", { ref: setNodeRef, style: {
     transform: CSS.Translate.toString(transform),
     transition,
@@ -55,7 +56,7 @@ function DashboardSidebarPinnedSection({
   const isDraggingWorkspace = activeType === "workspace";
   const emptyAtPickup = reactExports.useMemo(() => isDraggingWorkspace && pinnedItems.length === 0, [isDraggingWorkspace]);
   const isSectionCollapsed = useSidebarSectionsCollapseStore((s) => s.collapsed.pinned);
-  const ssfV = ssfUseShow(pinnedWorkspaces);
+  const ssfV = ssfUseShow(pinnedWorkspaces, "pinned");
   if (!ssfV && !isCollapsed) return null;
   if (isCollapsed) {
     if (pinnedWorkspaces.length === 0) return null;
@@ -81,8 +82,8 @@ function DashboardSidebarPinnedSection({
       {
         id: "kNiQp6"
       }
-    ), section: "pinned" }),
-    (!isSectionCollapsed || ssfV > 1) && jsxRuntimeExports.jsx(SortableContext, { items: pinnedItems, strategy: verticalListSortingStrategy, children: pinnedItems.map((id) => {
+    ), section: "pinned", ssfV }),
+    (ssfV > 1 ? ssfV < 3 : !isSectionCollapsed) && jsxRuntimeExports.jsx(SortableContext, { items: pinnedItems, strategy: verticalListSortingStrategy, children: pinnedItems.map((id) => {
       const parsed = parseId(id);
       if (!parsed || parsed.type !== "workspace") return null;
       const workspace = workspacesById.get(parsed.realId);
@@ -378,7 +379,7 @@ function SortableSectionHeader({
     startRename();
     clearPendingSectionRename(section.id);
   }, [clearPendingSectionRename, pendingRenameSectionId, section.id, startRename]);
-  const ssfV = ssfUseShow(section.workspaces);
+  const ssfV = ssfUseShow(section.workspaces, section.id);
   if (!ssfV) return null;
   return jsxRuntimeExports.jsx("div", { ref: setNodeRef, style: {
     transform: CSS.Translate.toString(transform),
@@ -388,12 +389,13 @@ function SortableSectionHeader({
   }, ...getBlockedDragProps(isChildDragDisabled), children: jsxRuntimeExports.jsx(DashboardSidebarSectionContextMenu, { color: section.color, onRename: startRename, onSetColor: (color) => setSectionColor(section.id, color), onDelete: () => onDelete(section.id), onHide, children: jsxRuntimeExports.jsx(DashboardSidebarGroupHeader, { label: isRenaming ? jsxRuntimeExports.jsx(RenameInput, { value: renameValue, onChange: setRenameValue, onSubmit: handleSubmitRename, onCancel: () => {
     setRenameValue(section.name);
     setIsRenaming(false);
-  }, className: "-ml-1 h-5 w-full min-w-0 border-none bg-transparent px-1 py-0 text-[13px] font-medium text-muted-foreground outline-none" }) : jsxRuntimeExports.jsx("span", { className: "truncate", children: section.name }), isCollapsed: section.isCollapsed && ssfV < 2, isEditing: isRenaming, isDraggable: !isChildDragDisabled, indentation, onToggleCollapse: () => onToggleCollapse(section.id), actions: jsxRuntimeExports.jsx(DashboardSidebarSectionActionsDropdown, { color: section.color, onRename: startRename, onSetColor: (color) => setSectionColor(section.id, color), onDelete: () => onDelete(section.id), onHide }), ...attributes, ...listeners }) }) });
+  }, className: "-ml-1 h-5 w-full min-w-0 border-none bg-transparent px-1 py-0 text-[13px] font-medium text-muted-foreground outline-none" }) : jsxRuntimeExports.jsx("span", { className: "truncate", children: section.name }), isCollapsed: ssfV > 1 ? ssfV > 2 : section.isCollapsed, isEditing: isRenaming, isDraggable: !isChildDragDisabled, indentation, onToggleCollapse: () => ssfV > 1 ? ssfFlip(section.id) : onToggleCollapse(section.id), actions: jsxRuntimeExports.jsx(DashboardSidebarSectionActionsDropdown, { color: section.color, onRename: startRename, onSetColor: (color) => setSectionColor(section.id, color), onDelete: () => onDelete(section.id), onHide }), ...attributes, ...listeners }) }) });
 }
 function SsfStatusChips({
   pinnedWorkspaces,
   sessionWorkspaces,
-  groups
+  groups,
+  ssfF
 }) {
   const store = reactExports.useContext(StatusStoreContext);
   const workspaces = reactExports.useMemo(() => [...new Map([...pinnedWorkspaces, ...sessionWorkspaces, ...groups.flatMap((project) => getProjectChildrenWorkspaces(project.children))].map((workspace) => [workspace.id, workspace])).values()], [pinnedWorkspaces, sessionWorkspaces, groups]);
@@ -401,6 +403,7 @@ function SsfStatusChips({
   reactExports.useEffect(() => {
     ssfClear(store, counts);
   });
+  ssfUseKeys(ssfF);
   const chips = SSF_CHIPS.map(([bit, name, hue, pr], index) => ({ bit, name, hue, pr, mask, count: counts[index] })).filter((chip) => chip.count || mask & chip.bit);
   return chips.length > 0 && jsxRuntimeExports.jsx("div", { role: "group", "aria-label": "Workspace status filter", className: "grid shrink-0 gap-1 px-2 pb-2", style: { gridTemplateColumns: `repeat(${chips.length}, minmax(0, 1fr))` }, children: chips.map((chip) => jsxRuntimeExports.jsx(SsfStatusChip, chip, chip.bit)) });
 }
@@ -479,8 +482,8 @@ function DashboardSidebarExpandedProjectContent({
       return jsxRuntimeExports.jsx(SortableWorkspaceItem, { sortableId: String(id), workspace, accentColor: group?.color, isInSection, indentation: isInSection ? groupedIndentation : topLevelIndentation, onHoverCardOpen: onWorkspaceHover, shortcutLabel: workspaceShortcutLabels.get(parsed.realId), isSelected: canBulkSelect && isWorkspaceSelected(parsed.realId), onSelectionClick: canBulkSelect ? (event) => selectWorkspaceFromEvent(event, {
         workspaceId: parsed.realId,
         projectId: containerId,
-        orderedWorkspaceIds: ssfRange(ssfStore, selectableWorkspaceIds, isWorkspaceSelected, workspacesById)
-      }) : void 0, collapsed: isInCollapsedSection, isDragPlaceholder: inDraggedSection, disabled: isInCollapsedSection }, String(id));
+        orderedWorkspaceIds: ssfRange(ssfStore, selectableWorkspaceIds, isWorkspaceSelected, workspacesById, groupInfo)
+      }) : void 0, collapsed: isInCollapsedSection, ssfK: group?.sectionId, isDragPlaceholder: inDraggedSection, disabled: isInCollapsedSection }, String(id));
     }) }),
     dropZoneEligible && jsxRuntimeExports.jsx(SidebarDropZone$1, { dropZoneId: dropZoneId(containerId), label: _t(
       
@@ -490,4 +493,4 @@ function DashboardSidebarExpandedProjectContent({
     ) })
   ] }) }) }) });
 }
-                                                                                                                                                                                                         
+                               

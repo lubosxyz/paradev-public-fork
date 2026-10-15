@@ -85,4 +85,9 @@ const SSF_CHIPS = [[1, "Needs input", "yellow"], [2, "Failed", "red"], [4, "Revi
 function ssfBits(status, pr) {
   return (status === "permission" ? 1 : status === "failed" ? 2 : status === "review" ? 4 : status === "working" ? 8 : 0) | (pr === "merged" ? 32 : pr === "open" || pr === "draft" || pr === "queued" ? 16 : 0);
 }
-                                                                                                                                                                    
+const ssfShut = new Set();
+function ssfFlip(key) {
+  ssfShut.delete(key) || ssfShut.add(key);
+  ssfEmit();
+}
+                                                       

@@ -205,6 +205,7 @@ function DashboardSidebar({
   const hiringCard = useHiringCard({
     surface: "v2"
   });
+  const ssfF = [displayedGroups, workspacesListCollapsed, toggleProjectCollapsed, toggleSectionCollapsed, sessionChildren, pinnedWorkspaces, sessionWorkspaces, statusWorkspaces];
   const handleReorderProjects = reactExports.useCallback((reordered) => {
     setProjectOrder(reordered);
     reorderProjects(reordered);
@@ -215,8 +216,8 @@ function DashboardSidebar({
       jsxRuntimeExports.jsx(DashboardSidebarActiveWorkspaceSwitcher, { workspaces: switcherWorkspaces, activeWorkspaceId: activeV2WorkspaceId }),
       jsxRuntimeExports.jsx(DashboardSidebarHoverCardOverlay, { children: jsxRuntimeExports.jsx(DashboardSidebarDndProvider, { projects: displayedGroups, pinnedWorkspaces, sessionChildren, isSidebarCollapsed: isCollapsed, workspaceShortcutLabels, onReorderProjects: handleReorderProjects, isProjectDragDisabled, isChildDragDisabled, children: jsxRuntimeExports.jsxs("div", { className: "flex h-full flex-col border-r border-border bg-sidebar dark:bg-muted/35", children: [
         jsxRuntimeExports.jsx(DashboardSidebarHeader, { isCollapsed }),
-        !isCollapsed && jsxRuntimeExports.jsx(SsfSearch, { query: projectFilterQuery, onQueryChange: setProjectFilterQuery, pinnedWorkspaces, sessionWorkspaces, groups }),
-        !isCollapsed && jsxRuntimeExports.jsx(SsfStatusChips, { pinnedWorkspaces, sessionWorkspaces, groups: orderedGroups }),
+        !isCollapsed && jsxRuntimeExports.jsx(SsfSearch, { query: projectFilterQuery, onQueryChange: setProjectFilterQuery, pinnedWorkspaces, sessionWorkspaces, groups, ssfF }),
+        !isCollapsed && jsxRuntimeExports.jsx(SsfStatusChips, { pinnedWorkspaces, sessionWorkspaces, groups: orderedGroups, ssfF }),
         jsxRuntimeExports.jsxs(OverflowFadeContainer, { fadeEdges: ["top", "bottom"], className: "flex-1 overflow-y-auto hide-scrollbar", children: [
           (isCollapsed || !workspacesListCollapsed) && jsxRuntimeExports.jsx(DashboardSidebarPinnedSection, { pinnedWorkspaces, isCollapsed, onWorkspaceHover: refreshWorkspacePullRequest }),
           jsxRuntimeExports.jsx(DashboardSidebarCloudSection, { isCollapsed, onWorkspaceHover: refreshWorkspacePullRequest }),
@@ -268,4 +269,4 @@ function DashboardSidebar({
     ] }) }) })
   ] });
 }
-                                                                                                                                                                                                                                                                                                                                 
+                                                                                                                                  

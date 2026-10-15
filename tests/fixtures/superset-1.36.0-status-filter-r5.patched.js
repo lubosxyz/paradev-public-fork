@@ -203,7 +203,8 @@ function SsfSearch({
   onQueryChange,
   pinnedWorkspaces,
   sessionWorkspaces,
-  groups
+  groups,
+  ssfF
 }) {
   reactExports.useLayoutEffect(() => {
     const q = query.trim().toLowerCase();
@@ -214,20 +215,17 @@ function SsfSearch({
     return () => {
       ssfQ = "";
       ssfHide = new Set();
-      ssfEmit();
     };
   }, [query, pinnedWorkspaces, sessionWorkspaces, groups]);
-  return jsxRuntimeExports.jsx("div", { className: "flex shrink-0 px-2 pb-2", children: jsxRuntimeExports.jsx(DashboardSidebarProjectsFilterInput, { query, isExpanded: true, onExpandedChange: () => {
+  return jsxRuntimeExports.jsxs("div", { className: "flex shrink-0 gap-1 px-2 pb-2", children: [jsxRuntimeExports.jsx(DashboardSidebarProjectsFilterInput, { query, isExpanded: true, onExpandedChange: () => {
   }, onQueryChange: (value) => {
     const sections = useSidebarSectionsCollapseStore.getState();
     if (value.trim() && sections.collapsed.workspaces) sections.toggle("workspaces");
     onQueryChange(value);
-  } }) });
+  } }), jsxRuntimeExports.jsx(SsfFold, { ssfF })] });
 }
-let ssfSeen = [];
-function ssfClear(store, counts) {
-  const [was, seen] = ssfSeen, gone = store && was === store ? ssfMask & SSF_CHIPS.reduce((b, [bit], i) => seen[i] && !counts[i] ? b | bit : b, 0) : 0;
-  ssfSeen = [store, counts];
-  if (gone) ssfToggle(gone, false);
+function ssfOpen(folds) {
+  const shut = new Set();
+  return folds.some(([key, stored, , parent]) => (ssfMask || ssfQ ? ssfShut.has(key) : stored) ? !shut.add(key) : !shut.has(parent));
 }
-      
+                                                

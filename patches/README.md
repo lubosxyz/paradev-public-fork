@@ -203,25 +203,56 @@ The filter covers PROJECTS, SESSIONS and PINNED. A project, folder or section
 with no matching workspace disappears. The sidebar builders
 (`buildDashboardSidebarProjects`, `buildDashboardSidebarSessions`,
 `partitionSidebarWorkspacesByPinned`) are pure and have no status access, so
-the filter is applied at render level. A hook, `ssfUseShow(workspaces)`,
+the filter is applied at render level. A hook, `ssfUseShow(workspaces, group)`,
 subscribes to the store entries of those workspaces and returns `0` when none
 of them matches (or all are hidden by the search), `1` when no chip and no
-search is active, and `2` when one is. Each component returns `null` on `0`,
-always after all of its own hooks.
+search is active, and `2` (open) or `3` (collapsed by the filter, see below)
+when one is. Each component returns `null` on `0`, always after all of its own
+hooks.
 
-**Opening collapsed groups.** On `2` a collapsed project, folder, PINNED or
-SESSIONS section renders open, and so do the rows of a collapsed folder. This
-happens only at render level: the stored collapse state is not touched, so
-everything is collapsed again once the chips and the search are off. While a
-group is forced open its chevron toggles the stored state invisibly. The
-collapsed icon rail keeps the stored state.
+**Opening collapsed groups (v5).** While a chip or the search is active every
+group has a temporary filter collapse override, kept in memory only
+(`ssfShut`, a set of group keys: the project id, the folder id, `"pinned"`,
+`"sessions"`). It starts empty, so on `2` a collapsed project, folder, PINNED
+or SESSIONS section renders open, and so do the rows of a collapsed folder.
+The group's chevron (click, Enter or Space on PINNED and SESSIONS) flips its
+override (`ssfFlip`): the group visibly collapses and reopens (`3` / `2`), and
+the stored collapse state (`sidebar-workspaces-collapse`, the project and
+folder flags) is never written. When the last chip goes off and the search is
+empty, `ssfEmit` drops every override, so the stored state applies again and
+whatever was collapsed before is collapsed again; the next filter starts open.
+Changing chips or the query while a filter stays active keeps the overrides,
+and so does a sidebar data refresh (the search effect's cleanup does not
+notify). Without a filter (`1`) every chevron writes the stored state exactly
+as upstream does. The PROJECTS and cloud section headers and the collapsed
+icon rail keep the stored state.
+
+**Collapse all / Expand all (v5).** A small icon button at the right end of
+the search row (`SsfFold`, always shown in the expanded sidebar; the icon rail
+is unchanged) collapses or expands every group on screen at once: PINNED,
+SESSIONS, each project and each folder (in SESSIONS and in the projects). If
+any group on screen is open, a
+click collapses them all (icon chevrons-down-up, tooltip and `aria-label`
+"Collapse all"); otherwise it expands them all (chevrons-up-down, "Expand
+all"). "On screen" means what the sidebar renders: a group the filter or the
+search hides does not count, PINNED and the projects count only while the
+PROJECTS list is open, and a folder counts only inside an open project or an
+open SESSIONS (`ssfFolds`, `ssfOpen`). Without a filter the click writes the stored state,
+exactly like clicking the chevron of every group whose state differs (the
+sections store `toggle`, the upstream project and folder toggles), so it
+persists as before. With a chip (also an Option-click solo chip) or a search
+it only sets the in-memory overrides of those groups (`ssfShut`), the same
+contract as a single chevron: the stored state stays untouched and the
+overrides go when the filter does. The PROJECTS and cloud sections are not
+groups of this button.
 
 A project section stays while its delete or import dialog or its rename is
 open, so a status change cannot close a dialog mid-confirm.
 
 The chips never hide a selected workspace, and a Shift range spans only the
 rows you can see (`ssfRange`, which reads each id's pull request from
-`workspacesById`). Upstream cuts every selection to the ids it was
+`workspacesById` and leaves out the rows of a folder collapsed by the filter,
+through `groupInfo`). Upstream cuts every selection to the ids it was
 given (`applyWorkspaceSelection` → `selectedIdsInVisualOrder`). So a bulk
 delete or move can never reach a workspace the filter hides, including one
 selected before the filter changed or one whose status changed afterwards.
@@ -235,6 +266,21 @@ Known limitations:
   Typing into the search expands PROJECTS once by toggling its stored state.
 - The PROJECTS header no longer renders its own filter input; an upstream
   shortcut that opens that input does nothing (use the sticky search row).
+- A filter collapse override lives only while the filter is on and only in
+  this window: it is not persisted, and a reload starts with every group open
+  again. Revealing a workspace (opening it from elsewhere, a chip hotkey) opens
+  only the stored collapse state, so its row can stay inside a group the
+  filter collapsed.
+- Collapse all reaches the groups the sidebar renders from its own data: the
+  cloud section, hidden projects and a collapsed PROJECTS list are left as
+  they are. Its label follows the shared filter state, the status of every
+  workspace (a chip showing a new group), the sections store and the sidebar
+  data; a change only another component sees (a project row
+  re-rendering on its own) updates the label on the next sidebar render, and
+  a click always decides from the state at that moment.
+- Rows of a folder whose stored state is collapsed stay out of a Shift range
+  even while the filter shows them, as in v4 (upstream builds the range from
+  the stored state).
 - The name check proves that the upstream names exist, not their signatures
   (`matches(text, query)`, the sections store `toggle`, spinner props).
 - The search matches PINNED and SESSIONS rows by the names of visible projects
@@ -261,30 +307,46 @@ Known limitations:
   sidebar"), the chip names too.
 
 Upgrading a host that still runs v1 or a v2 build, v3 before the auto-clear
-(LUBOS-2317, which changed only regions 1 and 5) or the first auto-clear
-(history not bound to the store instance, region 5 only): their digests are
-recognised (`legacy_sha256`), and the patch stops with "an
+(LUBOS-2317, which changed only regions 1 and 5), the first auto-clear
+(history not bound to the store instance, region 5 only), the second
+auto-clear (v3, region 1) or v4 (forced-open groups; v5, LUBOS-2519, changes
+regions 1 to 9 and adds regions 10 to 14): their digests are recognised
+(`legacy_sha256`), and the patch stops with "an
 older --sidebar-status-filter generation is applied". Run `--revert`, then the
 full command again. `--revert` undoes only the last apply (it restores the
 newest backup whose manifest matches the current bundle); if a later run of
 other flags followed the old filter, repeat `--revert` until the error is gone.
+The v4 bytes of the regions v5 changes are kept as
+`tests/fixtures/superset-1.36.0-status-filter-r*.v4-patched.js` (region 3 on
+1.37 as `superset-1.37.0-status-filter-r3.v4-patched.js`, region 9 as
+`superset-1.37.0-status-filter-r9.v4-patched.js`), and
+`SupersetStatusFilterCollapseTest` drives the real patched regions (projects,
+folders, PINNED, SESSIONS, the header, the rail, the Shift range and Collapse
+all) without a filter, under a chip, a solo chip and a search in node.
 
 ### Region rewrite (how ~7 KB of code fits into a length-preserving patch)
 
-The filter needs about 7 KB of new code. No single anchor can absorb that
-much, so the patch rewrites eight whole regions of the same file in place
-(`STATUS_FILTER_REGIONS`):
+The filter needs about 10 KB of new code. No single anchor can absorb that
+much, so the patch rewrites fourteen whole regions of the same file in place
+(`STATUS_FILTER_REGIONS`; region 9 since v4, the chip hotkeys; regions 10 to 14
+since v5, the section header, Collapse all and the chip hotkey target):
 
 | # | Region | Size | Room freed | Holds |
 |---|---|---|---|---|
-| 1 | `SortableWorkspaceItem` → `DashboardSidebarProjectContextMenu` | 22,553 B | 1,449 B + 3 `//` lines | row, PINNED and folder guards and forced open, `ssfRange` call, `SsfStatusChips` |
-| 2 | `DashboardSidebarProjectSection` → `GettingStartedChecklist` | 19,272 B | 1,438 B + 2 `//` lines + the header's search input | project and SESSIONS guards and forced open, search labels, `SsfStatusChip` |
-| 3 | `DashboardSidebar` → `const SEED_FLAG_KEY` | 12,134 B | 588 B | the search row and the chip row |
-| 4 | `DashboardSidebarCloudContextMenu` → `DashboardSidebarCloudPortsButton` | 8,643 B | 1,446 B | `ssfSubscribe` / `ssfMatches` / `ssfRange` / `ssfLabel`, `ssfUseCounts` |
-| 5 | `DashboardSidebarWorkspaceContextMenu` → `useDashboardSidebarWorkspaceItemActions` | 9,227 B | 1,350 B | `SsfSearch` |
-| 6 | `DashboardSidebarProjectContextMenu` → `const DashboardSidebarProjectRow` | 3,767 B | 600 B | `SSF_CHIPS` / `ssfBits` |
-| 7 | `DashboardSidebarWorkspaceHoverCardContent` → `DashboardSidebarHoverCardOverlay` | 8,079 B | 931 B | `ssfUseShow` |
+| 1 | `SortableWorkspaceItem` → `DashboardSidebarProjectContextMenu` | 22,553 B | 1,449 B + 3 `//` lines | row, PINNED and folder guards and filter collapse overrides, `ssfRange` call, `SsfStatusChips` |
+| 2 | `DashboardSidebarProjectSection` → `GettingStartedChecklist` | 19,272 B | 1,438 B + 2 `//` lines + the header's search input | project and SESSIONS guards and filter collapse overrides, search labels, `SsfStatusChip`, `ssfSubscribe` |
+| 3 | `DashboardSidebar` → `const SEED_FLAG_KEY` | 12,134 B | 588 B | `ssfF` (the sidebar data Collapse all and the chip hotkeys read), the search row and the chip row |
+| 4 | `DashboardSidebarCloudContextMenu` → `DashboardSidebarCloudPortsButton` | 8,643 B | 1,446 B | `ssfMatches` / `ssfRange` / `ssfLabel`, `ssfUseCounts` |
+| 5 | `DashboardSidebarWorkspaceContextMenu` → `useDashboardSidebarWorkspaceItemActions` | 9,227 B | 1,350 B | `SsfSearch`, `ssfOpen` |
+| 6 | `DashboardSidebarProjectContextMenu` → `const DashboardSidebarProjectRow` | 3,767 B | 600 B | `SSF_CHIPS` / `ssfBits`, `ssfShut` / `ssfFlip` |
+| 7 | `DashboardSidebarWorkspaceHoverCardContent` → `DashboardSidebarHoverCardOverlay` | 8,079 B | 931 B | `ssfUseSub` / `ssfUseShow`, `ssfFoldAll` |
 | 8 | `DashboardSidebarBulkActions` → `executeBulkWorkspaceDeleteTargets` | 7,692 B | 847 B | shared state (`ssfMask`, `ssfQ`, `ssfHide`, `ssfEmit`, `ssfToggle`) |
+| 9 | `OrganizationDropdown` → `getDiffStatsQueryKey` | 8,638 B | 830 B + 2 `//` lines | `SSF_KEYS` / `ssfUseKeys` (chip hotkeys, §Status chip hotkeys) |
+| 10 | `DashboardSidebarSectionHeader` → `const DashboardSidebarGroupHeader` | 1,593 B | 80 B + 1 `//` line | PINNED and SESSIONS header chevrons read and flip the override |
+| 11 | `DashboardSidebarBulkDeleteFailures` → `DashboardSidebarBulkDeleteMount` | 8,651 B | 1,073 B | `SsfFold` (the Collapse all / Expand all button) |
+| 12 | `NewProjectModal` → `deriveForwardSyncInput` | 11,464 B | 946 B | `ssfFolds` (the groups on screen) |
+| 13 | `WorkspaceSection` → `useSetupScriptCard` | 18,386 B | 784 B | `ssfOn`, the chevrons-down-up icon, `ssfClear` (the chip auto-clear) |
+| 14 | `UpdatesPill` → `FiUsers` | 8,287 B | 609 B | `ssfFirst` (the row a chip hotkey opens) |
 
 Regions 1 and 2 are the v1 regions. Region 3 is where the rows have to be
 rendered: in `DashboardSidebar`, between `DashboardSidebarHeader` and the
@@ -293,8 +355,19 @@ scrolling `OverflowFadeContainer`, inside
 their own; they were added purely for room, picked as the functions with the
 most strippable comments in the chunk that no other patch family touches.
 Region 6 starts exactly where region 1 ends. Region 8 is the first region in
-the module, so the shared `let` bindings sit there. After the rewrite the
-regions keep 330, 254, 293, 29, 278, 164, 110 and 53 B of trailing padding.
+the module, so the shared `let` bindings sit there. Region 9 (v4) is room
+only as well; its two `//` lines sit inside the options object of
+`useSidebarSectionsCollapseStore`, which the region also spans. It is pinned
+on 1.37.0 bytes. Region 10 (v5) is the PINNED / SESSIONS section header, also
+pinned on 1.37.0 bytes; it gains an `ssfV` prop and its two store selectors
+read the override and `ssfFlip` instead of the stored flag and `toggle` while
+a filter is active. Its deleted `//` line is a lint hint inside `return (`.
+Regions 11 to 14 (v5) are room only, pinned on 1.37.0 bytes and picked like
+regions 4 to 8, outside every command palette region (a test checks that no
+region of either family contains the other's start anchor); region 13 also
+took the chip auto-clear from region 5, which needed room for `ssfOpen`.
+After the rewrite regions 1 to 14 keep 31, 49, 102 (130 on 1.37), 36, 48, 55,
+1, 11, 148, 138, 65, 2, 75 and 96 B of trailing padding.
 
 Each region:
 1. starts at a unique top-level anchor and has a fixed length. The end anchor
@@ -309,8 +382,8 @@ Each region:
    (a bundler tree-shaking hint) and `/** i18n */` (a Lingui extraction
    marker). Neither token affects runtime, and neither contains a newline, so
    automatic semicolon insertion is unchanged.
-4. receives the new code at exact, single-match edit anchors. Three edits
-   delete whole `//` comment lines, five in all, that sit inside a
+4. receives the new code at exact, single-match edit anchors. Five edits
+   delete whole `//` comment lines, eight in all, that sit inside a
    parenthesised `return (` or after a comma, where a line break has no
    meaning. One edit replaces `orderedWorkspaceIds: selectableWorkspaceIds`
    with the `ssfRange` call.
@@ -634,6 +707,62 @@ drill-down, empty query, hotkey swap, the `+` button and its click, ⌘Enter vs
 Enter, ⌘Enter from outside the palette untouched, the drill-down New workspace item: first on an empty or blank query
 and without a match, last after matching workspaces with Enter switching to the
 first match, prefilled name).
+
+### Status chip hotkeys (opt-in, desktop-v1.37.0)
+
+`--status-filter-hotkeys` (needs `--sidebar-status-filter`) gives three chips
+a mac shortcut. It stays outside the approved set like the palette flags and
+is applied by hand on top of it (add the flag to the command above; a re-run
+is a no-op, `--revert` undoes exactly that step, a later re-apply without the
+flag keeps it).
+
+| Shortcut | Chip |
+|---|---|
+| ⌘I | Needs input |
+| ⌘⇧E | Failed |
+| ⌘⇧W | Working |
+
+- A shortcut toggles its chip like a click (it joins the other active chips;
+  persisted the same way). A chip at 0 is not switched on, so the list never
+  empties by a keypress; an active chip at 0 is switched off.
+- Switching a chip on opens the first row the sidebar then shows, in render
+  order (`ssfFirst`): PINNED (only while the PROJECTS list is open), SESSIONS
+  with its folders, then the projects as displayed (sorted and cut by the
+  search) with their folders. A row the search hides and a row inside a group
+  or folder collapsed under the filter are skipped. Switching off opens
+  nothing.
+- The keys use `KeyboardEvent.code` (the physical key, so Czech QWERTZ works),
+  need Cmd, refuse Option and Control and the wrong Shift state, and ignore
+  auto-repeat. One window capture listener swallows a hit before the terminal
+  or upstream's hotkeys see it. It lives only while the chip row is mounted:
+  with the sidebar collapsed to the icon rail the keys do nothing.
+- Upstream binds two of the chords on mac, so their `HOTKEYS_REGISTRY` defaults
+  move (`useRecordHotkeys-*.js`, the same mechanism as `--command-palette-cmd-k`;
+  Settings → Keyboard, the hints and the terminal read the new keys; overrides in
+  localStorage `hotkey-overrides` still win; Windows and Linux are unchanged):
+  **Toggle Terminal Rich Input ⌘I → ⌘⇧I** (its label's `/** i18n */` marker
+  pays for `shift+`) and **Close Tab ⌘⇧W → ⌘⌥W**. ⌘⇧E is unbound on 1.37.0;
+  newer upstream binds it to "Split with New Chat", so a rebase must move or
+  drop that chord. No Electron menu accelerator uses any of the five chords.
+- The filter (v4 and later) ships the listener with an empty key map (`SSF_KEYS`), so a
+  host without the flag keeps ⌘I and ⌘⇧W for upstream. The flag swaps in the
+  full map, a `shared` pair of region 9: in place when the region is already
+  patched, inside the region's rewrite when the same run writes it from stock.
+- Known limitations: the shortcuts are not listed in Settings → Keyboard and
+  cannot be rebound; a focused browser pane (its own web contents) does not
+  pass them to the sidebar.
+
+Upgrade: v4 changed only region 1 (`SsfStatusChips` calls `ssfUseKeys`) and
+added region 9, upgrading the v3 region 1 in place. v5 (filter collapse
+overrides) moves the v3 and v4 digests to `legacy_sha256`, so a host on either
+needs `--revert` first (§Status filter, upgrading). v5 also changes region 9
+(the hotkey target follows the rows on screen), so its v4 digest is in
+`legacy_sha256` too; the key map is unchanged. Tests:
+`SupersetStatusFilterHotkeysPatchTest` (registry moves on the real 1.37.0
+registry, apply from stock, flag added later, the live v4 filter with the key
+map on refused with the `--revert` hint, fail-closed guards)
+and the node harness tests `test_chip_hotkeys_*` (inert map, toggles, render
+order including folders, search skip, modifiers, repeat, zero chips).
 
 `project-icons/komfi-ops.svg` is an intentional palette exception: its
 slate-900 (`#0f172a`) background and slate-200 (`#e2e8f0`) gear stroke retain

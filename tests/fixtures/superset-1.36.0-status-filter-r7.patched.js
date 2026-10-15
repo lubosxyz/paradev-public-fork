@@ -124,14 +124,21 @@ function DashboardSidebarWorkspaceHoverCardContent({
     ] }) }) }) : null
   ] });
 }
-function ssfUseShow(workspaces) {
-  const store = reactExports.useContext(StatusStoreContext);
-  const selection = reactExports.useContext(DashboardSidebarSelectionContext);
+function ssfUseSub(store, workspaces) {
   const key = workspaces.map((workspace) => workspace.id).join("\n");
-  const subscribe = reactExports.useCallback((listener) => {
+  return reactExports.useCallback((listener) => {
     const offs = [ssfSubscribe(listener), ...store ? key.split("\n").filter(Boolean).map((id) => store.subscribe(id, listener)) : []];
     return () => offs.forEach((off) => off());
   }, [store, key]);
-  return reactExports.useSyncExternalStore(subscribe, () => (workspaces.some((workspace) => !ssfHide.has(workspace.id) && (ssfMask === 0 || !store || selection?.isWorkspaceSelected(workspace.id) || ssfMatches(store, workspace))) || !workspaces.length && (ssfMask === 0 || !store)) && (ssfMask || ssfQ ? 2 : 1));
 }
-                                                                                                              
+function ssfUseShow(workspaces, group) {
+  const store = reactExports.useContext(StatusStoreContext);
+  const selection = reactExports.useContext(DashboardSidebarSelectionContext);
+  return reactExports.useSyncExternalStore(ssfUseSub(store, workspaces), () => ssfOn(store, selection, workspaces) && (ssfMask || ssfQ ? 2 + ssfShut.has(group) : 1));
+}
+function ssfFoldAll(folds) {
+  const shut = ssfOpen(folds);
+  for (const [key, stored, toggle] of folds) ssfMask || ssfQ ? shut ? ssfShut.add(key) : ssfShut.delete(key) : !stored === shut && toggle();
+  ssfEmit();
+}
+ 

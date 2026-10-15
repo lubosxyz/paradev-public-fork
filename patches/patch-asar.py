@@ -546,8 +546,10 @@ class RegionRewrite:
 # review) migrates to the matching mask once and is removed; any unreadable
 # value means no filter. ssfQ is the normalised search query and ssfHide the
 # PINNED and SESSIONS ids it hides (STATUS_FILTER_SEARCH_JS); ssfEmit wakes
-# every guard and the chip counts.
-STATUS_FILTER_STATE_JS = b'''// patch-asar.py --sidebar-status-filter v3
+# every guard and the chip counts. With no chip and no query it also drops the
+# filter collapse overrides (ssfShut, STATUS_FILTER_SHUT_JS), so the stored
+# collapse state applies again and the next filter starts with every group open.
+STATUS_FILTER_STATE_JS = b'''// patch-asar.py --sidebar-status-filter v5
 let ssfMask = 0;
 let ssfQ = "";
 let ssfHide = new Set();
@@ -560,6 +562,7 @@ try {
 } catch {
 }
 function ssfEmit() {
+  if (!ssfMask && !ssfQ) ssfShut.clear();
   for (const listener of [...ssfListeners]) listener();
 }
 function ssfToggle(bit, solo) {
@@ -571,20 +574,26 @@ function ssfToggle(bit, solo) {
   ssfEmit();
 }
 '''
-# Render guard of every row, folder, project and section: 0 hidden, 1 shown,
-# 2 shown and forced open (a chip or the search is active, so a collapsed
-# project, folder or section with a visible row opens at render level without
-# touching the stored collapse state). One number keeps it a single hook, so
-# it still runs before each early `return null`.
-STATUS_FILTER_SHOW_JS = b'''function ssfUseShow(workspaces) {
-  const store = reactExports.useContext(StatusStoreContext);
-  const selection = reactExports.useContext(DashboardSidebarSelectionContext);
+# Render guard of every row, folder, project and section: 0 hidden, 1 shown
+# (no filter: the stored collapse state applies), 2 shown and open, 3 shown and
+# collapsed. 2 and 3 apply while a chip or the search is active; they come from
+# the group's filter collapse override (`group` in ssfShut, STATUS_FILTER_SHUT_JS),
+# never from the stored state, so a group with a visible row opens by default
+# and its chevron collapses it again without touching what is stored. A row
+# passes its folder's key. One number keeps it a single hook, so it still runs
+# before each early `return null`. ssfUseSub is the subscription it shares with
+# SsfFold: the shared state plus the status of every given workspace.
+STATUS_FILTER_SHOW_JS = b'''function ssfUseSub(store, workspaces) {
   const key = workspaces.map((workspace) => workspace.id).join("\\n");
-  const subscribe = reactExports.useCallback((listener) => {
+  return reactExports.useCallback((listener) => {
     const offs = [ssfSubscribe(listener), ...store ? key.split("\\n").filter(Boolean).map((id) => store.subscribe(id, listener)) : []];
     return () => offs.forEach((off) => off());
   }, [store, key]);
-  return reactExports.useSyncExternalStore(subscribe, () => (workspaces.some((workspace) => !ssfHide.has(workspace.id) && (ssfMask === 0 || !store || selection?.isWorkspaceSelected(workspace.id) || ssfMatches(store, workspace))) || !workspaces.length && (ssfMask === 0 || !store)) && (ssfMask || ssfQ ? 2 : 1));
+}
+function ssfUseShow(workspaces, group) {
+  const store = reactExports.useContext(StatusStoreContext);
+  const selection = reactExports.useContext(DashboardSidebarSelectionContext);
+  return reactExports.useSyncExternalStore(ssfUseSub(store, workspaces), () => ssfOn(store, selection, workspaces) && (ssfMask || ssfQ ? 2 + ssfShut.has(group) : 1));
 }
 '''
 # The chip list and the bits of one workspace. Agent status comes from the
@@ -596,17 +605,90 @@ function ssfBits(status, pr) {
   return (status === "permission" ? 1 : status === "failed" ? 2 : status === "review" ? 4 : status === "working" ? 8 : 0) | (pr === "merged" ? 32 : pr === "open" || pr === "draft" || pr === "queued" ? 16 : 0);
 }
 '''
-# Subscription, matching, the Shift-range cut (workspacesById supplies the
-# pull request of each id) and the chip label.
-STATUS_FILTER_MATCH_JS = b'''function ssfSubscribe(listener) {
+# Filter collapse overrides (v5): the keys of the groups collapsed while a filter
+# is active, in memory only (project id, folder section id, "pinned",
+# "sessions"). A chevron under a filter flips its key instead of the stored
+# state; ssfEmit empties the set once the filter is off.
+STATUS_FILTER_SHUT_JS = b'''const ssfShut = new Set();
+function ssfFlip(key) {
+  ssfShut.delete(key) || ssfShut.add(key);
+  ssfEmit();
+}
+'''
+# Collapse all / Expand all (v5, LUBOS-2519 scope add): one button at the right
+# end of the sticky search row (SsfFold, region 11), in four pieces for room.
+# ssfOn is the visibility test ssfUseShow shares (a shown workspace, or an
+# empty group without an active chip); SsfChevronsDownUp is lucide's
+# chevrons-down-up, drawn with the bundle's own createLucideIcon (region 13).
+STATUS_FILTER_FOLD_ON_JS = b'''function ssfOn(store, selection, workspaces) {
+  return workspaces.some((workspace) => !ssfHide.has(workspace.id) && (ssfMask === 0 || !store || selection?.isWorkspaceSelected(workspace.id) || ssfMatches(store, workspace))) || !workspaces.length && (ssfMask === 0 || !store);
+}
+const SsfChevronsDownUp = createLucideIcon("chevrons-down-up", [["path", { d: "m7 20 5-5 5 5", key: "ssf1" }], ["path", { d: "m7 4 5 5 5-5", key: "ssf2" }]]);
+'''
+# The groups the sidebar renders, in render order, as [key, stored collapsed,
+# stored toggle, parent key]: PINNED and the projects only while the PROJECTS
+# list is open, a folder (of SESSIONS or of a project) right after its parent
+# (region 12). ssfF is one array the sidebar builds (region 3):
+# displayedGroups, workspacesListCollapsed, its two collapse toggles,
+# sessionChildren, the PINNED and SESSIONS workspaces and statusWorkspaces
+# (every workspace the status store tracks).
+STATUS_FILTER_FOLD_LIST_JS = b'''function ssfFolds(store, selection, [projects, shut, toggleProject, toggleSection, kids, pinned, sessions]) {
+  const sections = useSidebarSectionsCollapseStore.getState(), folds = [];
+  const add = (key, stored, toggle, list, parent) => ssfOn(store, selection, list) && folds.push([key, stored, toggle, parent]);
+  const sub = (c, parent) => c.forEach(({ section }) => section && add(section.id, section.isCollapsed, () => toggleSection(section.id), section.workspaces, parent));
+  pinned.length && !shut && add("pinned", sections.collapsed.pinned, () => sections.toggle("pinned"), pinned);
+  sessions.length && add("sessions", sections.collapsed.sessions, () => sections.toggle("sessions"), sessions) && sub(kids, "sessions");
+  shut || projects.forEach((project) => add(project.id, project.isCollapsed, () => toggleProject(project.id), getProjectChildrenWorkspaces(project.children)) && sub(project.children, project.id));
+  return folds;
+}
+'''
+# True when a group on screen is open: under a filter by its override, else by
+# its stored state; a folder counts only inside an open project (region 7).
+STATUS_FILTER_FOLD_OPEN_JS = b'''function ssfOpen(folds) {
+  const shut = new Set();
+  return folds.some(([key, stored, , parent]) => (ssfMask || ssfQ ? ssfShut.has(key) : stored) ? !shut.add(key) : !shut.has(parent));
+}
+'''
+# A click collapses every listed group when one on screen is open, else expands
+# them all: without a filter through the upstream toggles (the stored state,
+# persisted like a chevron click, only for the groups that differ), under a
+# filter through the in-memory overrides only (region 5).
+STATUS_FILTER_FOLD_ALL_JS = b'''function ssfFoldAll(folds) {
+  const shut = ssfOpen(folds);
+  for (const [key, stored, toggle] of folds) ssfMask || ssfQ ? shut ? ssfShut.add(key) : ssfShut.delete(key) : !stored === shut && toggle();
+  ssfEmit();
+}
+'''
+# The button: it re-renders on the shared state (chips, query, overrides), the
+# status of every workspace (which groups a chip shows), the sections store
+# (PINNED / SESSIONS) and the sidebar data (projects, folders).
+STATUS_FILTER_FOLD_JS = b'''function SsfFold({ ssfF }) {
+  const store = reactExports.useContext(StatusStoreContext);
+  const selection = reactExports.useContext(DashboardSidebarSelectionContext);
+  useSidebarSectionsCollapseStore((s) => s.collapsed);
+  const folds = () => ssfFolds(store, selection, ssfF);
+  const open = reactExports.useSyncExternalStore(ssfUseSub(store, ssfF[7]), () => ssfOpen(folds()));
+  const label = open ? "Collapse all" : "Expand all";
+  return jsxRuntimeExports.jsxs(Tooltip, { delayDuration: 700, children: [
+    jsxRuntimeExports.jsx(TooltipTrigger, { asChild: true, children: jsxRuntimeExports.jsx("button", { type: "button", "aria-label": label, onClick: () => ssfFoldAll(folds()), className: "flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-fill-hover hover:text-foreground", children: jsxRuntimeExports.jsx(open ? SsfChevronsDownUp : LuChevronsUpDown, { className: "size-3.5" }) }) }),
+    jsxRuntimeExports.jsx(TooltipContent, { children: label })
+  ] });
+}
+'''
+# Subscription to the shared state (region 2 since v5, for room).
+STATUS_FILTER_SUBSCRIBE_JS = b'''function ssfSubscribe(listener) {
   ssfListeners.add(listener);
   return () => ssfListeners.delete(listener);
 }
-function ssfMatches(store, workspace) {
+'''
+# Matching, the Shift-range cut (workspacesById supplies the pull request of
+# each id; a row in a folder collapsed under the filter is cut too, like
+# upstream cuts a stored collapsed folder) and the chip label.
+STATUS_FILTER_MATCH_JS = b'''function ssfMatches(store, workspace) {
   return (ssfMask & ssfBits(store.get(workspace.id).status, workspace.pullRequest?.state)) !== 0;
 }
-function ssfRange(store, workspaceIds, isSelected, workspacesById) {
-  return ssfMask === 0 || !store ? workspaceIds : workspaceIds.filter((id) => isSelected(id) || ssfMatches(store, workspacesById.get(id) ?? { id }));
+function ssfRange(store, workspaceIds, isSelected, workspacesById, groupInfo) {
+  return !ssfShut.size && (ssfMask === 0 || !store) ? workspaceIds : workspaceIds.filter((id) => !ssfShut.has(groupInfo.get(id)?.sectionId) && (ssfMask === 0 || !store || isSelected(id) || ssfMatches(store, workspacesById.get(id) ?? { id })));
 }
 function ssfLabel(name, count, mask, bit) {
   return `${name}: ${count} workspace${count === 1 ? "" : "s"}. Click to ${mask === bit ? "show all" : mask & bit ? "stop showing them" : "show them"}, \\u2325-click to ${mask === bit ? "show all" : "show only these"}.`;
@@ -637,7 +719,8 @@ STATUS_FILTER_COUNTS_JS = b'''function ssfUseCounts(workspaces) {
 STATUS_FILTER_CHIPS_JS = b'''function SsfStatusChips({
   pinnedWorkspaces,
   sessionWorkspaces,
-  groups
+  groups,
+  ssfF
 }) {
   const store = reactExports.useContext(StatusStoreContext);
   const workspaces = reactExports.useMemo(() => [...new Map([...pinnedWorkspaces, ...sessionWorkspaces, ...groups.flatMap((project) => getProjectChildrenWorkspaces(project.children))].map((workspace) => [workspace.id, workspace])).values()], [pinnedWorkspaces, sessionWorkspaces, groups]);
@@ -645,6 +728,7 @@ STATUS_FILTER_CHIPS_JS = b'''function SsfStatusChips({
   reactExports.useEffect(() => {
     ssfClear(store, counts);
   });
+  ssfUseKeys(ssfF);
   const chips = SSF_CHIPS.map(([bit, name, hue, pr], index) => ({ bit, name, hue, pr, mask, count: counts[index] })).filter((chip) => chip.count || mask & chip.bit);
   return chips.length > 0 && jsxRuntimeExports.jsx("div", { role: "group", "aria-label": "Workspace status filter", className: "grid shrink-0 gap-1 px-2 pb-2", style: { gridTemplateColumns: `repeat(${chips.length}, minmax(0, 1fr))` }, children: chips.map((chip) => jsxRuntimeExports.jsx(SsfStatusChip, chip, chip.bit)) });
 }
@@ -683,13 +767,18 @@ STATUS_FILTER_CHIP_JS = b'''function SsfStatusChip({
 # does not contain the query; those two lists render from the DnD context, so
 # only a row-level guard can filter them. Typing expands a collapsed PROJECTS
 # list, because PINNED renders only below it. The cleanup clears the hidden set
-# when the sidebar collapses to the icon rail and this component unmounts.
+# when the sidebar collapses to the icon rail and this component unmounts. It
+# does not notify (v5): it also runs right before every re-run of the effect,
+# where an ssfEmit with an empty query would drop the filter collapse overrides
+# of a search-only filter. The icon rail ignores the guards, and the next mount
+# notifies from the effect body.
 STATUS_FILTER_SEARCH_JS = b'''function SsfSearch({
   query,
   onQueryChange,
   pinnedWorkspaces,
   sessionWorkspaces,
-  groups
+  groups,
+  ssfF
 }) {
   reactExports.useLayoutEffect(() => {
     const q = query.trim().toLowerCase();
@@ -700,15 +789,14 @@ STATUS_FILTER_SEARCH_JS = b'''function SsfSearch({
     return () => {
       ssfQ = "";
       ssfHide = new Set();
-      ssfEmit();
     };
   }, [query, pinnedWorkspaces, sessionWorkspaces, groups]);
-  return jsxRuntimeExports.jsx("div", { className: "flex shrink-0 px-2 pb-2", children: jsxRuntimeExports.jsx(DashboardSidebarProjectsFilterInput, { query, isExpanded: true, onExpandedChange: () => {
+  return jsxRuntimeExports.jsxs("div", { className: "flex shrink-0 gap-1 px-2 pb-2", children: [jsxRuntimeExports.jsx(DashboardSidebarProjectsFilterInput, { query, isExpanded: true, onExpandedChange: () => {
   }, onQueryChange: (value) => {
     const sections = useSidebarSectionsCollapseStore.getState();
     if (value.trim() && sections.collapsed.workspaces) sections.toggle("workspaces");
     onQueryChange(value);
-  } }) });
+  } }), jsxRuntimeExports.jsx(SsfFold, { ssfF })] });
 }
 '''
 
@@ -730,6 +818,55 @@ function ssfClear(store, counts) {
 }
 '''
 
+# Chip hotkeys (v4): one capture listener on the window while the
+# chip row is mounted (expanded sidebar). SSF_KEYS maps KeyboardEvent.code plus
+# the Shift state to a chip bit; Cmd is required, Option and Control must be
+# up. The filter ships the map empty, so the listener never matches;
+# --status-filter-hotkeys swaps in the full map (STATUS_FILTER_KEYS_ON, a
+# `shared` pair of the room region) together with the two registry moves that
+# free the chords. A hit is swallowed before the terminal or upstream's
+# document-level hotkeys see it, auto-repeat included. It toggles the chip
+# like a click, except that a chip at zero is not switched on (it would empty
+# the list). Switching a chip on opens the first workspace the list then shows,
+# in render order (ssfFirst, region 14). The store and the counts come from
+# ssfSeen, which the chip row refreshes after every render
+# (STATUS_FILTER_CLEAR_JS); the sidebar data (ssfF) and navigate from a ref.
+STATUS_FILTER_KEYS_ON = b"const SSF_KEYS = { KeyIfalse: 1, KeyEtrue: 2, KeyWtrue: 8 };\n"
+STATUS_FILTER_KEYS_OFF = b"const SSF_KEYS = {" + b" " * (len(STATUS_FILTER_KEYS_ON) - 21) + b"};\n"
+STATUS_FILTER_KEYS_JS = STATUS_FILTER_KEYS_OFF + b'''function ssfUseKeys(ssfF) {
+  const live = reactExports.useRef();
+  live.current = [ssfF, useNavigate()];
+  reactExports.useEffect(() => {
+    const onKey = (e) => {
+      const bit = e.metaKey && !e.altKey && !e.ctrlKey && SSF_KEYS[e.code + e.shiftKey], [store, counts] = ssfSeen, on = !(ssfMask & bit);
+      if (!bit) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.repeat || on && !counts?.[Math.log2(bit)]) return;
+      ssfToggle(bit, false);
+      const [f, navigate] = live.current, first = on && store && ssfFirst(store, f);
+      first && navigateToV2Workspace(first.id, navigate);
+    };
+    addEventListener("keydown", onKey, true);
+    return () => removeEventListener("keydown", onKey, true);
+  }, []);
+}
+'''
+
+
+# The workspace a chip hotkey opens (v5): the first row the sidebar shows, in
+# render order, among those matching the active chips. PINNED (only while the
+# PROJECTS list is open), SESSIONS with its folders, then the projects as the
+# sidebar displays them (displayedGroups: sorted and cut by the search), each
+# with its folders in place. A row the search hides (ssfHide) or one inside a
+# group collapsed under the filter (its group or folder key in ssfShut) is
+# skipped (region 14).
+STATUS_FILTER_FIRST_JS = b'''function ssfFirst(store, [projects, listShut, , , kids, pinned]) {
+  const rows = (children, key) => children.flatMap((c) => c.type === "workspace" ? [[c.workspace, key]] : c.section.workspaces.map((w) => [w, key, c.section.id]));
+  return [...listShut ? [] : pinned.map((w) => [w, "pinned"]), ...rows(kids, "sessions"), ...listShut ? [] : projects.flatMap((p) => rows(p.children, p.id))].find(([w, key, folder]) => !ssfShut.has(key) && !ssfShut.has(folder) && !ssfHide.has(w.id) && ssfMatches(store, w))?.[0];
+}
+'''
+
 
 def _insert_after(anchor: bytes, snippet: bytes) -> tuple[bytes, bytes]:
     """Edit that appends one snippet right after an exact anchor."""
@@ -741,6 +878,16 @@ def _insert_before(anchor: bytes, snippet: bytes) -> tuple[bytes, bytes]:
     return anchor, snippet + anchor
 
 
+# The sidebar data the injected code needs beyond the props it had before v5,
+# built once per render of DashboardSidebar (region 3) and passed as `ssfF` to
+# the search row (Collapse all) and the chip row (chip hotkeys); see
+# STATUS_FILTER_FOLD_LIST_JS for its fields.
+STATUS_FILTER_SIDEBAR_JS = (
+    b"  const ssfF = [displayedGroups, workspacesListCollapsed, toggleProjectCollapsed, toggleSectionCollapsed, "
+    b"sessionChildren, pinnedWorkspaces, sessionWorkspaces, statusWorkspaces];\n"
+)
+
+
 STATUS_FILTER_REGIONS = (
     # SortableWorkspaceItem .. DashboardSidebarPinnedSection .. folder section
     # .. isBulkSelectable: PINNED rows, PINNED section, folders (all trees).
@@ -750,29 +897,45 @@ STATUS_FILTER_REGIONS = (
         end=b"function DashboardSidebarProjectContextMenu({\n",
         length=22553,
         stock_sha256="af09e89f2a007d0762d4f9f8f03273ada726b8ead7ea01ab43e125b8715b17d3",
-        patched_sha256="3fb6c3088f6051afbea4e932afd8063d892772f4bdd0d29d772b6c160a829961",
+        patched_sha256="22ac0e07b331250bc056e5815aa52c31ae3cb96caaef39840e40402fb56e8919",
         edits=(
-            # A row inside a collapsed folder opens while a filter is active.
+            # A row takes its folder's key (ssfK) and, while a filter is active,
+            # follows that folder's filter collapse override instead of the
+            # stored state.
+            (
+                b"  isSelected = false,\n  onSelectionClick,\n  pinnedContext\n}) {\n",
+                b"  isSelected = false,\n  onSelectionClick,\n  pinnedContext,\n  ssfK\n}) {\n",
+            ),
             _insert_after(
                 b", [workspace, onHoverCardOpen, shortcutLabel, isInSection, indentation, "
                 b"isSelected, onSelectionClick, pinnedContext]);\n",
-                b"  const ssfV = ssfUseShow([workspace]);\n  if (!ssfV) return null;\n  collapsed &&= ssfV < 2;\n",
+                b"  const ssfV = ssfUseShow([workspace], ssfK);\n  if (!ssfV) return null;\n  if (ssfV > 1) collapsed = ssfV > 2;\n",
             ),
             _insert_after(
                 b"  const isSectionCollapsed = useSidebarSectionsCollapseStore((s) => s.collapsed.pinned);\n",
-                b"  const ssfV = ssfUseShow(pinnedWorkspaces);\n  if (!ssfV && !isCollapsed) return null;\n",
+                b"  const ssfV = ssfUseShow(pinnedWorkspaces, \"pinned\");\n  if (!ssfV && !isCollapsed) return null;\n",
             ),
+            # The PINNED header shows and flips the override (region 10).
+            (b'), section: "pinned" })', b'), section: "pinned", ssfV })'),
             (
                 b"    !isSectionCollapsed && jsxRuntimeExports.jsx(SortableContext, { items: pinnedItems,",
-                b"    (!isSectionCollapsed || ssfV > 1) && jsxRuntimeExports.jsx(SortableContext, { items: pinnedItems,",
+                b"    (ssfV > 1 ? ssfV < 3 : !isSectionCollapsed) && jsxRuntimeExports.jsx(SortableContext, { items: pinnedItems,",
             ),
             _insert_after(
                 b"  }, [clearPendingSectionRename, pendingRenameSectionId, section.id, startRename]);\n",
-                b"  const ssfV = ssfUseShow(section.workspaces);\n  if (!ssfV) return null;\n",
+                b"  const ssfV = ssfUseShow(section.workspaces, section.id);\n  if (!ssfV) return null;\n",
             ),
             (
                 b"isCollapsed: section.isCollapsed, isEditing: isRenaming,",
-                b"isCollapsed: section.isCollapsed && ssfV < 2, isEditing: isRenaming,",
+                b"isCollapsed: ssfV > 1 ? ssfV > 2 : section.isCollapsed, isEditing: isRenaming,",
+            ),
+            (
+                b"onToggleCollapse: () => onToggleCollapse(section.id), actions:",
+                b"onToggleCollapse: () => ssfV > 1 ? ssfFlip(section.id) : onToggleCollapse(section.id), actions:",
+            ),
+            (
+                b"collapsed: isInCollapsedSection, isDragPlaceholder",
+                b"collapsed: isInCollapsedSection, ssfK: group?.sectionId, isDragPlaceholder",
             ),
             # Three `//` lines inside `return (`; deleting whole lines frees room
             # for the selection guard without touching any expression.
@@ -788,19 +951,22 @@ STATUS_FILTER_REGIONS = (
             ),
             (
                 b"orderedWorkspaceIds: selectableWorkspaceIds\n",
-                b"orderedWorkspaceIds: ssfRange(ssfStore, selectableWorkspaceIds, isWorkspaceSelected, workspacesById)\n",
+                b"orderedWorkspaceIds: ssfRange(ssfStore, selectableWorkspaceIds, isWorkspaceSelected, workspacesById, groupInfo)\n",
             ),
             _insert_before(b"const isBulkSelectable = (workspace) =>", STATUS_FILTER_CHIPS_JS),
         ),
-        # v1; v2 (six chips, no search); v3 before the auto-clear (LUBOS-2317).
+        # v1; v2 (six chips, no search); v3 before the auto-clear (LUBOS-2317);
+        # v3 with the auto-clear; v4 (chip hotkeys, groups forced open).
         legacy_sha256=(
             "42fef7999b59c51c15afb440f5a5a5c4368eae0e01582c9cd49c0aaf741ad4c1",
             "8383a30eaff0a0f282da74b8b79954a1cf5165941c98a1234a19ef1a16839101",
             "326571d3fd198ae8f7c23721c8b46c8505543d76a7a724f2e1ebfda1c03fc03a",
+            "3fb6c3088f6051afbea4e932afd8063d892772f4bdd0d29d772b6c160a829961",
+            "abb3b3c048ea2775a39595c2c62980701c1cedf4ae83cb6e337031c47ef81bf9",
         ),
     ),
     # DashboardSidebarProjectSection .. SESSIONS section: project and SESSIONS
-    # guards, SsfStatusChip, and the PROJECTS header loses its filter input (it
+    # guards and filter collapse overrides, SsfStatusChip, ssfSubscribe, and the PROJECTS header loses its filter input (it
     # moved to the sticky SsfSearch row) while the input labels say it searches
     # the whole sidebar.
     RegionRewrite(
@@ -809,31 +975,37 @@ STATUS_FILTER_REGIONS = (
         end=b"function GettingStartedChecklist({\n",
         length=19272,
         stock_sha256="21cf2198d0a6b806fda51365aec77d3d3865a51188179f9caebdae2f3f2f6a55",
-        patched_sha256="47a88b86f712525c842f54a4dcc5864160f17b7b4fac4c0ac4bbd1c987f50d13",
+        patched_sha256="46c06176da1592bfd14a512dfacd652db8f2821fcefd2614a5dea136f31e5868",
         edits=(
             _insert_after(
                 b"  } = useDashboardSidebarProjectSectionActions({\n    project\n  });\n",
                 # An open delete or import dialog or a project rename keeps the
                 # section mounted, so a status change cannot drop it mid-confirm.
-                b"  const ssfV = ssfUseShow(flattenedCollapsedWorkspaces);\n"
+                b"  const ssfV = ssfUseShow(flattenedCollapsedWorkspaces, project.id);\n"
                 b"  if (!ssfV && !isSidebarCollapsed && !isDeleteDialogOpen && !importableWorktrees && !isRenaming) return null;\n",
             ),
-            # A collapsed project opens while a filter is active (row and content).
+            # While a filter is active a project follows its filter collapse
+            # override (row and content) and its chevron flips the override.
             (
                 b"isCollapsed: project.isCollapsed, isRenaming,",
-                b"isCollapsed: project.isCollapsed && ssfV < 2, isRenaming,",
+                b"isCollapsed: ssfV > 1 ? ssfV > 2 : project.isCollapsed, isRenaming,",
+            ),
+            (
+                b"onToggleCollapse: () => onToggleCollapse(project.id), onNewWorkspace",
+                b"onToggleCollapse: () => ssfV > 1 ? ssfFlip(project.id) : onToggleCollapse(project.id), onNewWorkspace",
             ),
             (
                 b"isCollapsed: project.isCollapsed, workspaceShortcutLabels, onWorkspaceHover, onDeleteSection",
-                b"isCollapsed: project.isCollapsed && ssfV < 2, workspaceShortcutLabels, onWorkspaceHover, onDeleteSection",
+                b"isCollapsed: ssfV > 1 ? ssfV > 2 : project.isCollapsed, workspaceShortcutLabels, onWorkspaceHover, onDeleteSection",
             ),
             _insert_after(
                 b"  const isSectionCollapsed = useSidebarSectionsCollapseStore((s) => s.collapsed.sessions);\n",
-                b"  const ssfV = ssfUseShow(sessionWorkspaces);\n  if (!ssfV && !isCollapsed) return null;\n",
+                b"  const ssfV = ssfUseShow(sessionWorkspaces, \"sessions\");\n  if (!ssfV && !isCollapsed) return null;\n",
             ),
+            (b'), section: "sessions", children:', b'), section: "sessions", ssfV, children:'),
             (
                 b"isCollapsed: isSectionCollapsed, topLevelIndentation",
-                b"isCollapsed: isSectionCollapsed && ssfV < 2, topLevelIndentation",
+                b"isCollapsed: ssfV > 1 ? ssfV > 2 : isSectionCollapsed, topLevelIndentation",
             ),
             # The input now lives only in the sticky SsfSearch row and searches
             # PINNED and SESSIONS too, so its labels say so; the PROJECTS header
@@ -863,19 +1035,21 @@ STATUS_FILTER_REGIONS = (
             (b'        // Read as "on" whenever the list is not in drag order.\n', b""),
             _insert_before(
                 b"function DashboardSidebarProjectsFilterInput({\n",
-                STATUS_FILTER_CHIP_JS,
+                STATUS_FILTER_CHIP_JS + STATUS_FILTER_SUBSCRIBE_JS,
             ),
         ),
         # v1 header button; the first v2 build (its plain-click label said
         # "stop showing them" also for the only active chip); the second v2
         # build (label inline, a section hid under an open dialog); v2 final;
-        # v2 with hidden inactive zero chips (PR #474, applied live on 1.37).
+        # v2 with hidden inactive zero chips (PR #474, applied live on 1.37);
+        # v3 / v4 (groups forced open).
         legacy_sha256=(
             "3682ec4e3fa223751b5ce4bde728d33cef3642a36d9561f4df517ec808253be1",
             "9fc647b8e6c3dc47e9204b09e0c0a382bb60b4943743c25b4214b87c4818acb4",
             "348275748426b01857310056fe9870b5834aa2a3be040763e9d5ac4bfd88c363",
             "ef99ad348ad4d3e31d9a7cd7c67f1e9c0437e3e03259b4f8c182a2a73dcad0e7",
             "a867c4b8aa38d54761f5ce1eacb6236cae3d340862faefef40c359b3529f0084",
+            "47a88b86f712525c842f54a4dcc5864160f17b7b4fac4c0ac4bbd1c987f50d13",
         ),
     ),
     # DashboardSidebar: the sticky SsfSearch row and below it the chip row go
@@ -889,33 +1063,40 @@ STATUS_FILTER_REGIONS = (
         end=b'const SEED_FLAG_KEY = "superset:dev:v2-sidebar-seeded";\n',
         length=12134,
         stock_sha256="ab4fb1849a1df56f41ee66de3a965e0bf4566c383247e11ba05e193780e30239",
-        patched_sha256="02d79a1591ab5d35bcb4cc44bc2d4dda4d07c2a7899a2a349e10832d49add0e1",
+        patched_sha256="e348e93adf782d10e2fb66a7d17b6666dc6233beaae11b501ea702b299b74ac0",
         edits=(
+            _insert_before(b"  const handleReorderProjects = reactExports.useCallback((reordered) => {\n", STATUS_FILTER_SIDEBAR_JS),
             _insert_after(
                 b"      jsxRuntimeExports.jsx(DashboardSidebarHeader, { isCollapsed }),\n",
                 b"      !isCollapsed && jsxRuntimeExports.jsx(SsfSearch, { query: projectFilterQuery, "
-                b"onQueryChange: setProjectFilterQuery, pinnedWorkspaces, sessionWorkspaces, groups }),\n"
+                b"onQueryChange: setProjectFilterQuery, pinnedWorkspaces, sessionWorkspaces, groups, ssfF }),\n"
                 b"      !isCollapsed && jsxRuntimeExports.jsx(SsfStatusChips, "
-                b"{ pinnedWorkspaces, sessionWorkspaces, groups: orderedGroups }),\n",
+                b"{ pinnedWorkspaces, sessionWorkspaces, groups: orderedGroups, ssfF }),\n",
             ),
         ),
-        # v2 (chips only, the chip bits lived here).
-        legacy_sha256=("51557750a5b6afcd93bc3e1e47ee619d4bfaf0081231d5e6b4ec98033b6f4a0e",),
+        # v2 (chips only, the chip bits lived here); v3 / v4 (no Collapse all).
+        legacy_sha256=(
+            "51557750a5b6afcd93bc3e1e47ee619d4bfaf0081231d5e6b4ec98033b6f4a0e",
+            "02d79a1591ab5d35bcb4cc44bc2d4dda4d07c2a7899a2a349e10832d49add0e1",
+        ),
         shared=((SIDEBAR_FOOTER, SIDEBAR_FOOTER_HIDDEN),),
     ),
     # DashboardSidebarCloudContextMenu: no edit of its own, only room (1,446 B
     # of no-op comments) for matching, the Shift-range cut, the chip label and
-    # the chip counts.
+    # the chip counts (the subscription moved to region 2 in v5).
     RegionRewrite(
         label="status filter: matching and counts",
         start=b"function DashboardSidebarCloudContextMenu({\n",
         end=b"function DashboardSidebarCloudPortsButton({\n",
         length=8643,
         stock_sha256="4fbd96c26c429f92ebc0219b9aa01d98ed1510990ba0aa4502ff7c7f8a26be83",
-        patched_sha256="1c05543a9a08dbbca1fc2eb357618b3d2003a8d42bd55bc92ab37584925d5182",
+        patched_sha256="44833870327458f665d9f27072090ee091f8d0fdb156efcff2177d0e456ff94e",
         edits=(_insert_before(b"const MAX_BADGE_COUNT = 9;\n", STATUS_FILTER_MATCH_JS + STATUS_FILTER_COUNTS_JS),),
-        # v2 (the shared state lived here).
-        legacy_sha256=("f7f02ea166cf516cb9a0b4aa269a37bfe603dc598ae79124f3a8a5b8b5f88aba",),
+        # v2 (the shared state lived here); v3 / v4 (Shift range without folders).
+        legacy_sha256=(
+            "f7f02ea166cf516cb9a0b4aa269a37bfe603dc598ae79124f3a8a5b8b5f88aba",
+            "1c05543a9a08dbbca1fc2eb357618b3d2003a8d42bd55bc92ab37584925d5182",
+        ),
     ),
     # DashboardSidebarWorkspaceContextMenu: no edit of its own, only room
     # (1,350 B of no-op comments) for the sticky search row and the auto-clear.
@@ -925,29 +1106,34 @@ STATUS_FILTER_REGIONS = (
         end=b"function useDashboardSidebarWorkspaceItemActions({\n",
         length=9227,
         stock_sha256="7167a1331345ee26b1d7594826a0669e2bab76976b418009e16280d3e0518c39",
-        patched_sha256="c3acafba03b544f8dbd9333aa26172a1078883e8b14f535cd1800de3c81c1cfa",
-        edits=(_insert_after(b"    ] })\n  ] });\n}\n", STATUS_FILTER_SEARCH_JS + STATUS_FILTER_CLEAR_JS),),
+        patched_sha256="f4c91edb834115b06c5410cfa34fbfcf1d261e9dcad8e48f076f2e7878490d15",
+        edits=(_insert_after(b"    ] })\n  ] });\n}\n", STATUS_FILTER_SEARCH_JS + STATUS_FILTER_FOLD_OPEN_JS),),
         # The first and second v2 builds (before the chip label moved here),
         # v2 final (matching lived here), v3 before the auto-clear and the
-        # first auto-clear, whose history ignored a store swap.
+        # first auto-clear, whose history ignored a store swap; v3 / v4 (the
+        # search cleanup notified).
         legacy_sha256=(
             "1c17da8dba0b8fd2bf26c01a29a678e8231059b89c93dfad4008f442f1adacc9",
             "98f21f27a7848b4a85f55f43190715f187b5e62525f6e5f1eca343680559d2b5",
             "0169b7b80eeb43ac471b90a81ddda7a677395859f14da76d6a0c4da11f7f29c1",
             "11cf66ab426fd01806c2a0a31b172271a9344d61cc0322a10d216ff95b7e3588",
+            "c3acafba03b544f8dbd9333aa26172a1078883e8b14f535cd1800de3c81c1cfa",
         ),
     ),
     # DashboardSidebarProjectContextMenu: no edit of its own, only room (600 B
     # of no-op comments) for the chip list and bits, which region 3 gave up
-    # for the search row. It starts where region 1 ends.
+    # for the search row, and (v5) the filter collapse overrides. It starts
+    # where region 1 ends.
     RegionRewrite(
         label="status filter: chip bits",
         start=b"function DashboardSidebarProjectContextMenu({\n",
         end=b"const DashboardSidebarProjectRow = reactExports.forwardRef((",
         length=3767,
         stock_sha256="3cd0c6b470292f9dae3ac9c13f470e3268f2a7b03c785e789f4abc7924cb60b2",
-        patched_sha256="a78e2e7a9f7bda23e88c0666a33187ea526007077bd76d7abafa7add91ee8a9f",
-        edits=(_insert_after(b"      ] }) : null\n    ] })\n  ] });\n}\n", STATUS_FILTER_BITS_JS),),
+        patched_sha256="3bbf252c9cd4433b9e32fe4e4d0d4b368a01c92f71414d2435bfd7709109d0f8",
+        edits=(_insert_after(b"      ] }) : null\n    ] })\n  ] });\n}\n", STATUS_FILTER_BITS_JS + STATUS_FILTER_SHUT_JS),),
+        # v3 / v4 (chip bits only).
+        legacy_sha256=("a78e2e7a9f7bda23e88c0666a33187ea526007077bd76d7abafa7add91ee8a9f",),
     ),
     # DashboardSidebarWorkspaceHoverCardContent: room only (931 B) for the
     # render guard ssfUseShow.
@@ -957,8 +1143,10 @@ STATUS_FILTER_REGIONS = (
         end=b"function DashboardSidebarHoverCardOverlay({\n",
         length=8079,
         stock_sha256="60ea27f0802fb5a8fea19a7cfb80fe3c51f0eef8fc33323e51afab38e23a6877",
-        patched_sha256="f5e72a947ca00091324d45dfea87cb992048d10fa03f855b1cd5e575213edaa9",
-        edits=(_insert_after(b"    ] }) }) }) : null\n  ] });\n}\n", STATUS_FILTER_SHOW_JS),),
+        patched_sha256="109d98ec87e8de381a7476e7e905b1a8d10c35eda26ce40276f1dff46949f8c1",
+        edits=(_insert_after(b"    ] }) }) }) : null\n  ] });\n}\n", STATUS_FILTER_SHOW_JS + STATUS_FILTER_FOLD_ALL_JS),),
+        # v3 / v4 (2 = forced open, no override).
+        legacy_sha256=("f5e72a947ca00091324d45dfea87cb992048d10fa03f855b1cd5e575213edaa9",),
     ),
     # DashboardSidebarBulkActions: room only (847 B) for the shared filter
     # state. It is the first region in the module, so the `let` bindings are
@@ -969,8 +1157,109 @@ STATUS_FILTER_REGIONS = (
         end=b"async function executeBulkWorkspaceDeleteTargets({\n",
         length=7692,
         stock_sha256="d36751f314d3d9c53d01011da8383bb96a1d2451797ace489d0866ffb3c19024",
-        patched_sha256="3fb88b707eb376238e1b390e170d6569bb7b4fa66d466304456f27ad4e7d0096",
+        patched_sha256="754e0c1b167fe0b84c3c5c55da0d2e3cfb3b0776bd95c72490a4c63ca2519a2c",
         edits=(_insert_after(b"        ] })\n      ]\n    }\n  ) });\n}\n", STATUS_FILTER_STATE_JS),),
+        # v3 / v4 (ssfEmit kept no overrides).
+        legacy_sha256=("3fb88b707eb376238e1b390e170d6569bb7b4fa66d466304456f27ad4e7d0096",),
+    ),
+    # OrganizationDropdown .. useSidebarSectionsCollapseStore (v4):
+    # room only (830 B of no-op comments and two `//` lines inside the persist
+    # options object) for the chip hotkeys. The key map is a `shared` pair, so
+    # --status-filter-hotkeys switches it on with or without a filter rewrite
+    # in the same run. Pinned on 1.37.0 bytes.
+    RegionRewrite(
+        label="status filter: chip hotkeys",
+        start=b"function OrganizationDropdown({\n",
+        end=b"function getDiffStatsQueryKey(hostUrl, workspaceId) {\n",
+        length=8638,
+        stock_sha256="bcc778fd83b5f91965d880e878395866956658489115b4dbbd6759f0c57b193c",
+        patched_sha256="694d80ac77ff44689d776ca883bddcf29230c28398b0fa8af86b4c5484ec982a",
+        edits=(
+            (
+                b"  // Legacy key: v0 held only the workspaces-list flag as\n"
+                b"  // { isCollapsed }, before Pinned/Sessions became collapsible.\n",
+                b"",
+            ),
+            _insert_before(b'const SIDEBAR_SECTIONS_COLLAPSE_STORAGE_KEY = "sidebar-workspaces-collapse";\n', STATUS_FILTER_KEYS_JS),
+        ),
+        # v4 (the hotkey target came from every counted project, in manual
+        # order, ignoring the search and the filter collapse overrides).
+        legacy_sha256=("6cced2b24d8f802076d487298d28bf2e22337195c1cb52e2f71c391fe9400473",),
+        shared=((STATUS_FILTER_KEYS_OFF, STATUS_FILTER_KEYS_ON),),
+    ),
+    # DashboardSidebarSectionHeader (v5): the PINNED and SESSIONS headers read
+    # and toggle the sections store themselves, so they take the section's
+    # ssfUseShow value as a new `ssfV` prop. While a filter is active (ssfV
+    # 2 or 3) the chevron shows the filter collapse override and a click flips
+    # it (ssfFlip) instead of the stored state. The PROJECTS and cloud headers
+    # pass no ssfV and stay stock. Room: the no-op comments and one `//` line
+    # inside `return (`. Pinned on 1.37.0 bytes.
+    RegionRewrite(
+        label="status filter: section header",
+        start=b"function DashboardSidebarSectionHeader({\n",
+        end=b"const DashboardSidebarGroupHeader = reactExports.forwardRef((",
+        length=1593,
+        stock_sha256="6854a4345167b417fe958d3d935ba4d673703de39d2ff1679a1f3067e05ba9ca",
+        patched_sha256="361ee0ad07fee9341a8bfea8749d9e9e051d9b92ec72dda906c4e5649f3d9353",
+        edits=(
+            (b"  labelHidden = false,\n  children\n}) {\n", b"  labelHidden = false,\n  ssfV,\n  children\n}) {\n"),
+            (
+                b"useSidebarSectionsCollapseStore((s) => s.collapsed[section]);",
+                b"useSidebarSectionsCollapseStore((s) => ssfV > 1 ? ssfV > 2 : s.collapsed[section]);",
+            ),
+            (
+                b"useSidebarSectionsCollapseStore((s) => s.toggle);",
+                b"useSidebarSectionsCollapseStore((s) => ssfV > 1 ? ssfFlip : s.toggle);",
+            ),
+            (
+                b"    // biome-ignore lint/a11y/useSemanticElements: can't be a native <button> \xe2\x80\x94 it may nest action buttons\n",
+                b"",
+            ),
+        ),
+    ),
+    # Room only (v5, Collapse all / Expand all): functions with many no-op
+    # comments that no other patch family (command palette regions included)
+    # touches, pinned on 1.37.0 bytes. Region 11 holds the SsfFold button,
+    # region 12 the group list (ssfFolds), region 13 ssfOn, the
+    # chevrons-down-up icon and the chip auto-clear (moved from region 5 for
+    # room), region 14 the chip hotkey target.
+    RegionRewrite(
+        label="status filter: collapse all button",
+        start=b"function DashboardSidebarBulkDeleteFailures({\n",
+        end=b"function DashboardSidebarBulkDeleteMount() {\n",
+        length=8651,
+        stock_sha256="144352a6d3e93fa4ba79c73b66e4961b05ffbe12c2c6621f641c35f6b0200e51",
+        patched_sha256="3803f54c3861b9bfead5b7180ea587d9c3a648145ef757dc4357335e539ca901",
+        edits=(_insert_before(b"function DashboardSidebarBulkDeleteDialog({\n", STATUS_FILTER_FOLD_JS),),
+    ),
+    RegionRewrite(
+        label="status filter: collapse all groups",
+        start=b"function NewProjectModal({\n",
+        end=b"function deriveForwardSyncInput({\n",
+        length=11464,
+        stock_sha256="d67143beca5559d9a9dcdcf8176878f6447b3a5197693ce6daa90b11bda1b781",
+        patched_sha256="b29c64aff08c01975f3340fbe1997427552c50d4bd08df3b82a0287361c087eb",
+        edits=(_insert_before(b"function AddRepositoryModals() {\n", STATUS_FILTER_FOLD_LIST_JS),),
+    ),
+    RegionRewrite(
+        label="status filter: visibility and auto-clear",
+        start=b"function WorkspaceSection({\n",
+        end=b"function useSetupScriptCard({\n",
+        length=18386,
+        stock_sha256="3c64601146bafe86eda87b7607770416b393b8a3edd6b828d45d9aaac6d125f9",
+        patched_sha256="d0dfd46c874390b515b92233bcd56a16082d1ddf52a8cbe0bdba3f50bb172803",
+        edits=(_insert_before(b'const PROJECT_TYPE = "PROJECT";\n', STATUS_FILTER_FOLD_ON_JS + STATUS_FILTER_CLEAR_JS),),
+    ),
+    # UpdatesPill: room only (v5, 609 B of no-op comments) for the chip
+    # hotkey target, ssfFirst. Pinned on 1.37.0 bytes.
+    RegionRewrite(
+        label="status filter: hotkey target",
+        start=b"function UpdatesPill({\n",
+        end=b"function FiUsers(props) {\n",
+        length=8287,
+        stock_sha256="e4d115ca15389485c90ced8f70483952e8e21632d30b8d64fe0a04f39daf4707",
+        patched_sha256="92954d97bdf5d7e264136dca34317547ec33642e99af2dd42ac442bb9fc02f50",
+        edits=(_insert_after(b", children: pill });\n}\n", STATUS_FILTER_FIRST_JS),),
     ),
 )
 
@@ -986,18 +1275,23 @@ STATUS_FILTER_REGION_VARIANTS = (
         end=STATUS_FILTER_REGIONS[2].end,
         length=13413,
         stock_sha256="900b4f6260154132b79bfa163f5d3e66f4f8e751ac476459703fbe596c5bb54e",
-        patched_sha256="ef72d748a66c83d089b69c9768126930ebdb72c538d2f42935de55f5ba8a0e87",
+        patched_sha256="6794def9a0c00b0b9859aaa174cc7a940634229b9db353a4ca96efd0c9ae4347",
         edits=(
+            _insert_before(b"  const handleReorderProjects = reactExports.useCallback((reordered) => {\n", STATUS_FILTER_SIDEBAR_JS),
             _insert_after(
                 b"        jsxRuntimeExports.jsx(DashboardSidebarHeader, { isCollapsed }),\n",
                 b"        !isCollapsed && jsxRuntimeExports.jsx(SsfSearch, { query: projectFilterQuery, "
-                b"onQueryChange: setProjectFilterQuery, pinnedWorkspaces, sessionWorkspaces, groups }),\n"
+                b"onQueryChange: setProjectFilterQuery, pinnedWorkspaces, sessionWorkspaces, groups, ssfF }),\n"
                 b"        !isCollapsed && jsxRuntimeExports.jsx(SsfStatusChips, "
-                b"{ pinnedWorkspaces, sessionWorkspaces, groups: orderedGroups }),\n",
+                b"{ pinnedWorkspaces, sessionWorkspaces, groups: orderedGroups, ssfF }),\n",
             ),
         ),
-        # v2 on 1.37 (#465: chips only, the chip bits lived here).
-        legacy_sha256=("e77b3309f341457b692581f147766ce6c3ed0a993d804ed199e8e969025af73a",),
+        # v2 on 1.37 (#465: chips only, the chip bits lived here); v3 / v4 (no
+        # Collapse all).
+        legacy_sha256=(
+            "e77b3309f341457b692581f147766ce6c3ed0a993d804ed199e8e969025af73a",
+            "ef72d748a66c83d089b69c9768126930ebdb72c538d2f42935de55f5ba8a0e87",
+        ),
         shared=((SIDEBAR_FOOTER, SIDEBAR_FOOTER_HIDDEN),),
     ),
 )
@@ -1012,7 +1306,7 @@ STATUS_FILTER_REGION_VARIANTS = (
 # test_installed_bundle_defines_the_names_the_status_filter_uses.
 STATUS_FILTER_IMPORTED_NAMES = (
     "jsxRuntimeExports", "reactExports", "cn", "Tooltip", "TooltipTrigger", "TooltipContent",
-    "LuGitMerge", "LuGitPullRequest",
+    "LuGitMerge", "LuGitPullRequest", "useNavigate", "navigateToV2Workspace", "createLucideIcon", "LuChevronsUpDown",
 )
 STATUS_FILTER_DEFINED_NAMES = (
     "StatusStoreContext", "DashboardSidebarSelectionContext", "PR_COLOR_BY_STATE", "getProjectChildrenWorkspaces",
@@ -1322,6 +1616,60 @@ def _plan_command_palette_cmd_k(data) -> list[tuple[int, bytes, bytes, str]]:
         offset, old = _single_variant(data, name, [stock, swapped])
         if old != swapped:
             replacements.append((offset, old, swapped, label))
+    return replacements
+
+
+# --status-filter-hotkeys (desktop-v1.37.0). Cmd+I, Cmd+Shift+E and
+# Cmd+Shift+W toggle the Needs input, Failed and Working chips of
+# --sidebar-status-filter (STATUS_FILTER_KEYS_JS). Upstream binds two of the
+# chords on mac, so their HOTKEYS_REGISTRY defaults move (useRecordHotkeys-*.js,
+# every consumer reads the registry as for --command-palette-cmd-k; overrides
+# in localStorage `hotkey-overrides` still win; Windows and Linux stay):
+#   - TOGGLE_TERMINAL_RICH_INPUT Cmd+I -> Cmd+Shift+I: "shift+" (6 B) is paid
+#     by the `/** i18n */` marker of its own label (11 B), 5 spaces pad it;
+#   - CLOSE_TAB Cmd+Shift+W -> Cmd+Option+W: 2 B shorter, 2 spaces pad it.
+# Cmd+Shift+E is unbound on 1.37.0. The key map itself sits in the filter's
+# room region as a `shared` pair: written in place when the region is already
+# patched, or into the region's rewrite when this run writes it from stock.
+HOTKEY_RICH_INPUT_STOCK = (
+    b'  TOGGLE_TERMINAL_RICH_INPUT: {\n    key: {\n      mac: L$1("meta+i"),\n'
+    b"      // Ctrl+Shift+I is the Electron devtools accelerator; use +M instead.\n"
+    b'      windows: L$1("ctrl+shift+m"),\n      linux: L$1("ctrl+shift+m")\n'
+    b"    },\n    label: (\n      /** i18n */\n"
+)
+HOTKEY_RICH_INPUT_MOVED = HOTKEY_RICH_INPUT_STOCK.replace(b'"meta+i"', b'"meta+shift+i"').replace(
+    b"      /** i18n */\n", b"           \n"
+)
+HOTKEY_CLOSE_TAB_STOCK = b'  CLOSE_TAB: {\n    key: {\n      mac: L$1("meta+shift+w"),\n'
+HOTKEY_CLOSE_TAB_MOVED = b'  CLOSE_TAB: {\n    key: {\n      mac: L$1("meta+alt+w"),  \n'
+
+
+def _plan_status_filter_hotkeys(data, replacements: list[tuple[int, bytes, bytes, str]]) -> list[tuple[int, bytes, bytes, str]]:
+    """Move both registry defaults and switch the chip key map on; returns the extended plan."""
+    replacements = list(replacements)
+    for name, stock, moved, label in (
+        ("TOGGLE_TERMINAL_RICH_INPUT hotkey", HOTKEY_RICH_INPUT_STOCK, HOTKEY_RICH_INPUT_MOVED,
+         "status filter hotkeys: Terminal Rich Input on Cmd+Shift+I"),
+        ("CLOSE_TAB hotkey", HOTKEY_CLOSE_TAB_STOCK, HOTKEY_CLOSE_TAB_MOVED,
+         "status filter hotkeys: Close Tab on Cmd+Option+W"),
+    ):
+        offset, old = _single_variant(data, name, [stock, moved])
+        if old != moved:
+            replacements.append((offset, old, moved, label))
+    label = "status filter hotkeys: chip key map"
+    matches = _variant_matches(data, [STATUS_FILTER_KEYS_OFF, STATUS_FILTER_KEYS_ON])
+    if matches:
+        offset, old = _exactly_one("chip key map", matches)
+        if old != STATUS_FILTER_KEYS_ON:
+            replacements.append((offset, old, STATUS_FILTER_KEYS_ON, label))
+        return replacements
+    # No map in the bundle yet: this run writes the room region from stock.
+    room = next(region.label for region in STATUS_FILTER_REGIONS if (STATUS_FILTER_KEYS_OFF, STATUS_FILTER_KEYS_ON) in region.shared)
+    hosts = [index for index, item in enumerate(replacements) if item[3] == room]
+    if len(hosts) != 1:
+        raise RuntimeError("status filter hotkeys: chip key map not found; bundle structure may have changed")
+    offset, old, new, host_label = replacements[hosts[0]]
+    replacements[hosts[0]] = (offset, old, _replace_once(new, STATUS_FILTER_KEYS_OFF, STATUS_FILTER_KEYS_ON, label), host_label)
     return replacements
 
 
@@ -1898,12 +2246,15 @@ def plan_replacements(
     hide_sidebar_footer: bool = False,
     command_palette_cmd_k: bool = False,
     command_palette_workspace_search: bool = False,
+    status_filter_hotkeys: bool = False,
 ) -> list[tuple[int, bytes, bytes, str]]:
     """Validate the complete bundle first, then return equal-length writes."""
     if not 4 <= size <= 9:
         raise ValueError("size must be 4..9 (Tailwind size-N)")
     if hide_nav_buttons and not compact_sidebar:
         raise ValueError("--hide-nav-buttons needs --compact-sidebar")
+    if status_filter_hotkeys and not sidebar_status_filter:
+        raise ValueError("--status-filter-hotkeys needs --sidebar-status-filter")
 
     replacements = []
 
@@ -2135,6 +2486,9 @@ def plan_replacements(
         require_status_filter_names(data)
         for region in STATUS_FILTER_REGIONS:
             replacements.extend(_plan_region_rewrite(data, region, STATUS_FILTER_REGION_VARIANTS))
+
+    if status_filter_hotkeys:
+        replacements = _plan_status_filter_hotkeys(data, replacements)
 
     if sound_only_when_waiting:
         replacements.extend(_plan_sound_only_when_waiting(data))
@@ -2493,6 +2847,12 @@ def main(argv=None):
         action="store_true",
         help="command palette: typing lists matching projects and workspaces above the commands; + / Cmd+Enter on a project opens New workspace",
     )
+    parser.add_argument(
+        "--status-filter-hotkeys",
+        action="store_true",
+        help="with --sidebar-status-filter, mac: Cmd+I / Cmd+Shift+E / Cmd+Shift+W toggle the needs-input / failed / "
+        "working chips and open the first matching workspace (Rich Input moves to Cmd+Shift+I, Close Tab to Cmd+Option+W)",
+    )
     parser.add_argument("--revert", action="store_true")
     parser.add_argument("--asar", type=Path, default=DEFAULT_ASAR)
     parser.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
@@ -2522,6 +2882,7 @@ def main(argv=None):
             hide_sidebar_footer=args.hide_sidebar_footer,
             command_palette_cmd_k=args.command_palette_cmd_k,
             command_palette_workspace_search=args.command_palette_workspace_search,
+            status_filter_hotkeys=args.status_filter_hotkeys,
             acknowledge_invalid_signature=args.ack_invalid_apple_signature,
         )
     except (OSError, RuntimeError, ValueError) as exc:

@@ -184,15 +184,11 @@ function DashboardSidebarCloudContextMenu({
     ] })
   ] });
 }
-function ssfSubscribe(listener) {
-  ssfListeners.add(listener);
-  return () => ssfListeners.delete(listener);
-}
 function ssfMatches(store, workspace) {
   return (ssfMask & ssfBits(store.get(workspace.id).status, workspace.pullRequest?.state)) !== 0;
 }
-function ssfRange(store, workspaceIds, isSelected, workspacesById) {
-  return ssfMask === 0 || !store ? workspaceIds : workspaceIds.filter((id) => isSelected(id) || ssfMatches(store, workspacesById.get(id) ?? { id }));
+function ssfRange(store, workspaceIds, isSelected, workspacesById, groupInfo) {
+  return !ssfShut.size && (ssfMask === 0 || !store) ? workspaceIds : workspaceIds.filter((id) => !ssfShut.has(groupInfo.get(id)?.sectionId) && (ssfMask === 0 || !store || isSelected(id) || ssfMatches(store, workspacesById.get(id) ?? { id })));
 }
 function ssfLabel(name, count, mask, bit) {
   return `${name}: ${count} workspace${count === 1 ? "" : "s"}. Click to ${mask === bit ? "show all" : mask & bit ? "stop showing them" : "show them"}, \u2325-click to ${mask === bit ? "show all" : "show only these"}.`;
@@ -209,4 +205,4 @@ function ssfUseCounts(workspaces) {
   }).split(",").map(Number);
 }
 const MAX_BADGE_COUNT = 9;
-                             
+                                    

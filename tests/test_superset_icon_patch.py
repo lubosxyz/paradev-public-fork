@@ -768,6 +768,7 @@ class SupersetUiPatchTest(unittest.TestCase):
             hide_sidebar_footer=False,
             command_palette_cmd_k=False,
             command_palette_workspace_search=False,
+            status_filter_hotkeys=False,
             acknowledge_invalid_signature=False,
         )
 
@@ -1495,14 +1496,21 @@ def node_check(test, body: bytes):
 
 
 class SupersetSidebarStatusFilterPatchTest(unittest.TestCase):
-    """--sidebar-status-filter rewrites eight hash-pinned layout-*.js regions in place."""
+    """--sidebar-status-filter rewrites ten hash-pinned layout-*.js regions in place."""
 
     WORKSPACE_NEW_SHORTCUT = SupersetUiPatchTest.WORKSPACE_NEW_SHORTCUT
     # Exact stock bytes of desktop-v1.36.0 layout-CAKjMJ-s.js, cut at the
     # region boundaries (start anchor inclusive, end anchor exclusive).
-    REGION_FIXTURES = [FIXTURES / f"superset-1.36.0-status-filter-r{n}.js" for n in range(1, 9)]
+    # Region 9 (chip hotkeys, v4) is cut from desktop-v1.37.0 layout-D7FqonPn.js.
+    # Regions 10-13 (section header and Collapse all, v5) are cut from
+    # desktop-v1.37.0 layout-D7FqonPn.js.
+    REGION_FIXTURES = [FIXTURES / f"superset-1.36.0-status-filter-r{n}.js" for n in range(1, 9)] + [
+        FIXTURES / f"superset-1.37.0-status-filter-r{n}.js" for n in range(9, 15)
+    ]
     # The same regions after --sidebar-status-filter (pinned patched_sha256).
-    PATCHED_FIXTURES = [FIXTURES / f"superset-1.36.0-status-filter-r{n}.patched.js" for n in range(1, 9)]
+    PATCHED_FIXTURES = [FIXTURES / f"superset-1.36.0-status-filter-r{n}.patched.js" for n in range(1, 9)] + [
+        FIXTURES / f"superset-1.37.0-status-filter-r{n}.patched.js" for n in range(9, 15)
+    ]
 
     def regions(self):
         """Pair each region constant with its real stock bytes."""
@@ -1588,6 +1596,17 @@ class SupersetSidebarStatusFilterPatchTest(unittest.TestCase):
             b"isCollapsed: project.isCollapsed, isRenaming,",
             b"isCollapsed: project.isCollapsed, workspaceShortcutLabels, onWorkspaceHover, onDeleteSection",
             b"isCollapsed: isSectionCollapsed, topLevelIndentation",
+            # v5: the filter collapse override (LUBOS-2519) at every group's
+            # collapsed flag, chevron, row and section key.
+            b"  isSelected = false,\n  onSelectionClick,\n  pinnedContext\n}) {\n",
+            b'), section: "pinned" })',
+            b'), section: "sessions", children:',
+            b"onToggleCollapse: () => onToggleCollapse(section.id), actions:",
+            b"onToggleCollapse: () => onToggleCollapse(project.id), onNewWorkspace",
+            b"collapsed: isInCollapsedSection, isDragPlaceholder",
+            b"  labelHidden = false,\n  children\n}) {\n",
+            b"useSidebarSectionsCollapseStore((s) => s.collapsed[section]);",
+            b"useSidebarSectionsCollapseStore((s) => s.toggle);",
             b'  const filterLabel = _t(\n    \n    {\n      id: "F2XK4g"\n    }\n  );\n',
             b'placeholder: _t(\n        \n        {\n          id: "ElqTsH"\n        }\n      ),',
             b', section: "workspaces", labelHidden: isFilterExpanded, children:',
@@ -1724,7 +1743,9 @@ class SupersetSidebarStatusFilterPatchTest(unittest.TestCase):
             )
         MODULE._require_disjoint([(0, b"ab", b"AB", "first"), (2, b"cd", b"CD", "second")])
 
-    def filter_harness(self, assertions: str, stored: dict | None = None, storage_stub: str | None = None) -> str:
+    def filter_harness(
+        self, assertions: str, stored: dict | None = None, storage_stub: str | None = None, keys_on: bool = False,
+    ) -> str:
         """Node script: stubbed React, store and localStorage around the injected v2 snippets."""
         storage_stub = storage_stub or (
             "globalThis.localStorage = { getItem: (k) => storage.get(k) ?? null, "
@@ -1739,8 +1760,18 @@ class SupersetSidebarStatusFilterPatchTest(unittest.TestCase):
                 MODULE.STATUS_FILTER_COUNTS_JS,
                 MODULE.STATUS_FILTER_CHIPS_JS,
                 MODULE.STATUS_FILTER_CHIP_JS,
+                MODULE.STATUS_FILTER_SUBSCRIBE_JS,
+                MODULE.STATUS_FILTER_SHUT_JS,
                 MODULE.STATUS_FILTER_SEARCH_JS,
                 MODULE.STATUS_FILTER_CLEAR_JS,
+                MODULE.STATUS_FILTER_FOLD_ON_JS,
+                MODULE.STATUS_FILTER_FOLD_LIST_JS,
+                MODULE.STATUS_FILTER_FOLD_OPEN_JS,
+                MODULE.STATUS_FILTER_FOLD_ALL_JS,
+                MODULE.STATUS_FILTER_FOLD_JS,
+                MODULE.STATUS_FILTER_FIRST_JS,
+                MODULE.STATUS_FILTER_KEYS_JS.replace(MODULE.STATUS_FILTER_KEYS_OFF, MODULE.STATUS_FILTER_KEYS_ON)
+                if keys_on else MODULE.STATUS_FILTER_KEYS_JS,
             ]
         ).decode()
         return f"""
@@ -1765,8 +1796,30 @@ const reactExports = {{
   useMemo: (fn) => fn(),
   useSyncExternalStore: (subscribe, getSnapshot) => {{ const off = subscribe(() => {{}}); off(); return getSnapshot(); }},
   useLayoutEffect: (effect) => {{ cleanups.push(effect()); }},
-  // Passive effects run right after each render; React accepts only a cleanup function or undefined.
-  useEffect: (effect) => {{ const cleanup = effect(); assert.ok(cleanup === undefined || typeof cleanup === "function"); }},
+  // Passive effects run right after each render (with [] deps only after the first); React accepts only a cleanup function or undefined.
+  useEffect: (effect, deps) => {{
+    if (deps?.length === 0) {{ if (mounted.has(String(effect))) return; mounted.add(String(effect)); }}
+    const cleanup = effect();
+    assert.ok(cleanup === undefined || typeof cleanup === "function");
+  }},
+  useRef: () => keysRef,
+}};
+const mounted = new Set();
+const keysRef = {{ current: undefined }};
+// Window capture listeners (the chip hotkeys) and the router.
+const keyListeners = [];
+globalThis.addEventListener = (type, listener, capture) => {{ assert.equal(type, "keydown"); assert.equal(capture, true); keyListeners.push(listener); }};
+globalThis.removeEventListener = (type, listener) => {{ keyListeners.splice(keyListeners.indexOf(listener), 1); }};
+const navigate = () => {{}};
+const useNavigate = () => navigate;
+const navigations = [];
+const navigateToV2Workspace = (id, using) => {{ assert.equal(using, navigate); navigations.push(id); }};
+const press = (code, mods = {{}}) => {{
+  const event = {{ code, metaKey: true, shiftKey: false, altKey: false, ctrlKey: false, repeat: false, ...mods, prevented: false, stopped: false }};
+  event.preventDefault = () => {{ event.prevented = true; }};
+  event.stopPropagation = () => {{ event.stopped = true; }};
+  for (const listener of [...keyListeners]) listener(event);
+  return event;
 }};
 const cleanups = [];
 const unmount = () => {{ for (const cleanup of cleanups.splice(0)) cleanup?.(); }};
@@ -1781,6 +1834,7 @@ const jsxRuntimeExports = {{ jsx: (type, props, key) => ({{ type, props, key }})
 const cn = (...parts) => parts.filter(Boolean).join(" ");
 const Tooltip = "Tooltip", TooltipTrigger = "TooltipTrigger", TooltipContent = "TooltipContent";
 const LuGitMerge = "LuGitMerge", LuGitPullRequest = "LuGitPullRequest";
+const createLucideIcon = (name) => name, LuChevronsUpDown = "LuChevronsUpDown";
 const PR_COLOR_BY_STATE = {{ open: "text-emerald-500", merged: "text-purple-500", closed: "text-destructive", draft: "text-muted-foreground", queued: "text-amber-500" }};
 function getProjectChildrenWorkspaces(children) {{
   return children.flatMap((child) => child.type === "workspace" ? [child.workspace] : child.section.workspaces);
@@ -1789,7 +1843,9 @@ function getProjectChildrenWorkspaces(children) {{
 const ws = (id, pr = null, name = id, projectId = null) => ({{ id, name, projectId, pullRequest: pr ? {{ state: pr }} : null }});
 let sidebar = {{ pinnedWorkspaces: [], sessionWorkspaces: [], groups: [] }};
 const BITS = [1, 2, 4, 8, 16, 32];
-const row = () => SsfStatusChips(sidebar);
+// The ssfF array of region 3; a test may set sidebar.ssfF to tell the displayed groups apart from the counted ones.
+const sidebarF = () => sidebar.ssfF ?? [sidebar.groups, false, () => {{}}, () => {{}}, sidebar.sessionWorkspaces.map((workspace) => ({{ type: "workspace", workspace }})), sidebar.pinnedWorkspaces, sidebar.sessionWorkspaces, []];
+const row = () => SsfStatusChips({{ ...sidebar, ssfF: sidebarF() }});
 // One entry per chip in SSF_CHIPS order; null for a chip the row hides (zero and inactive).
 const chips = () => {{
   const element = row();
@@ -2135,7 +2191,7 @@ assert.equal(storage.has("ssf-sidebar-status-filter"), false);
             for index, line in enumerate(lines):
                 if not (line.startswith("  if (!ssfV") and "return null;" in line):
                     continue
-                self.assertRegex(lines[index - 1], r"^  const ssfV = ssfUseShow\((\[workspace\]|\w+(\.\w+)?)\);$")
+                self.assertRegex(lines[index - 1], r"^  const ssfV = ssfUseShow\((\[workspace\]|\w+(\.\w+)?), (ssfK|\w+\.id|\"\w+\")\);$")
                 inserted += 1
                 for later in lines[index + 1 :]:
                     if later == "}":
@@ -2145,6 +2201,126 @@ assert.equal(storage.has("ssf-sidebar-status-filter"), false);
                         f"hook after injected early return in {region.label}: {later.strip()[:80]}",
                     )
         self.assertEqual(inserted, 5)
+
+    # Value: protects=the filter ships the hotkey listener inert, so a host without --status-filter-hotkeys keeps Cmd+I (Rich Input) and Cmd+Shift+W (Close Tab) untouched; fails_when=the shipped key map is not empty, so the listener swallows upstream chords whose registry entries never moved; why_new=v4 chip hotkeys; seam=none
+    def test_chip_hotkeys_are_inert_without_the_flag(self):
+        run_node(self, self.filter_harness("""
+statuses.set("a", "permission"); statuses.set("b", "failed"); statuses.set("c", "working");
+sidebar = { pinnedWorkspaces: [ws("a"), ws("b"), ws("c")], sessionWorkspaces: [], groups: [] };
+row();
+assert.equal(keyListeners.length, 1);
+for (const [code, shiftKey] of [["KeyI", false], ["KeyE", true], ["KeyW", true]]) {
+  const event = press(code, { shiftKey });
+  assert.equal(event.prevented, false);
+  assert.equal(event.stopped, false);
+}
+assert.deepEqual(pressed(), [false, false, false, false, false, false]);
+assert.deepEqual(navigations, []);
+"""))
+
+    # Value: protects=Cmd+I, Cmd+Shift+E and Cmd+Shift+W toggle the Needs input, Failed and Working chips like a click (persisted, union with other chips) and switching one on opens the first workspace the filtered list shows in render order (PINNED, SESSIONS, then PROJECTS including folders), skipping rows the search hides; a hit is swallowed; other modifiers, the wrong Shift state and auto-repeat never toggle; a chip at zero is not switched on but an active one is switched off; fails_when=the key map, the modifier check, the zero guard, the render order or the search skip changes, the toggle stops persisting, or switching off navigates; why_new=v4 chip hotkeys; seam=none
+    def test_chip_hotkeys_toggle_and_open_the_first_matching_workspace(self):
+        run_node(self, self.filter_harness("""
+statuses.set("pin", "review"); statuses.set("s1", "working"); statuses.set("s2", "failed");
+statuses.set("g1", "permission"); statuses.set("g2", "permission"); statuses.set("g3", "permission");
+sidebar = {
+  pinnedWorkspaces: [ws("pin")],
+  sessionWorkspaces: [ws("s1"), ws("s2")],
+  groups: [{ children: [{ type: "workspace", workspace: ws("g0") }, { type: "section", section: { workspaces: [ws("g1"), ws("g2")] } }, { type: "workspace", workspace: ws("g3") }] }],
+};
+row();
+let event = press("KeyI");
+assert.equal(event.prevented, true);
+assert.equal(event.stopped, true);
+assert.deepEqual(pressed(), [true, false, false, false, false, false]);
+assert.equal(storage.get("ssf-sidebar-status-chips"), "1");
+// The first needs-input row sits inside the project's folder.
+assert.deepEqual(navigations, ["g1"]);
+// Off again: no navigation.
+press("KeyI");
+assert.deepEqual(pressed(), [false, false, false, false, false, false]);
+assert.deepEqual(navigations, ["g1"]);
+press("KeyE", { shiftKey: true });
+assert.deepEqual(pressed(), [false, true, false, false, false, false]);
+assert.deepEqual(navigations, ["g1", "s2"]);
+// Union: SESSIONS render before PROJECTS, so the working session comes first.
+press("KeyW", { shiftKey: true });
+assert.deepEqual(pressed(), [false, true, false, true, false, false]);
+press("KeyI");
+assert.equal(storage.get("ssf-sidebar-status-chips"), "11");
+assert.deepEqual(navigations, ["g1", "s2", "s1", "s1"]);
+// Wrong Shift state, Option, Control, no Cmd and auto-repeat leave the chips alone.
+for (const [code, mods] of [["KeyE", {}], ["KeyW", {}], ["KeyI", { shiftKey: true }], ["KeyI", { altKey: true }], ["KeyI", { ctrlKey: true }], ["KeyI", { metaKey: false }], ["KeyR", { shiftKey: true }]]) {
+  event = press(code, mods);
+  assert.equal(event.prevented, false, code + JSON.stringify(mods));
+}
+event = press("KeyI", { repeat: true });
+assert.equal(event.prevented, true);
+assert.deepEqual(pressed(), [true, true, false, true, false, false]);
+ssfToggle(11, false);
+// The search hides the only working row: the chip still switches on, nothing opens.
+ssfHide = new Set(["s1"]);
+const opened = navigations.length;
+press("KeyW", { shiftKey: true });
+assert.deepEqual(pressed(), [false, false, false, true, false, false]);
+assert.equal(navigations.length, opened);
+press("KeyW", { shiftKey: true });
+// The search hides the first failed row: the next visible one opens.
+ssfHide = new Set(["s2"]);
+statuses.set("g2", "failed");
+row();
+press("KeyE", { shiftKey: true });
+assert.deepEqual(navigations.slice(-1), ["g2"]);
+press("KeyE", { shiftKey: true });
+ssfHide = new Set();
+// A chip at zero is not switched on, but an active one at zero still switches off.
+statuses.delete("s1");
+row();
+const before = navigations.length;
+event = press("KeyW", { shiftKey: true });
+assert.equal(event.prevented, true);
+assert.deepEqual(pressed(), [false, false, false, false, false, false]);
+ssfToggle(8, false);
+press("KeyW", { shiftKey: true });
+assert.deepEqual(pressed(), [false, false, false, false, false, false]);
+assert.equal(navigations.length, before);
+""", keys_on=True))
+
+    # Value: protects=a chip hotkey opens the first row the sidebar actually shows: projects in displayedGroups order (sorted, cut by the search), SESSIONS folders in place, PINNED only while the PROJECTS list is open, and nothing inside a group or folder collapsed under the filter; fails_when=the target comes from orderedGroups (every project, manual order), so the search-hidden `other` row or a row of a collapsed group opens instead; why_new=LUBOS-2519 review round 1 finding 1; seam=none
+    def test_chip_hotkey_opens_the_first_row_the_sidebar_shows(self):
+        run_node(self, self.filter_harness("""
+for (const id of ["pin", "other", "needle", "a1", "b1", "f1", "s1", "sf1"]) statuses.set(id, "permission");
+const project = (id, ...children) => ({ id, children });
+const top = (workspace) => ({ type: "workspace", workspace });
+const folder = (id, ...workspaces) => ({ type: "section", section: { id, workspaces } });
+const other = ws("other", null, "other"), needle = ws("needle", null, "needle");
+const counted = [project("p", top(other), top(needle)), project("a", top(ws("a1"))), project("b", top(ws("b1")))];
+const shown = (displayed, { listShut = false, kids = [], pinned = [] } = {}) => {
+  sidebar = { pinnedWorkspaces: pinned, sessionWorkspaces: getProjectChildrenWorkspaces(kids), groups: counted, ssfF: [displayed, listShut, () => {}, () => {}, kids, pinned, getProjectChildrenWorkspaces(kids), []] };
+  row();
+  press("KeyI");
+  const opened = navigations.pop();
+  press("KeyI");
+  return opened;
+};
+// The search shows only `needle` of project p (upstream cuts the project's rows): Cmd+I opens it, not `other`.
+ssfQ = "needle";
+assert.equal(shown([project("p", top(needle))]), "needle");
+ssfQ = "";
+// Sorted display order wins over the manual order of the counted groups.
+assert.equal(shown([counted[2], counted[1], counted[0]]), "b1");
+// PINNED comes first, but not while the PROJECTS list is collapsed (it is not rendered then).
+assert.equal(shown(counted, { pinned: [ws("pin")] }), "pin");
+assert.equal(shown(counted, { pinned: [ws("pin")], listShut: true }), undefined);
+// SESSIONS render before the projects, its folders in place.
+assert.equal(shown(counted, { kids: [folder("sf", ws("sf1")), top(ws("s1"))] }), "sf1");
+// A group or a folder collapsed under the filter hides its rows: another chip keeps the filter on.
+ssfToggle(2, false);
+ssfFlip("sessions"); ssfFlip("b");
+assert.equal(shown([counted[2], counted[1]], { kids: [top(ws("s1"))] }), "a1");
+ssfFlip("sessions"); ssfFlip("b"); ssfFlip("sf");
+assert.equal(shown(counted, { kids: [folder("sf", ws("sf1")), top(ws("s1"))] }), "s1");
+""", keys_on=True))
 
     # Value: protects=filter state survives a blocked localStorage and notifies subscribers; fails_when=ssfToggle stops notifying listeners or a try/catch around localStorage is lost; why_new=existing node tests only use a working storage and a no-op subscribe; seam=none
     def test_injected_filter_survives_blocked_storage_and_notifies_subscribers(self):
@@ -2201,7 +2377,7 @@ sidebar = { pinnedWorkspaces: [...byId.values()], sessionWorkspaces: [], groups:
 const shown = () => rows.filter((id) => ssfUseShow([byId.get(id)]));
 const isSelected = (id) => selected.has(id);
 assert.deepEqual(shown(), ["A", "C"]);
-const range = ssfRange(store, rows, isSelected, byId);
+const range = ssfRange(store, rows, isSelected, byId, new Map());
 assert.deepEqual(range, ["A", "C"]);
 let state = applyWorkspaceSelection(EMPTY_WORKSPACE_SELECTION, { workspaceId: "A", projectId: "p", orderedWorkspaceIds: range, mode: "toggle" });
 state = applyWorkspaceSelection(state, { workspaceId: "C", projectId: "p", orderedWorkspaceIds: range, mode: "range" });
@@ -2210,23 +2386,23 @@ assert.deepEqual(state.selectedIds, ["A", "C"]);
 selected.add("B");
 assert.deepEqual(shown(), ["A", "B", "C"]);
 assert.equal(ssfUseShow([byId.get("B"), ws("missing")]), 2);
-assert.deepEqual(ssfRange(store, rows, isSelected, byId), rows);
+assert.deepEqual(ssfRange(store, rows, isSelected, byId, new Map()), rows);
 selected.clear();
 // PR chips cut the range by the decorated pull request; an id missing from workspacesById has no PR.
 click(4, true);
 assert.deepEqual(shown(), ["B"]);
-assert.deepEqual(ssfRange(store, [...rows, "X"], isSelected, byId), ["B"]);
+assert.deepEqual(ssfRange(store, [...rows, "X"], isSelected, byId, new Map()), ["B"]);
 click(4, true);
 click(0); click(1);
 // No status store, no selection context, or no active chip: upstream ids pass through untouched.
 activeStore = null;
-assert.equal(ssfRange(null, rows, () => false, byId), rows);
+assert.equal(ssfRange(null, rows, () => false, byId, new Map()), rows);
 activeSelection = null;
 assert.equal(ssfUseShow([byId.get("B")]), 2);
 activeStore = store;
 click(0); click(1);
 assert.deepEqual(pressed(), [false, false, false, false, false, false]);
-assert.equal(ssfRange(store, rows, () => false, byId), rows);
+assert.equal(ssfRange(store, rows, () => false, byId, new Map()), rows);
 """, stored={"ssf-sidebar-status-chips": "3"}))
 
     # Value: protects=the sticky search hides PINNED and SESSIONS rows whose workspace and project names miss the query, leaves PROJECTS rows to upstream's filter, opens collapsed sections, expands a collapsed PROJECTS list on typing and restores everything when it unmounts; fails_when=pinned or session rows ignore the query, project rows get cut twice, a project-name match is lost, the hidden set survives the icon rail or a chip mask hides a query match; why_new=Lubos 2026-10-09: search did not reach PINNED; seam=none
@@ -2240,8 +2416,9 @@ const changes = [];
 const search = () => SsfSearch({ query, onQueryChange: (value) => changes.push(value), pinnedWorkspaces: pinned, sessionWorkspaces: sessions, groups });
 const shown = (list) => list.filter((workspace) => ssfUseShow([workspace])).map((workspace) => workspace.id);
 let element = search();
-assert.equal(element.props.children.type, "DashboardSidebarProjectsFilterInput");
-assert.equal(element.props.children.props.isExpanded, true);
+assert.equal(element.props.children[0].type, "DashboardSidebarProjectsFilterInput");
+assert.equal(element.props.children[0].props.isExpanded, true);
+assert.equal(element.props.children[1].type, SsfFold, "Collapse all sits at the right end of the search row");
 assert.deepEqual(shown([...pinned, ...sessions]), ["p-mcp", "p-other", "p-proj", "s-mcp", "s-other"]);
 assert.equal(ssfUseShow(pinned), 1);
 unmount();
@@ -2274,17 +2451,17 @@ assert.equal(ssfUseShow(pinned), 1);
 // Typing expands a collapsed PROJECTS list once (PINNED renders below it); clearing does not.
 sectionsState.collapsed.workspaces = true;
 element = search();
-element.props.children.props.onQueryChange("m");
+element.props.children[0].props.onQueryChange("m");
 assert.deepEqual(sectionsState.toggles, ["workspaces"]);
-element.props.children.props.onQueryChange("mc");
-element.props.children.props.onQueryChange("");
+element.props.children[0].props.onQueryChange("mc");
+element.props.children[0].props.onQueryChange("");
 assert.deepEqual(sectionsState.toggles, ["workspaces"]);
 sectionsState.collapsed.workspaces = true;
-element.props.children.props.onQueryChange("   ");
+element.props.children[0].props.onQueryChange("   ");
 assert.deepEqual(sectionsState.toggles, ["workspaces"]);
 assert.deepEqual(changes, ["m", "mc", "", "   "]);
 // The collapse callback is a no-op: Escape and blur only clear the query.
-assert.equal(element.props.children.props.onExpandedChange(false), undefined);
+assert.equal(element.props.children[0].props.onExpandedChange(false), undefined);
 """))
 
     # Value: protects=the search row and the chip row are sticky (outside the scroller), the search sits above the chips, and both can read the status store; fails_when=the r3 anchor moves a row into OverflowFadeContainer or above DashboardSidebarWorkspaceStatusProvider, or the search loses upstream's project filter state; why_new=v3 moves the search out of the PROJECTS header above the chips (Lubos 2026-10-09); seam=none
@@ -2302,6 +2479,29 @@ assert.equal(element.props.children.props.onExpandedChange(false), undefined);
         self.assertLess(row, scroller)
         self.assertIn(b"query: projectFilterQuery, onQueryChange: setProjectFilterQuery", patched[search:row])
         self.assertIn(b"groups: orderedGroups", patched[row:scroller])
+        # Collapse all and the chip hotkeys get the sidebar data as one array, built once before the render.
+        self.assertIn(b"groups, ssfF })", patched[search:row])
+        self.assertIn(b"groups: orderedGroups, ssfF })", patched[row:scroller])
+        built = patched.index(MODULE.STATUS_FILTER_SIDEBAR_JS)
+        self.assertLess(built, patched.index(b"  return jsxRuntimeExports.jsxs(DashboardSidebarSelectionProvider, "))
+        for name in (
+            b"displayedGroups", b"workspacesListCollapsed", b"toggleProjectCollapsed", b"toggleSectionCollapsed",
+            b"sessionChildren", b"pinnedWorkspaces", b"sessionWorkspaces", b"statusWorkspaces",
+        ):
+            self.assertIn(name, MODULE.STATUS_FILTER_SIDEBAR_JS)
+            self.assertRegex(patched[:built], rb"(const |\n    )" + name + rb"\b", "declared before ssfF")
+
+    # Value: protects=no status filter region overlaps a command palette region in the same chunk, so both families apply in one run; fails_when=a room region is picked inside a palette region (v5 first put region 13 in DestroyConfirmPane, inside the palette's ThemeFrame region) and the live run fails with "overlapping replacements"; why_new=LUBOS-2519 Collapse all added room regions 11-14; seam=real stock region fixtures
+    def test_status_filter_and_palette_regions_do_not_overlap(self):
+        palette = [
+            (region, (FIXTURES / f"superset-1.37.0-palette-r{n}.js").read_bytes())
+            for n, region in enumerate(MODULE.PALETTE_SEARCH_REGIONS, 1)
+        ]
+        for region, stock in self.regions():
+            for other, other_stock in palette:
+                with self.subTest(region=region.label, palette=other.label):
+                    self.assertNotIn(region.start, other_stock)
+                    self.assertNotIn(other.start, stock)
 
     # Value: protects=the search input moved, not duplicated: the PROJECTS header keeps its label, sort menu and add-repository button but no longer renders the input, and the input's labels say it searches the sidebar; fails_when=the header still renders DashboardSidebarProjectsFilterInput (two inputs bound to one query) or hides its label while a query is active; why_new=v3 search row; seam=none
     def test_projects_header_drops_the_filter_input(self):
@@ -2314,19 +2514,28 @@ assert.equal(element.props.children.props.onExpandedChange(false), undefined);
         self.assertIn(b'const filterLabel = "Search the sidebar";', patched)
         self.assertIn(b'placeholder: "Search\\u2026",', patched)
 
-    # Value: protects=while a chip or the search is active, every collapsed project, folder, PINNED and SESSIONS section with a visible row renders open, without touching the stored collapse state; fails_when=one of the six render sites keeps reading the stored flag, so matching rows stay hidden behind a collapsed project or folder; why_new=Lubos 2026-10-09 asked for auto-expanding projects and groups; seam=none
-    def test_active_filter_opens_collapsed_projects_folders_and_sections(self):
+    # Value: protects=while a chip or the search is active, every project, folder, PINNED and SESSIONS group (and each workspace row) reads the filter collapse override instead of the stored state, and its chevron flips the override instead of writing the stored state; fails_when=one render site or chevron keeps the stored flag (v4 forced open, LUBOS-2519), so a group cannot be collapsed under a filter or its header and rows disagree; why_new=Lubos 2026-10-09 asked for auto-expanding projects and groups, LUBOS-2519 for collapsing them again under the filter; seam=none
+    def test_active_filter_reads_and_flips_the_filter_collapse_override(self):
         patched = b"".join(MODULE.rewrite_region(region, stock) for region, stock in self.regions())
         for site in (
-            b"  collapsed &&= ssfV < 2;\n",
-            b"(!isSectionCollapsed || ssfV > 1) && jsxRuntimeExports.jsx(SortableContext, { items: pinnedItems,",
-            b"isCollapsed: section.isCollapsed && ssfV < 2, isEditing: isRenaming,",
-            b"isCollapsed: project.isCollapsed && ssfV < 2, isRenaming,",
-            b"isCollapsed: project.isCollapsed && ssfV < 2, workspaceShortcutLabels, onWorkspaceHover, onDeleteSection",
-            b"isCollapsed: isSectionCollapsed && ssfV < 2, topLevelIndentation",
+            b"  if (ssfV > 1) collapsed = ssfV > 2;\n",
+            b"ssfK: group?.sectionId, isDragPlaceholder",
+            b"(ssfV > 1 ? ssfV < 3 : !isSectionCollapsed) && jsxRuntimeExports.jsx(SortableContext, { items: pinnedItems,",
+            b"isCollapsed: ssfV > 1 ? ssfV > 2 : section.isCollapsed, isEditing: isRenaming,",
+            b"onToggleCollapse: () => ssfV > 1 ? ssfFlip(section.id) : onToggleCollapse(section.id), actions:",
+            b"isCollapsed: ssfV > 1 ? ssfV > 2 : project.isCollapsed, isRenaming,",
+            b"onToggleCollapse: () => ssfV > 1 ? ssfFlip(project.id) : onToggleCollapse(project.id), onNewWorkspace",
+            b"isCollapsed: ssfV > 1 ? ssfV > 2 : project.isCollapsed, workspaceShortcutLabels, onWorkspaceHover, onDeleteSection",
+            b"isCollapsed: ssfV > 1 ? ssfV > 2 : isSectionCollapsed, topLevelIndentation",
+            b'), section: "pinned", ssfV })',
+            b'), section: "sessions", ssfV, children:',
+            b"useSidebarSectionsCollapseStore((s) => ssfV > 1 ? ssfV > 2 : s.collapsed[section]);",
+            b"useSidebarSectionsCollapseStore((s) => ssfV > 1 ? ssfFlip : s.toggle);",
         ):
             with self.subTest(site=site):
                 self.assertEqual(patched.count(site), 1)
+        # No site still forces a group open (v4) or writes the stored state under a filter.
+        self.assertNotIn(b"ssfV < 2", patched)
         # The collapsed icon rail keeps the stored state.
         self.assertIn(b"isCollapsed: project.isCollapsed, totalWorkspaceCount", patched)
 
@@ -2335,7 +2544,7 @@ assert.equal(element.props.children.props.onExpandedChange(false), undefined);
         region, stock = self.regions()[1]
         patched = MODULE.rewrite_region(region, stock)
         actions = patched.index(b"} = useDashboardSidebarProjectSectionActions({\n    project\n  });\n")
-        hook = patched.index(b"  const ssfV = ssfUseShow(flattenedCollapsedWorkspaces);\n")
+        hook = patched.index(b"  const ssfV = ssfUseShow(flattenedCollapsedWorkspaces, project.id);\n")
         guard = patched.index(b"  if (!ssfV && !isSidebarCollapsed ")
         line = patched[guard : patched.index(b"\n", guard)]
         for name in (b"isDeleteDialogOpen", b"importableWorktrees", b"isRenaming"):
@@ -2359,6 +2568,8 @@ assert.equal(element.props.children.props.onExpandedChange(false), undefined);
                     "42fef7999b59c51c15afb440f5a5a5c4368eae0e01582c9cd49c0aaf741ad4c1",
                     "8383a30eaff0a0f282da74b8b79954a1cf5165941c98a1234a19ef1a16839101",
                     "326571d3fd198ae8f7c23721c8b46c8505543d76a7a724f2e1ebfda1c03fc03a",
+                    "3fb6c3088f6051afbea4e932afd8063d892772f4bdd0d29d772b6c160a829961",
+                    "abb3b3c048ea2775a39595c2c62980701c1cedf4ae83cb6e337031c47ef81bf9",
                 ),
                 (
                     "3682ec4e3fa223751b5ce4bde728d33cef3642a36d9561f4df517ec808253be1",
@@ -2366,15 +2577,29 @@ assert.equal(element.props.children.props.onExpandedChange(false), undefined);
                     "348275748426b01857310056fe9870b5834aa2a3be040763e9d5ac4bfd88c363",
                     "ef99ad348ad4d3e31d9a7cd7c67f1e9c0437e3e03259b4f8c182a2a73dcad0e7",
                     "a867c4b8aa38d54761f5ce1eacb6236cae3d340862faefef40c359b3529f0084",
+                    "47a88b86f712525c842f54a4dcc5864160f17b7b4fac4c0ac4bbd1c987f50d13",
                 ),
-                ("51557750a5b6afcd93bc3e1e47ee619d4bfaf0081231d5e6b4ec98033b6f4a0e",),
-                ("f7f02ea166cf516cb9a0b4aa269a37bfe603dc598ae79124f3a8a5b8b5f88aba",),
+                (
+                    "51557750a5b6afcd93bc3e1e47ee619d4bfaf0081231d5e6b4ec98033b6f4a0e",
+                    "02d79a1591ab5d35bcb4cc44bc2d4dda4d07c2a7899a2a349e10832d49add0e1",
+                ),
+                (
+                    "f7f02ea166cf516cb9a0b4aa269a37bfe603dc598ae79124f3a8a5b8b5f88aba",
+                    "1c05543a9a08dbbca1fc2eb357618b3d2003a8d42bd55bc92ab37584925d5182",
+                ),
                 (
                     "1c17da8dba0b8fd2bf26c01a29a678e8231059b89c93dfad4008f442f1adacc9",
                     "98f21f27a7848b4a85f55f43190715f187b5e62525f6e5f1eca343680559d2b5",
                     "0169b7b80eeb43ac471b90a81ddda7a677395859f14da76d6a0c4da11f7f29c1",
                     "11cf66ab426fd01806c2a0a31b172271a9344d61cc0322a10d216ff95b7e3588",
+                    "c3acafba03b544f8dbd9333aa26172a1078883e8b14f535cd1800de3c81c1cfa",
                 ),
+                ("a78e2e7a9f7bda23e88c0666a33187ea526007077bd76d7abafa7add91ee8a9f",),
+                ("f5e72a947ca00091324d45dfea87cb992048d10fa03f855b1cd5e575213edaa9",),
+                ("3fb88b707eb376238e1b390e170d6569bb7b4fa66d466304456f27ad4e7d0096",),
+                ("6cced2b24d8f802076d487298d28bf2e22337195c1cb52e2f71c391fe9400473",),
+                (),
+                (),
                 (),
                 (),
                 (),
@@ -2452,7 +2677,7 @@ assert.equal(element.props.children.props.onExpandedChange(false), undefined);
         defined = r"(?:const|function) {name}\b"
         for name in (
             "jsxRuntimeExports", "reactExports", "cn", "Tooltip", "TooltipTrigger", "TooltipContent",
-            "LuGitMerge", "LuGitPullRequest",
+            "LuGitMerge", "LuGitPullRequest", "createLucideIcon", "LuChevronsUpDown",
         ):
             with self.subTest(name=name):
                 self.assertIsNotNone(re.search(imported.format(name=name).encode(), chunk), f"{name} is not imported by {path}")
@@ -2915,6 +3140,383 @@ class Superset137OptionalPatchTest(unittest.TestCase):
             MODULE._plan_sound_only_when_waiting(stock + MODULE.SOUND_RENDERER_ALWAYS)
 
 
+class SupersetStatusFilterCollapseTest(unittest.TestCase):
+    """v5: groups collapse and reopen under an active filter without touching the stored state.
+
+    The harness loads the real patched regions (rows, PINNED, folders, project
+    content, projects, SESSIONS, the shared helpers and the section header) as
+    one module, stubs the upstream hooks around them and drives the components
+    the way React would render them.
+    """
+
+    PATCHED = [
+        FIXTURES / f"superset-1.36.0-status-filter-r{n}.patched.js" for n in (1, 2, 4, 5, 6, 7, 8)
+    ] + [FIXTURES / f"superset-1.37.0-status-filter-r{n}.patched.js" for n in (10, 11, 12, 13, 14)]
+
+    def harness(self, assertions: str) -> str:
+        regions = b"\n".join(path.read_bytes() for path in self.PATCHED).decode()
+        return f"""
+import assert from "node:assert/strict";
+const StatusStoreContext = {{}}, DashboardSidebarSelectionContext = {{}};
+const statuses = new Map();
+// The status store notifies the listeners of one workspace, like the row-dot store.
+const storeListeners = new Map();
+const store = {{
+  get: (id) => ({{ status: statuses.get(id) ?? null }}),
+  subscribe: (id, listener) => {{
+    if (!storeListeners.has(id)) storeListeners.set(id, new Set());
+    storeListeners.get(id).add(listener);
+    return () => storeListeners.get(id).delete(listener);
+  }},
+}};
+const setStatus = (id, status) => {{
+  statuses.set(id, status);
+  for (const listener of [...(storeListeners.get(id) ?? [])]) listener();
+}};
+let layoutCleanup = null;
+let lastSubscribe = null;
+const reactExports = {{
+  forwardRef: (render) => render,
+  createContext: () => ({{}}),
+  useContext: (context) => (context === StatusStoreContext ? store : context === DashboardSidebarSelectionContext ? {{ isWorkspaceSelected: () => false }} : null),
+  useCallback: (fn) => fn,
+  useMemo: (fn) => fn(),
+  useState: (value) => [value, () => {{}}],
+  useRef: (value) => ({{ current: value }}),
+  useEffect: () => {{}},
+  // One SsfSearch instance: a re-render with new deps runs the old cleanup, then the new body.
+  useLayoutEffect: (effect) => {{ layoutCleanup?.(); layoutCleanup = effect(); }},
+  // The last subscription stays reachable, so a test can mount it and check who wakes the component.
+  useSyncExternalStore: (subscribe, getSnapshot) => {{ lastSubscribe = subscribe; subscribe(() => {{}})(); return getSnapshot(); }},
+}};
+const jsxRuntimeExports = {{ jsx: (type, props, key) => ({{ type, props, key }}), jsxs: (type, props, key) => ({{ type, props, key }}), Fragment: "Fragment" }};
+const cn = (...parts) => parts.filter(Boolean).join(" ");
+function matches(text, normalizedQuery) {{
+  return text.toLowerCase().includes(normalizedQuery);
+}}
+// Stored collapse state: the sections store (PINNED, SESSIONS) and the upstream project / folder flags.
+const stored = {{ pinned: true, sessions: true, proj: true, fold: true }};
+const writes = [];
+const sectionsStore = {{
+  get collapsed() {{ return {{ pinned: stored.pinned, sessions: stored.sessions, workspaces: false, cloud: false }}; }},
+  toggle: (name) => {{ writes.push(name); stored[name] = !stored[name]; }},
+}};
+const useSidebarSectionsCollapseStore = (selector) => selector(sectionsStore);
+useSidebarSectionsCollapseStore.getState = () => sectionsStore;
+const toggleStored = (id) => {{ writes.push(id); stored[id] = !stored[id]; }};
+const ws = (id, name, projectId = null) => ({{ id, name, projectId, pullRequest: null }});
+const pin1 = ws("pin1", "pin one"), ses1 = ws("ses1", "session one"), w1 = ws("w1", "folder one", "proj"), w2 = ws("w2", "top one", "proj");
+const workspacesById = new Map([pin1, ses1, w1, w2].map((w) => [w.id, w]));
+const folder = () => ({{ id: "fold", name: "Folder", color: null, isCollapsed: stored.fold, workspaces: [w1] }});
+const project = () => ({{ id: "proj", name: "Proj", color: null, iconUrl: null, isCollapsed: stored.proj, children: [{{ type: "workspace", workspace: w2 }}, {{ type: "section", section: folder() }}] }});
+const ranges = [];
+const useDashboardSidebarDnd = () => ({{
+  isChildDragDisabled: false, activeType: null, activeSectionId: null, activeWorkspaceHome: null,
+  pinnedItems: ["workspace:pin1"], sessionItems: ["workspace:ses1"], projectItems: {{ proj: ["workspace:w2", "section:fold", "workspace:w1"] }},
+  workspacesById, projectsById: new Map(), sectionsById: new Map([["fold", folder()]]),
+  groupInfo: new Map([["w1", {{ sectionId: "fold", color: null }}]]),
+  collapsedSectionIds: new Set(stored.fold ? ["fold"] : []),
+  getContainerSortingStrategy: () => null,
+}});
+const useDashboardSidebarSelection = () => ({{ isWorkspaceSelected: () => false, selectWorkspaceFromEvent: (_event, {{ orderedWorkspaceIds }}) => ranges.push(orderedWorkspaceIds) }});
+const parseId = (id) => {{ const [type, realId] = id.split(":"); return {{ type, realId }}; }};
+const useSortable = () => ({{ setNodeRef: null, attributes: {{}}, listeners: {{}}, isDragging: false, transform: null, transition: null }});
+const CSS = {{ Translate: {{ toString: () => void 0 }} }};
+const getBlockedDragProps = () => ({{}});
+const useLingui = () => ({{ _: () => "label" }});
+const useDashboardSidebarState = () => ({{ setSectionColor: () => {{}} }});
+const useDashboardSidebarSectionRename = () => ({{ clearPendingSectionRename: () => {{}}, pendingRenameSectionId: null }});
+const useV2UserPreferences = () => ({{ setTagFolderHidden: () => {{}} }});
+const parseSidebarFolderKey = () => null;
+const useOpenNewSession = () => () => {{}};
+const noop = () => {{}};
+const useDashboardSidebarProjectSectionActions = () => ({{
+  canDeleteProject: false, isDeleteDialogOpen: false, importableWorktrees: null, isImportingWorktrees: false, isRenaming: false, renameValue: "",
+  cancelRename: noop, confirmImportWorktrees: noop, deleteSection: noop, handleImportWorktrees: noop, handleNewSection: noop, hideProject: noop,
+  leaveProjectIfActive: noop, openDeleteDialog: noop, projectHostIds: [], setIsDeleteDialogOpen: noop, handleNewWorkspace: noop,
+  handleOpenInFinder: noop, handleOpenSettings: noop, renameSection: noop, setImportableWorktrees: noop, setRenameValue: noop,
+  startRename: noop, submitRename: noop, toggleSectionCollapsed: toggleStored,
+}});
+const [SortableContext, verticalListSortingStrategy, SidebarDropZone$1, AnimatePresence, WorkspaceBulkMenuScope] = ["SortableContext", "vertical", "SidebarDropZone", "AnimatePresence", "WorkspaceBulkMenuScope"];
+const motion = {{ div: "motion.div" }};
+const [DashboardSidebarWorkspaceItem, DashboardSidebarProjectRow, DashboardSidebarGroupHeader, RenameInput] = ["WorkspaceItem", "ProjectRow", "GroupHeader", "RenameInput"];
+const [Tooltip, TooltipTrigger, TooltipContent, LuPlus, Trans, HiChevronRight, DeleteProjectDialog, ImportWorktreesDialog] = ["Tooltip", "TooltipTrigger", "TooltipContent", "LuPlus", "Trans", "HiChevronRight", "DeleteProjectDialog", "ImportWorktreesDialog"];
+const createLucideIcon = (name) => name, LuChevronsUpDown = "LuChevronsUpDown";
+const dropZoneId = (id) => id, PINNED_CONTAINER = "pinned", SESSIONS_CONTAINER = "sessions", SESSIONS_TAG_SCOPE = "sessions", PROJECT_COLOR_DEFAULT = null;
+{regions}
+const find = (node, type, out = []) => {{
+  if (Array.isArray(node)) node.forEach((child) => find(child, type, out));
+  else if (node && typeof node === "object") {{
+    if (node.type === type) out.push(node);
+    find(node.props?.children, type, out);
+  }}
+  return out;
+}};
+// A header's chevron points right (collapsed) unless it carries rotate-90.
+const chevronCollapsed = (header) => !find(header, HiChevronRight)[0].props.className.includes("rotate-90");
+const views = {{
+  project() {{
+    const element = DashboardSidebarProjectSection({{ project: project(), workspaceShortcutLabels: new Map(), onToggleCollapse: toggleStored }});
+    const row = find(element, DashboardSidebarProjectRow)[0];
+    const content = find(element, DashboardSidebarExpandedProjectContent)[0];
+    assert.equal(row.props.isCollapsed, content.props.isCollapsed);
+    return {{ collapsed: row.props.isCollapsed, click: () => row.props.onToggleCollapse() }};
+  }},
+  folder() {{
+    const content = DashboardSidebarExpandedProjectContent({{ containerId: "proj", projectId: "proj", isCollapsed: false, topLevelIndentation: "top-level", groupedIndentation: "workspace", workspaceShortcutLabels: new Map(), onToggleSectionCollapse: toggleStored }});
+    const group = find(SortableSectionHeader(find(content, SortableSectionHeader)[0].props), DashboardSidebarGroupHeader)[0];
+    const [top, inFolder] = find(content, SortableWorkspaceItem).map((item) => SortableWorkspaceItem(item.props));
+    assert.equal(inFolder.props.children.props.inert, group.props.isCollapsed, "the folder's row follows its header");
+    assert.equal(top.props.children.props.inert, false);
+    return {{ collapsed: group.props.isCollapsed, click: () => group.props.onToggleCollapse() }};
+  }},
+  pinned() {{
+    const element = DashboardSidebarPinnedSection({{ pinnedWorkspaces: [pin1] }});
+    const header = DashboardSidebarSectionHeader(find(element, DashboardSidebarSectionHeader)[0].props);
+    const collapsed = find(element, SortableContext).length === 0;
+    assert.equal(chevronCollapsed(header), collapsed);
+    return {{ collapsed, click: () => header.props.onClick() }};
+  }},
+  sessions() {{
+    const element = DashboardSidebarSessionsSection({{ sessionWorkspaces: [ses1], workspaceShortcutLabels: new Map() }});
+    const header = DashboardSidebarSectionHeader(find(element, DashboardSidebarSectionHeader)[0].props);
+    const collapsed = find(element, DashboardSidebarExpandedProjectContent)[0].props.isCollapsed;
+    assert.equal(chevronCollapsed(header), collapsed);
+    return {{ collapsed, click: () => header.props.onKeyDown({{ key: "Enter", preventDefault: () => {{}} }}) }};
+  }},
+}};
+const state = () => Object.fromEntries(Object.entries(views).map(([name, view]) => [name, view().collapsed]));
+const all = (collapsed) => Object.fromEntries(Object.keys(views).map((name) => [name, collapsed]));
+// Every group collapses and reopens by its own chevron, one at a time, and no stored flag is written.
+const collapseAndReopenEach = () => {{
+  for (const name of Object.keys(views)) {{
+    views[name]().click();
+    assert.deepEqual(state(), {{ ...all(false), [name]: true }}, `${{name}} collapses`);
+    views[name]().click();
+    assert.deepEqual(state(), all(false), `${{name}} reopens`);
+  }}
+  assert.deepEqual(writes, []);
+  assert.deepEqual(stored, {{ pinned: true, sessions: true, proj: true, fold: true }});
+}};
+// SESSIONS children (sessionChildren): ses1 on its own; a test may add a folder.
+let sessionKids = [{{ type: "workspace", workspace: ses1 }}];
+const sessionList = () => getProjectChildrenWorkspaces(sessionKids);
+// The Collapse all / Expand all button as the sticky search row renders it, with the ssfF array of region 3.
+const fold = (listShut = false) => {{
+  const groups = [project()];
+  const ssfF = [groups, listShut, toggleStored, toggleStored, sessionKids, [pin1], sessionList(), [pin1, ...sessionList(), w1, w2]];
+  const row = SsfSearch({{ query: ssfQ, onQueryChange: noop, pinnedWorkspaces: [pin1], sessionWorkspaces: sessionList(), groups, ssfF }});
+  assert.deepEqual(row.props.children[1].props, {{ ssfF }});
+  const element = SsfFold(row.props.children[1].props);
+  const button = element.props.children[0].props.children;
+  const icon = button.props.children.type;
+  assert.equal(icon, button.props["aria-label"] === "Collapse all" ? SsfChevronsDownUp : LuChevronsUpDown);
+  return {{ label: button.props["aria-label"], click: () => button.props.onClick() }};
+}};
+const search = (query, groups = [project()]) => SsfSearch({{ query, onQueryChange: noop, pinnedWorkspaces: [pin1], sessionWorkspaces: [ses1], groups }});
+for (const id of ["pin1", "ses1", "w1", "w2"]) statuses.set(id, "permission");
+{assertions}
+console.log("ok");
+"""
+
+    # Value: protects=A1/A2: with an active chip a project, a folder (header and its rows), PINNED and SESSIONS each collapse and reopen visibly by their own chevron, the stored collapse state is never written, and switching the chip off restores the stored state while the next filter starts open; fails_when=a chevron still writes the stored state under a filter, a group stays forced open (v4), a header chevron disagrees with its content, a folder row ignores its folder's override, or the overrides survive the filter; why_new=LUBOS-2519; seam=real patched regions with stubbed hooks
+    def test_chip_filter_collapses_and_reopens_every_group_without_touching_the_stored_state(self):
+        run_node(self, self.harness("""
+assert.deepEqual(state(), all(true), "no filter: the stored state");
+ssfToggle(1, false);
+assert.deepEqual(state(), all(false), "a chip opens every group by default");
+collapseAndReopenEach();
+views.project().click(); views.pinned().click();
+ssfToggle(4, false);
+assert.deepEqual(state(), { ...all(false), project: true, pinned: true }, "another chip keeps the overrides");
+ssfToggle(4, false); ssfToggle(1, false);
+assert.equal(ssfMask, 0);
+assert.deepEqual(state(), all(true), "filter off: the stored state again");
+assert.deepEqual(writes, []);
+ssfToggle(1, true);
+assert.deepEqual(state(), all(false), "the next filter starts open");
+// The auto-clear and the hotkeys leave the mask through ssfToggle as well.
+views.sessions().click();
+ssfClear(store, [1, 0, 0, 0, 0, 0]); ssfClear(store, [0, 0, 0, 0, 0, 0]);
+assert.equal(ssfMask, 0);
+assert.deepEqual(state(), all(true));
+"""))
+
+    # Value: protects=A1/A2 with a search instead of a chip: every group collapses and reopens, the overrides survive the search effect re-running on new sidebar data and a chip toggled meanwhile, and clearing the search restores the stored state; fails_when=the search cleanup notifies with an empty query (v4) so any data refresh drops the overrides, or clearing the query keeps them; why_new=LUBOS-2519; seam=real patched regions with stubbed hooks
+    def test_search_collapses_and_reopens_every_group_and_survives_a_data_refresh(self):
+        run_node(self, self.harness("""
+search("");
+assert.deepEqual(state(), all(true));
+search("one");
+assert.deepEqual(state(), all(false), "a search opens every group by default");
+collapseAndReopenEach();
+views.folder().click(); views.sessions().click();
+search("one", [project()]);
+assert.deepEqual(state(), { ...all(false), folder: true, sessions: true }, "a data refresh re-runs the effect, overrides stay");
+ssfToggle(1, false); ssfToggle(1, false);
+assert.deepEqual(state(), { ...all(false), folder: true, sessions: true }, "the search still filters");
+search("");
+assert.deepEqual(state(), all(true), "search cleared: the stored state again");
+search("one");
+assert.deepEqual(state(), all(false));
+assert.deepEqual(writes, []);
+"""))
+
+    # Value: protects=A3: without a filter every chevron writes the stored state exactly as stock, the PROJECTS and cloud headers (no ssfV) keep writing it even under a filter, and the collapsed icon rail keeps the stored state and its own toggle; fails_when=an unfiltered click goes to ssfFlip, a header without ssfV reads the override, or the rail follows the override; why_new=LUBOS-2519; seam=real patched regions with stubbed hooks
+    def test_without_a_filter_and_on_the_icon_rail_the_stored_state_rules(self):
+        run_node(self, self.harness("""
+for (const name of Object.keys(views)) views[name]().click();
+assert.deepEqual(writes, ["proj", "fold", "pinned", "sessions"]);
+assert.deepEqual(state(), all(false));
+for (const name of Object.keys(views)) views[name]().click();
+assert.deepEqual(state(), all(true));
+writes.length = 0;
+ssfToggle(1, false);
+views.project().click();
+const projects = DashboardSidebarSectionHeader({ label: "Projects", section: "workspaces" });
+projects.props.onClick();
+assert.deepEqual(writes, ["workspaces"]);
+const rail = find(DashboardSidebarProjectSection({ project: project(), isSidebarCollapsed: true, onToggleCollapse: toggleStored }), DashboardSidebarCollapsedProjectContent)[0];
+assert.equal(rail.props.isCollapsed, true, "the rail shows the stored state, not the override");
+rail.props.onToggleCollapse();
+assert.deepEqual(writes, ["workspaces", "proj"]);
+"""))
+
+    # Value: protects=GA1/GA2 without a filter: Collapse all / Expand all writes the stored state of exactly the groups whose state differs (like clicking their chevrons), decides by the groups on screen (a folder inside a collapsed project does not count), and with PROJECTS collapsed reaches SESSIONS only; fails_when=the button toggles every group blindly (flipping already-collapsed ones open), counts a hidden folder as open, or touches PINNED and projects behind a collapsed PROJECTS list; why_new=LUBOS-2519 scope add; seam=real patched regions with stubbed hooks
+    def test_fold_all_without_a_filter_writes_the_stored_state(self):
+        run_node(self, self.harness("""
+assert.equal(fold().label, "Expand all");
+fold().click();
+assert.deepEqual(writes.sort(), ["fold", "pinned", "proj", "sessions"]);
+assert.deepEqual(state(), all(false));
+assert.equal(fold().label, "Collapse all");
+writes.length = 0;
+fold().click();
+assert.deepEqual(state(), all(true));
+assert.equal(writes.length, 4);
+// Only the project is collapsed, its folder open: the folder is off screen, so nothing visible is open.
+stored.fold = false; writes.length = 0;
+assert.equal(fold().label, "Expand all");
+fold().click();
+assert.deepEqual(writes.sort(), ["pinned", "proj", "sessions"]);
+// One open group is enough to collapse: only the open ones are written.
+views.sessions().click(); writes.length = 0;
+assert.equal(fold().label, "Collapse all");
+fold().click();
+assert.deepEqual(writes.sort(), ["fold", "pinned", "proj"]);
+assert.deepEqual(state(), all(true));
+// PROJECTS collapsed: PINNED and the projects are not rendered, SESSIONS is the only group.
+writes.length = 0;
+fold(true).click();
+assert.deepEqual(writes, ["sessions"]);
+"""))
+
+    # Value: protects=GA1/GA2 under a chip, an Option-click solo chip and a search: Collapse all / Expand all sets the in-memory overrides of every shown group and never the stored state, groups the chip hides are left out of the decision, and switching the filter off restores the stored state; fails_when=the button writes the stored state under a filter, decides by a hidden group, or its overrides survive the filter; why_new=LUBOS-2519 scope add; seam=real patched regions with stubbed hooks
+    def test_fold_all_under_a_chip_a_solo_chip_and_a_search_uses_the_overrides(self):
+        run_node(self, self.harness("""
+for (const [name, on, off] of [
+  ["chip", () => ssfToggle(1, false), () => ssfToggle(1, false)],
+  ["solo chip", () => { ssfToggle(4, false); ssfToggle(1, true); }, () => ssfToggle(1, true)],
+  ["search", () => search("one"), () => search("")],
+]) {
+  on();
+  assert.ok(ssfMask || ssfQ, name);
+  assert.equal(fold().label, "Collapse all", name);
+  fold().click();
+  assert.deepEqual(state(), all(true), name);
+  assert.equal(fold().label, "Expand all", name);
+  fold().click();
+  assert.deepEqual(state(), all(false), name);
+  views.folder().click();
+  assert.equal(fold().label, "Collapse all", name);
+  fold().click();
+  assert.deepEqual(state(), all(true), name);
+  off();
+  assert.equal(ssfMask, 0, name); assert.equal(ssfQ, "", name);
+  assert.deepEqual(state(), all(true), `${name}: the stored state again`);
+  assert.deepEqual(ssfShut.size, 0, name);
+}
+assert.deepEqual(writes, []);
+assert.deepEqual(stored, { pinned: true, sessions: true, proj: true, fold: true });
+// A group the chip hides is not on screen: with SESSIONS hidden and every shown group collapsed, the button expands.
+statuses.set("ses1", "working");
+ssfToggle(1, false);
+for (const name of ["project", "pinned"]) views[name]().click();
+assert.equal(fold().label, "Expand all");
+fold().click();
+assert.deepEqual(ssfShut.size, 0);
+assert.deepEqual(writes, []);
+"""))
+
+    # Value: protects=GA1/GA2 for the folders inside SESSIONS: Expand all opens a collapsed SESSIONS folder too, through the stored toggle without a filter and through its override under a chip, and a folder counts only while SESSIONS is open; fails_when=ssfFolds walks folders only for projects (sessionChildren never reaches the button), so Expand all leaves a SESSIONS folder collapsed; why_new=LUBOS-2519 review round 1 finding 2; seam=real patched regions with stubbed hooks
+    def test_fold_all_reaches_the_folders_inside_sessions(self):
+        run_node(self, self.harness("""
+const sf1 = ws("sf1", "session in folder");
+stored.sfold = true;
+sessionKids = [{ type: "workspace", workspace: ses1 }, { type: "section", section: { id: "sfold", name: "Folder", color: null, isCollapsed: stored.sfold, workspaces: [sf1] } }];
+statuses.set("sf1", "permission");
+// Without a filter: everything collapsed, Expand all writes SESSIONS and its folder as well.
+assert.equal(fold().label, "Expand all");
+fold().click();
+assert.deepEqual(writes.sort(), ["fold", "pinned", "proj", "sessions", "sfold"]);
+assert.equal(stored.sfold, false);
+sessionKids[1].section.isCollapsed = stored.sfold;
+assert.equal(fold().label, "Collapse all");
+writes.length = 0;
+fold().click();
+assert.ok(writes.includes("sfold"), "Collapse all writes the open SESSIONS folder");
+sessionKids[1].section.isCollapsed = stored.sfold;
+writes.length = 0;
+// Under a chip: SESSIONS and its folder collapsed by their overrides, Expand all opens both.
+ssfToggle(1, false);
+fold().click();
+assert.ok(ssfShut.has("sessions") && ssfShut.has("sfold"), "Collapse all shuts the SESSIONS folder");
+assert.equal(fold().label, "Expand all");
+fold().click();
+assert.equal(ssfShut.size, 0, "Expand all reopens the SESSIONS folder");
+// The folder is off screen while SESSIONS is collapsed: it alone does not make the button collapse.
+for (const name of ["project", "pinned", "folder", "sessions"]) views[name]().click();
+assert.ok(!ssfShut.has("sfold"));
+assert.equal(fold().label, "Expand all");
+assert.deepEqual(writes, []);
+"""))
+
+    # Value: protects=GA1: the button follows status changes, so its label and its click agree when a chip shows a new group; fails_when=SsfFold subscribes only to the shared filter state, so a workspace turning Needs input leaves the label at "Expand all" while a click recomputes and collapses; why_new=LUBOS-2519 review round 1 finding 3; seam=real patched regions with stubbed hooks
+    def test_fold_button_wakes_on_a_status_change(self):
+        run_node(self, self.harness("""
+for (const id of ["ses1", "w1", "w2"]) statuses.set(id, "working");
+ssfToggle(1, false);
+views.pinned().click();
+assert.equal(fold().label, "Expand all", "the only shown group, PINNED, is collapsed");
+let woken = 0;
+const off = lastSubscribe(() => woken++);
+setStatus("ses1", "permission");
+assert.equal(woken, 1, "a status change wakes the button");
+off();
+assert.equal(fold().label, "Collapse all", "SESSIONS now shows, open");
+fold().click();
+assert.ok(ssfShut.has("pinned") && ssfShut.has("sessions"));
+"""))
+
+    # Value: protects=a Shift range never spans the rows of a folder collapsed under the filter, and spans them again once it reopens; fails_when=ssfRange ignores the override, so a bulk action reaches rows the user cannot see; why_new=LUBOS-2519; seam=real patched regions with stubbed hooks
+    def test_shift_range_skips_a_folder_collapsed_under_the_filter(self):
+        run_node(self, self.harness("""
+stored.fold = false;
+const range = () => {
+  const content = DashboardSidebarExpandedProjectContent({ containerId: "proj", projectId: "proj", isCollapsed: false, topLevelIndentation: "top-level", groupedIndentation: "workspace", workspaceShortcutLabels: new Map(), onToggleSectionCollapse: toggleStored });
+  find(content, SortableWorkspaceItem)[0].props.onSelectionClick({ shiftKey: true });
+  return ranges.pop();
+};
+assert.deepEqual(range(), ["w2", "w1"]);
+ssfToggle(1, false);
+assert.deepEqual(range(), ["w2", "w1"]);
+views.folder().click();
+assert.deepEqual(range(), ["w2"]);
+views.folder().click();
+assert.deepEqual(range(), ["w2", "w1"]);
+"""))
+
+
 class SupersetStatusFilterGenerationsTest(unittest.TestCase):
     """Older filter generations and the 1.37 sticky-row variant stay recognised end to end."""
 
@@ -2937,7 +3539,7 @@ class SupersetStatusFilterGenerationsTest(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, "older --sidebar-status-filter generation"):
                         MODULE._plan_region_rewrite(v3 + region.end, region, MODULE.STATUS_FILTER_REGION_VARIANTS)
                 else:
-                    patched = (FIXTURES / f"superset-1.36.0-status-filter-r{n}.patched.js").read_bytes()
+                    patched = SupersetSidebarStatusFilterPatchTest.PATCHED_FIXTURES[n - 1].read_bytes()
                     self.assertEqual([], MODULE._plan_region_rewrite(patched + region.end, region, MODULE.STATUS_FILTER_REGION_VARIANTS))
 
     # Value: protects=a host on the first auto-clear (live on 1.37 since 2026-10-14 00:59 CEST, history not bound to the store) gets the --revert hint for region 5 only, and every other region stays a patched no-op; fails_when=the first auto-clear digest drops out of legacy_sha256, or the store-bound history leaks into another region; why_new=round 1 opposition P2 on PR #489 changed only region 5; seam=real first auto-clear fixture
@@ -2950,8 +3552,32 @@ class SupersetStatusFilterGenerationsTest(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, "older --sidebar-status-filter generation"):
                         MODULE._plan_region_rewrite(ac1 + region.end, region, MODULE.STATUS_FILTER_REGION_VARIANTS)
                 else:
-                    patched = (FIXTURES / f"superset-1.36.0-status-filter-r{n}.patched.js").read_bytes()
+                    patched = SupersetSidebarStatusFilterPatchTest.PATCHED_FIXTURES[n - 1].read_bytes()
                     self.assertEqual([], MODULE._plan_region_rewrite(patched + region.end, region, MODULE.STATUS_FILTER_REGION_VARIANTS))
+
+    # Value: protects=a host on the v4 filter (forced-open groups) gets the --revert hint for the nine regions v5 changes (the sticky row on 1.36 and 1.37 included, it hands Collapse all and the chip hotkeys the sidebar data; region 9, whose hotkey target now follows the rows on screen), while the new regions stay a patched no-op; the v3 second auto-clear (upgraded in place by v4) now asks for a revert as well; fails_when=a v4 or v3 digest drops out of legacy_sha256, so the live bundle fails as "neither stock nor patched"; why_new=LUBOS-2519 v5; seam=real v4 and v3 fixtures
+    def test_v4_generation_asks_for_revert(self):
+        changed = {1, 2, 3, 4, 5, 6, 7, 8, 9}
+        for n, region in enumerate(MODULE.STATUS_FILTER_REGIONS, 1):
+            with self.subTest(region=region.label):
+                if n in changed:
+                    version = "1.37.0" if n == 9 else "1.36.0"
+                    v4 = (FIXTURES / f"superset-{version}-status-filter-r{n}.v4-patched.js").read_bytes()
+                    self.assertIn(hashlib.sha256(v4).hexdigest(), region.legacy_sha256)
+                    with self.assertRaisesRegex(RuntimeError, "older --sidebar-status-filter generation"):
+                        MODULE._plan_region_rewrite(v4 + region.end, region, MODULE.STATUS_FILTER_REGION_VARIANTS)
+                else:
+                    patched = SupersetSidebarStatusFilterPatchTest.PATCHED_FIXTURES[n - 1].read_bytes()
+                    self.assertEqual([], MODULE._plan_region_rewrite(patched + region.end, region, MODULE.STATUS_FILTER_REGION_VARIANTS))
+        variant = MODULE.STATUS_FILTER_REGION_VARIANTS[0]
+        v4 = (FIXTURES / "superset-1.37.0-status-filter-r3.v4-patched.js").read_bytes()
+        self.assertIn(hashlib.sha256(v4).hexdigest(), variant.legacy_sha256)
+        with self.assertRaisesRegex(RuntimeError, "older --sidebar-status-filter generation"):
+            MODULE._plan_region_rewrite(v4 + variant.end, MODULE.STATUS_FILTER_REGIONS[2], MODULE.STATUS_FILTER_REGION_VARIANTS)
+        region = MODULE.STATUS_FILTER_REGIONS[0]
+        ac2 = (FIXTURES / "superset-1.36.0-status-filter-r1.ac2-patched.js").read_bytes()
+        with self.assertRaisesRegex(RuntimeError, "older --sidebar-status-filter generation"):
+            MODULE._plan_region_rewrite(ac2 + region.end, region, MODULE.STATUS_FILTER_REGION_VARIANTS)
 
     # Value: protects=on a 1.37 bundle the footer write is folded into the 1.37 sticky-row rewrite through the real plan and re-plans to nothing; fails_when=fold hosts miss the 1.37 variant (renamed label), so the footer and region writes overlap and every run fails closed; why_new=only the 1.36 bundle went through patch_bytes with both flags; seam=real 1.37 region fixture
     def test_footer_and_filter_compose_on_137_through_the_plan(self):
@@ -2978,6 +3604,101 @@ class SupersetStatusFilterGenerationsTest(unittest.TestCase):
         self.assertLessEqual(set(MODULE.HIDDEN_NAV_BUTTONS), titles)
 
 
+class SupersetStatusFilterHotkeysPatchTest(unittest.TestCase):
+    """--status-filter-hotkeys moves two registry defaults and switches the chip key map on."""
+
+    WORKSPACE_NEW_SHORTCUT = SupersetUiPatchTest.WORKSPACE_NEW_SHORTCUT
+    REGION_FIXTURES = SupersetSidebarStatusFilterPatchTest.REGION_FIXTURES
+    regions = SupersetSidebarStatusFilterPatchTest.regions
+    HOTKEYS = FIXTURES / "superset-1.37.0-hotkeys-registry.js"
+
+    def bundle(self, hotkeys=None):
+        """Every real stock region plus the real 1.37.0 hotkey registry."""
+        hotkeys = self.HOTKEYS.read_bytes() if hotkeys is None else hotkeys
+        return SupersetSidebarStatusFilterPatchTest.stock_bundle(self) + b"|" + hotkeys
+
+    def patch(self, data, hotkeys=True, status_filter=True):
+        return MODULE.patch_bytes(
+            data, size=6, hide_tray=True, custom_project_icons=True, keep_icon_on_hover=True,
+            compact_sidebar=True, sidebar_status_filter=status_filter, status_filter_hotkeys=hotkeys,
+        )
+
+    # Value: protects=the registry moves are exact, length-preserving edits of the real 1.37.0 entries (Rich Input to Cmd+Shift+I, Close Tab to Cmd+Option+W, Windows and Linux untouched) and the chords they free are not bound elsewhere; fails_when=an anchor drifts, a move changes the length, or another registry entry already uses Cmd+Shift+I, Cmd+Option+W, Cmd+I, Cmd+Shift+E or Cmd+Shift+W after the move; why_new=v4 chip hotkeys; seam=real 1.37.0 registry
+    def test_registry_moves_are_exact_and_free_the_chip_chords(self):
+        registry = self.HOTKEYS.read_bytes()
+        for stock, moved in (
+            (MODULE.HOTKEY_RICH_INPUT_STOCK, MODULE.HOTKEY_RICH_INPUT_MOVED),
+            (MODULE.HOTKEY_CLOSE_TAB_STOCK, MODULE.HOTKEY_CLOSE_TAB_MOVED),
+        ):
+            self.assertEqual(len(stock), len(moved))
+            self.assertEqual(registry.count(stock), 1)
+            registry = registry.replace(stock, moved)
+        node_check(self, registry)
+        macs = re.findall(rb'mac: L\$1\("([^"]+)"\)', registry)
+        for chord in (b"meta+i", b"meta+shift+e", b"meta+shift+w"):
+            self.assertNotIn(chord, macs)
+        for chord in (b"meta+shift+i", b"meta+alt+w"):
+            self.assertEqual(macs.count(chord), 1)
+        self.assertEqual(registry.count(b'linux: L$1("ctrl+shift+m")'), 1)
+        self.assertIn(b'windows: L$1("ctrl+shift+alt+w")', registry)
+
+    # Value: protects=one run from stock writes the filter, the key map on and both registry moves; a re-run is a no-op; the map stays on when the flag is later left out (sticky like the hidden footer); fails_when=the map is not folded into the room region's rewrite, the shared pair is not canonicalised (re-run fails as neither stock nor patched), or a registry move is lost; why_new=v4 chip hotkeys; seam=real regions and registry
+    def test_flag_applies_from_stock_and_is_idempotent_and_sticky(self):
+        once, changes = self.patch(self.bundle())
+        self.assertEqual(once.count(MODULE.STATUS_FILTER_KEYS_ON), 1)
+        self.assertNotIn(MODULE.STATUS_FILTER_KEYS_OFF, once)
+        self.assertEqual(once.count(MODULE.HOTKEY_RICH_INPUT_MOVED), 1)
+        self.assertEqual(once.count(MODULE.HOTKEY_CLOSE_TAB_MOVED), 1)
+        self.assertIn("status filter: chip hotkeys", changes)
+        self.assertNotIn("status filter hotkeys: chip key map", changes)
+        self.assertEqual(self.patch(once), (once, []))
+        self.assertEqual(self.patch(once, hotkeys=False), (once, []))
+
+    # Value: protects=a host already on the v4 filter without the flag gets only the key map and the two registry writes, and ends byte-identical to a one-run apply; fails_when=the map write is planned against the wrong bytes or the room region is rewritten again; why_new=v4 chip hotkeys; seam=real regions and registry
+    def test_flag_added_later_matches_a_one_run_apply(self):
+        filtered, _ = self.patch(self.bundle(), hotkeys=False)
+        self.assertEqual(filtered.count(MODULE.STATUS_FILTER_KEYS_OFF), 1)
+        self.assertEqual(filtered.count(MODULE.HOTKEY_RICH_INPUT_STOCK), 1)
+        later, changes = self.patch(filtered)
+        self.assertEqual(sorted(changes), [
+            "status filter hotkeys: Close Tab on Cmd+Option+W",
+            "status filter hotkeys: Terminal Rich Input on Cmd+Shift+I",
+            "status filter hotkeys: chip key map",
+        ])
+        self.assertEqual(later, self.patch(self.bundle())[0])
+
+    # Value: protects=the live v4 filter with the chip hotkeys on (1.37 since 2026-10-14) is refused with the --revert hint before any write, and once reverted to stock the same flags apply v5 in one run; fails_when=a v4 digest drops out of legacy_sha256 so the host fails as "neither stock nor patched", or v4 bytes are patched over; why_new=LUBOS-2519 v5 changes regions 1, 2 and 4-9; seam=real v4 region fixtures
+    def test_live_v4_filter_asks_for_a_revert_first(self):
+        bundle = self.bundle()
+        v5, _ = self.patch(bundle)
+        v4 = v5
+        for n, (region, stock) in enumerate(self.regions(), 1):
+            if n in (1, 2, 4, 5, 6, 7, 8, 9):
+                old = (FIXTURES / f"superset-{'1.37.0' if n == 9 else '1.36.0'}-status-filter-r{n}.v4-patched.js").read_bytes()
+                if n == 9:
+                    old = old.replace(MODULE.STATUS_FILTER_KEYS_OFF, MODULE.STATUS_FILTER_KEYS_ON)
+                    self.assertIn(MODULE.STATUS_FILTER_KEYS_ON, v4, "the live v4 key map is on")
+                    v4 = v4.replace(MODULE.rewrite_region(region, stock).replace(MODULE.STATUS_FILTER_KEYS_OFF, MODULE.STATUS_FILTER_KEYS_ON), old)
+                else:
+                    v4 = v4.replace(MODULE.rewrite_region(region, stock), old)
+                self.assertIn(old, v4, region.label)
+        self.assertNotEqual(v4, v5)
+        self.assertEqual(len(v4), len(v5))
+        with self.assertRaisesRegex(RuntimeError, "older --sidebar-status-filter generation.*--revert"):
+            self.patch(v4)
+        self.assertEqual(self.patch(v5), (v5, []))
+
+    # Value: protects=the flag refuses to run without the filter and fails closed on a drifted registry entry or a missing key map; fails_when=either guard is dropped, so a host loses Rich Input or Close Tab without gaining the chip keys; why_new=v4 chip hotkeys; seam=none
+    def test_flag_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, "needs --sidebar-status-filter"):
+            self.patch(self.bundle(), status_filter=False)
+        drifted = self.HOTKEYS.read_bytes().replace(b'mac: L$1("meta+i")', b'mac: L$1("meta+j")')
+        with self.assertRaisesRegex(RuntimeError, "TOGGLE_TERMINAL_RICH_INPUT hotkey"):
+            self.patch(self.bundle(drifted))
+        with self.assertRaisesRegex(RuntimeError, "chip key map not found"):
+            MODULE._plan_status_filter_hotkeys(self.HOTKEYS.read_bytes(), [])
+
+
 class SupersetStatusFilterNamesTest(unittest.TestCase):
     """The status filter refuses a real ASAR whose region chunk lacks a name the injected JS reads."""
 
@@ -2988,7 +3709,8 @@ class SupersetStatusFilterNamesTest(unittest.TestCase):
     # outside the pinned regions (imports from shared chunks, local definitions).
     NAMES = (
         b'import { j as jsxRuntimeExports, r as reactExports, c as cn, T as Tooltip, a as TooltipTrigger, '
-        b'b as TooltipContent, m as LuGitMerge, p as LuGitPullRequest } from "./shared.js";\n'
+        b'b as TooltipContent, m as LuGitMerge, p as LuGitPullRequest, u as useNavigate, n as navigateToV2Workspace, '
+        b'l as createLucideIcon, v as LuChevronsUpDown } from "./shared.js";\n'
         b"const StatusStoreContext = 1;\nconst DashboardSidebarSelectionContext = 1;\nconst PR_COLOR_BY_STATE = {};\n"
         b"function getProjectChildrenWorkspaces() {}\nfunction AsciiSpinner() {}\n"
         b"function DashboardSidebarProjectsFilterInput() {}\nconst useSidebarSectionsCollapseStore = 1;\n"
@@ -3007,8 +3729,12 @@ class SupersetStatusFilterNamesTest(unittest.TestCase):
         return (4).to_bytes(4, "little") + header_size.to_bytes(4, "little") + (header_size - 4).to_bytes(4, "little") + len(header).to_bytes(4, "little") + padded + payload
 
     def chunk(self):
-        """Synthetic base anchors plus every real stock region, as one layout chunk."""
-        return SupersetSidebarStatusFilterPatchTest.stock_bundle(self)
+        """Synthetic base anchors plus every real stock region, as one layout chunk.
+
+        The last region ends mid-line (region 10's end anchor), so the chunk
+        ends with a line break before the declarations appended to it.
+        """
+        return SupersetSidebarStatusFilterPatchTest.stock_bundle(self) + b"\n"
 
     def patch(self, data, status_filter=True):
         """Apply the compact set with or without the status filter."""
@@ -3026,7 +3752,7 @@ class SupersetStatusFilterNamesTest(unittest.TestCase):
         chunk = self.chunk()
         for name in (*MODULE.STATUS_FILTER_IMPORTED_NAMES, *MODULE.STATUS_FILTER_DEFINED_NAMES):
             with self.subTest(name=name):
-                if re.search(rf"function {name}\(".encode(), chunk):
+                if re.search(rf"^(?:function {name}\(|const {name} =)".encode(), chunk, re.M):
                     continue  # defined inside a pinned region, so the region digest already covers it
                 broken = re.sub(rf"\b{name}\b".encode(), f"{name}X".encode(), self.NAMES, count=1)
                 self.assertNotEqual(broken, self.NAMES, name)
