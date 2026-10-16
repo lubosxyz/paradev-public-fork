@@ -467,6 +467,127 @@ class PaletteBundleTest(unittest.TestCase):
         self.assertNotIn("command_palette_workspace_search", options)
 
 
+
+# desktop-v1.38.0 (LUBOS-2525): region 1 is byte-identical to 1.37; region 2 and the two room regions
+# that replace 1.37 regions 3-7 are cut from the real 1.38.0 layout-LF5A5mOm.js.
+REGIONS_138 = MODULE.PALETTE_SEARCH_REGIONS_1_38
+STOCK_138 = [STOCK[0]] + [(FIXTURES / f"superset-1.38.0-palette-r{n}.js").read_bytes() for n in range(2, 5)]
+PATCHED_138 = [PATCHED[0]] + [(FIXTURES / f"superset-1.38.0-palette-r{n}.patched.js").read_bytes() for n in range(2, 5)]
+HOTKEYS_138 = (FIXTURES / "superset-1.38.0-hotkeys-registry.js").read_bytes()
+HOTKEYS_138_PATCHED = (FIXTURES / "superset-1.38.0-hotkeys-registry.patched.js").read_bytes()
+# What follows each 1.38 layout region in the chunk (its end anchor opens it).
+TAILS_138 = (b"}) {}\n", b"}) {}\n", b"};\n")
+
+
+def layout_chunk_138(regions=None, names=LAYOUT_NAMES):
+    regions = STOCK_138[1:] if regions is None else regions
+    return names + b"".join(r + spec.end + tail for spec, r, tail in zip(REGIONS_138[1:], regions, TAILS_138, strict=True))
+
+
+def bundle_138(layout=None, hotkeys=HOTKEYS_138):
+    return asar(
+        ("index.js", BASE),
+        ("AppMenuButton-q3s0wF7I.js", menu_chunk()),
+        ("layout-LF5A5mOm.js", layout_chunk_138() if layout is None else layout),
+        ("useRecordHotkeys-DDdsqo3n.js", hotkeys),
+    )
+
+
+class PaletteSearch138Test(unittest.TestCase):
+    """The 1.38.0 layout: the same injected JS in the regions 1.38 still has (LUBOS-2525)."""
+
+    # Value: protects=the 1.38 rewrites are exactly the reviewed fixtures, keep their length, re-run to nothing and parse; fails_when=an edit, the injected JS or a 1.38 digest changes without its fixture; why_new=LUBOS-2525; seam=real 1.38.0 bytes
+    def test_real_regions_are_pinned_idempotent_and_parseable(self):
+        self.assertIs(REGIONS_138[0], REGIONS[0])
+        for region, stock, patched in zip(REGIONS_138, STOCK_138, PATCHED_138, strict=True):
+            with self.subTest(region=region.label):
+                self.assertEqual(len(stock), region.length)
+                self.assertEqual(hashlib.sha256(stock).hexdigest(), region.stock_sha256)
+                self.assertEqual(hashlib.sha256(patched).hexdigest(), region.patched_sha256)
+                self.assertEqual(MODULE._plan_region_rewrite(stock + region.end, region), [(0, stock, patched, region.label)])
+                self.assertEqual(MODULE._plan_region_rewrite(patched + region.end, region), [])
+                node_check(self, patched)
+
+    # Value: protects=1.38 carries every helper of the 1.37 generation exactly once (search, frame, +, Cmd+Enter, create) and region 2 the same results edits; the room regions change nothing but no-op comments; fails_when=a helper is dropped or lands twice when 1.37 regions 3-7 are replaced, or a room region rewrites upstream code; why_new=LUBOS-2525 moves the helpers out of the deleted v1 sidebar; seam=real 1.38.0 bytes
+    def test_every_helper_lands_once_and_room_regions_only_lose_comments(self):
+        patched = b"".join(PATCHED_138)
+        for js in (
+            MODULE.PALETTE_SEARCH_HELPERS_JS, MODULE.PALETTE_NEW_WORKSPACE_FRAME_JS, MODULE.PALETTE_NEW_WORKSPACE_PLUS_JS,
+            MODULE.PALETTE_NEW_WORKSPACE_KEY_JS, MODULE.PALETTE_NEW_WORKSPACE_CREATE_JS,
+        ):
+            self.assertEqual(patched.count(js), 1)
+        for name in MODULE.PALETTE_SEARCH_NEW_NAMES:
+            self.assertEqual(patched.count(b"function %s(" % name.encode()) + patched.count(b"const %s = " % name.encode()), 1, name)
+            self.assertNotIn(name.encode(), b"".join(STOCK_138), name)
+        layout = PATCHED_138[1]
+        self.assertIn(b"registerProvider(addProjectProvider), registerProvider(sspProvider)];", layout)
+        self.assertIn(b"function V2WorkspaceList({\n  query,\n  projectId,\n  lead\n}) {\n", layout)
+        self.assertNotIn(b"V1WorkspaceList", layout)
+        for region, stock, new in zip(REGIONS_138[2:], STOCK_138[2:], PATCHED_138[2:], strict=True):
+            with self.subTest(region=region.label):
+                [(anchor, replacement)] = region.edits
+                body = stock
+                for comment in MODULE.JS_NOOP_COMMENTS:
+                    body = body.replace(comment, b"")
+                self.assertEqual(new.rstrip(b" "), body.replace(anchor, replacement))
+        # Region 2 deletes one whole `//` comment block for room, nothing else.
+        deleted = REGIONS_138[1].edits[0]
+        self.assertEqual(deleted[1], b"")
+        self.assertTrue(all(line.lstrip().startswith(b"// ") for line in deleted[0].splitlines()))
+        self.assertEqual(REGIONS_138[1].edits[1:], REGIONS[1].edits)
+
+    # Value: protects=the 1.38 bundle applies all four writes plus the Cmd+K swap, re-runs to nothing and reverts byte-identically; fails_when=the 1.38 layout is not selected, a write is not length-preserving, or revert does not restore; why_new=LUBOS-2525; seam=temp ASAR
+    def test_apply_rerun_and_revert(self):
+        original = bundle_138()
+        self.assertEqual(MODULE._select_layout(original, MODULE.PALETTE_SEARCH_LAYOUTS, "command palette")[0], "1.38")
+        self.assertEqual(MODULE._select_layout(bundle(), MODULE.PALETTE_SEARCH_LAYOUTS, "command palette")[0], "1.37")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target, backups = root / "app.asar", root / "backups"
+            target.write_bytes(original)
+            options = dict(size=6, hide_tray=False, custom_project_icons=False, keep_icon_on_hover=False,
+                           command_palette_cmd_k=True, command_palette_workspace_search=True)
+            _backup, changes = MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options)
+            self.assertEqual(sorted(changes), sorted([r.label for r in REGIONS_138] + SWAP_LABELS))
+            patched = target.read_bytes()
+            self.assertEqual(len(patched), len(original))
+            for region, new in zip(REGIONS_138, PATCHED_138):
+                self.assertEqual(patched.count(new), 1, region.label)
+            self.assertIn(HOTKEYS_138_PATCHED, patched)
+            self.assertEqual(MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options), (None, []))
+            MODULE.revert(target, backups)
+            self.assertEqual(target.read_bytes(), original)
+
+    # Value: protects=a bundle mixing 1.37 and 1.38 palette regions, or half-patched 1.38 regions, fails closed before a write; fails_when=layout selection falls back per region or a partial 1.38 state is accepted; why_new=REBASE.md mixed-release rule for the new layout; seam=none
+    def test_mixed_release_or_generation_fails_closed(self):
+        mixed = bundle_138(layout=layout_chunk_138([STOCK[1], *STOCK_138[2:]]))
+        with self.assertRaisesRegex(RuntimeError, "command palette"):
+            patch(mixed)
+        half = bundle_138(layout=layout_chunk_138([PATCHED_138[1], *STOCK_138[2:]]))
+        with self.assertRaisesRegex(RuntimeError, "mix generations"):
+            patch(half)
+        self.assertEqual(patch(half, search=False)[1], SWAP_LABELS)
+
+    # Value: protects=the 1.38 chunk is held to the same names as 1.37, and a collision outside the regions is refused; fails_when=the 1.38 layout skips the chunk name check; why_new=LUBOS-2525; seam=none
+    def test_names_are_checked_on_the_1_38_chunk(self):
+        broken = LAYOUT_NAMES.replace(b"a as useIsV2CloudEnabled", b"a as useIsV2CloudEnabledX")
+        with self.assertRaisesRegex(RuntimeError, "useIsV2CloudEnabled is not available"):
+            patch(bundle_138(layout=layout_chunk_138(names=broken)))
+        with self.assertRaisesRegex(RuntimeError, "already uses sspScore"):
+            patch(bundle_138(layout=layout_chunk_138(names=LAYOUT_NAMES + b"function sspScore() {}\n")))
+
+    # Value: protects=the Cmd+K swap is exact on the 1.38 registry (UNDO_ARCHIVE_WORKSPACE renamed to UNDO there); fails_when=1.38 moves either default; why_new=LUBOS-2525; seam=real 1.38.0 registry
+    def test_cmd_k_swap_on_the_1_38_registry(self):
+        writes = MODULE._plan_command_palette_cmd_k(HOTKEYS_138)
+        self.assertEqual(sorted(w[3] for w in writes), SWAP_LABELS)
+        swapped = bytearray(HOTKEYS_138)
+        for offset, old, new, _label in writes:
+            swapped[offset : offset + len(old)] = new
+        self.assertEqual(bytes(swapped), HOTKEYS_138_PATCHED)
+        self.assertEqual(MODULE._plan_command_palette_cmd_k(bytes(swapped)), [])
+        node_check(self, bytes(swapped))
+
+
 @live_host_only("anchors, names and chunk syntax are checked against the Superset.app bundle installed on this host")
 class InstalledPaletteTest(unittest.TestCase):
     """The installed release still has the pinned stock bytes, and the patched chunks parse."""
@@ -482,7 +603,8 @@ class InstalledPaletteTest(unittest.TestCase):
 
         with self.stock.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
             writes = MODULE._plan_command_palette_cmd_k(data) + MODULE._plan_command_palette_workspace_search(data)
-            self.assertEqual(sorted(w[3] for w in writes), sorted(SEARCH_LABELS + SWAP_LABELS))
+            labels = [r.label for r in MODULE._select_layout(data, MODULE.PALETTE_SEARCH_LAYOUTS, "command palette")[1]]
+            self.assertEqual(sorted(w[3] for w in writes), sorted(labels + SWAP_LABELS))
             entries = MODULE._asar_entries(data)
             for path, start, size in entries:
                 touched = [w for w in writes if start <= w[0] < start + size]

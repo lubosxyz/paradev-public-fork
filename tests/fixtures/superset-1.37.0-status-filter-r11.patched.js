@@ -60,15 +60,15 @@ function DashboardSidebarBulkDeleteFailures({
     ] })
   ] }) });
 }
-function SsfFold({ ssfF }) {
+function SsfFold({ ssfF, g }) {
   const store = reactExports.useContext(StatusStoreContext);
   const selection = reactExports.useContext(DashboardSidebarSelectionContext);
   useSidebarSectionsCollapseStore((s) => s.collapsed);
-  const folds = () => ssfFolds(store, selection, ssfF);
+  const folds = () => ssfFolds(store, selection, ssfF).filter(g ? ssfFolder() : Boolean);
   const open = reactExports.useSyncExternalStore(ssfUseSub(store, ssfF[7]), () => ssfOpen(folds()));
-  const label = open ? "Collapse all" : "Expand all";
+  const label = `${open ? "Collapse" : "Expand"} ${g ? "groups" : "all"}`;
   return jsxRuntimeExports.jsxs(Tooltip, { delayDuration: 700, children: [
-    jsxRuntimeExports.jsx(TooltipTrigger, { asChild: true, children: jsxRuntimeExports.jsx("button", { type: "button", "aria-label": label, onClick: () => ssfFoldAll(folds()), className: "flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-fill-hover hover:text-foreground", children: jsxRuntimeExports.jsx(open ? SsfChevronsDownUp : LuChevronsUpDown, { className: "size-3.5" }) }) }),
+    jsxRuntimeExports.jsx(TooltipTrigger, { asChild: true, children: jsxRuntimeExports.jsx("button", { type: "button", "aria-label": label, onClick: () => ssfFoldAll(folds()), className: "flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-fill-hover hover:text-foreground", children: jsxRuntimeExports.jsx(ssfIcon(g, open), { className: "size-3.5" }) }) }),
     jsxRuntimeExports.jsx(TooltipContent, { children: label })
   ] });
 }
@@ -173,4 +173,4 @@ function DashboardSidebarBulkDeleteDialog({
     ] })
   ] }) });
 }
-                                                                 
+                                  

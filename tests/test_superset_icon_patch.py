@@ -1512,9 +1512,14 @@ class SupersetSidebarStatusFilterPatchTest(unittest.TestCase):
         FIXTURES / f"superset-1.37.0-status-filter-r{n}.patched.js" for n in range(9, 15)
     ]
 
+    # The release layout the fixtures belong to (STATUS_FILTER_LAYOUTS) and the palette layout of that release.
+    REGIONS = MODULE.STATUS_FILTER_REGIONS
+    PALETTE_REGIONS = MODULE.PALETTE_SEARCH_REGIONS
+    PALETTE_FIXTURES = [f"superset-1.37.0-palette-r{n}.js" for n in range(1, 8)]
+
     def regions(self):
         """Pair each region constant with its real stock bytes."""
-        return list(zip(MODULE.STATUS_FILTER_REGIONS, [p.read_bytes() for p in self.REGION_FIXTURES], strict=True))
+        return list(zip(self.REGIONS, [p.read_bytes() for p in self.REGION_FIXTURES], strict=True))
 
     def stock_bundle(self):
         """Shared synthetic bundle plus every real region, each followed by its end anchor.
@@ -1664,10 +1669,10 @@ class SupersetSidebarStatusFilterPatchTest(unittest.TestCase):
             [c for c in changes if c.startswith("status filter")],
             [
                 region.label
-                for region in sorted(MODULE.STATUS_FILTER_REGIONS, key=lambda region: original.index(region.start))
+                for region in sorted(self.REGIONS, key=lambda region: original.index(region.start))
             ],
         )
-        prefix_end = original.index(MODULE.STATUS_FILTER_REGIONS[0].start)
+        prefix_end = original.index(self.REGIONS[0].start)
         unfiltered, _ = self.patch(original, enabled=False)
         self.assertEqual(patched[:prefix_end], unfiltered[:prefix_end])
         self.assertIn(b"function SsfStatusChips({", patched)
@@ -1834,7 +1839,7 @@ const jsxRuntimeExports = {{ jsx: (type, props, key) => ({{ type, props, key }})
 const cn = (...parts) => parts.filter(Boolean).join(" ");
 const Tooltip = "Tooltip", TooltipTrigger = "TooltipTrigger", TooltipContent = "TooltipContent";
 const LuGitMerge = "LuGitMerge", LuGitPullRequest = "LuGitPullRequest";
-const createLucideIcon = (name) => name, LuChevronsUpDown = "LuChevronsUpDown";
+const createLucideIcon = (name) => name, LuChevronsUpDown = "LuChevronsUpDown", LuFolderInput = "LuFolderInput", LuFolderOpen = "LuFolderOpen";
 const PR_COLOR_BY_STATE = {{ open: "text-emerald-500", merged: "text-purple-500", closed: "text-destructive", draft: "text-muted-foreground", queued: "text-amber-500" }};
 function getProjectChildrenWorkspaces(children) {{
   return children.flatMap((child) => child.type === "workspace" ? [child.workspace] : child.section.workspaces);
@@ -2418,7 +2423,7 @@ const shown = (list) => list.filter((workspace) => ssfUseShow([workspace])).map(
 let element = search();
 assert.equal(element.props.children[0].type, "DashboardSidebarProjectsFilterInput");
 assert.equal(element.props.children[0].props.isExpanded, true);
-assert.equal(element.props.children[1].type, SsfFold, "Collapse all sits at the right end of the search row");
+assert.deepEqual(element.props.children.slice(1).map((child) => [child.type, child.props.g]), [[SsfFold, 1], [SsfFold, undefined]], "Collapse groups, then Collapse all at the right end of the search row");
 assert.deepEqual(shown([...pinned, ...sessions]), ["p-mcp", "p-other", "p-proj", "s-mcp", "s-other"]);
 assert.equal(ssfUseShow(pinned), 1);
 unmount();
@@ -2468,7 +2473,8 @@ assert.equal(element.props.children[0].props.onExpandedChange(false), undefined)
     def test_search_and_chip_rows_sit_between_the_header_and_the_scroller(self):
         region, stock = self.regions()[2]
         patched = MODULE.rewrite_region(region, stock)
-        provider = patched.index(b"jsxRuntimeExports.jsx(DashboardSidebarWorkspaceStatusProvider, ")
+        # jsx on 1.36, jsxs since 1.37 (the provider gained a second child).
+        provider = patched.index(b"(DashboardSidebarWorkspaceStatusProvider, { workspaces: ")
         header = patched.index(b"jsxRuntimeExports.jsx(DashboardSidebarHeader, { isCollapsed }),\n")
         search = patched.index(b"!isCollapsed && jsxRuntimeExports.jsx(SsfSearch, ")
         row = patched.index(b"!isCollapsed && jsxRuntimeExports.jsx(SsfStatusChips, ")
@@ -2494,8 +2500,8 @@ assert.equal(element.props.children[0].props.onExpandedChange(false), undefined)
     # Value: protects=no status filter region overlaps a command palette region in the same chunk, so both families apply in one run; fails_when=a room region is picked inside a palette region (v5 first put region 13 in DestroyConfirmPane, inside the palette's ThemeFrame region) and the live run fails with "overlapping replacements"; why_new=LUBOS-2519 Collapse all added room regions 11-14; seam=real stock region fixtures
     def test_status_filter_and_palette_regions_do_not_overlap(self):
         palette = [
-            (region, (FIXTURES / f"superset-1.37.0-palette-r{n}.js").read_bytes())
-            for n, region in enumerate(MODULE.PALETTE_SEARCH_REGIONS, 1)
+            (region, (FIXTURES / name).read_bytes())
+            for region, name in zip(self.PALETTE_REGIONS, self.PALETTE_FIXTURES, strict=True)
         ]
         for region, stock in self.regions():
             for other, other_stock in palette:
@@ -2593,13 +2599,17 @@ assert.equal(element.props.children[0].props.onExpandedChange(false), undefined)
                     "0169b7b80eeb43ac471b90a81ddda7a677395859f14da76d6a0c4da11f7f29c1",
                     "11cf66ab426fd01806c2a0a31b172271a9344d61cc0322a10d216ff95b7e3588",
                     "c3acafba03b544f8dbd9333aa26172a1078883e8b14f535cd1800de3c81c1cfa",
+                    "f4c91edb834115b06c5410cfa34fbfcf1d261e9dcad8e48f076f2e7878490d15",
                 ),
                 ("a78e2e7a9f7bda23e88c0666a33187ea526007077bd76d7abafa7add91ee8a9f",),
                 ("f5e72a947ca00091324d45dfea87cb992048d10fa03f855b1cd5e575213edaa9",),
                 ("3fb88b707eb376238e1b390e170d6569bb7b4fa66d466304456f27ad4e7d0096",),
-                ("6cced2b24d8f802076d487298d28bf2e22337195c1cb52e2f71c391fe9400473",),
-                (),
-                (),
+                (
+                    "6cced2b24d8f802076d487298d28bf2e22337195c1cb52e2f71c391fe9400473",
+                    "694d80ac77ff44689d776ca883bddcf29230c28398b0fa8af86b4c5484ec982a",
+                ),
+                ("361ee0ad07fee9341a8bfea8749d9e9e051d9b92ec72dda906c4e5649f3d9353",),
+                ("3803f54c3861b9bfead5b7180ea587d9c3a648145ef757dc4357335e539ca901",),
                 (),
                 (),
                 (),
@@ -2622,10 +2632,11 @@ assert.equal(element.props.children[0].props.onExpandedChange(false), undefined)
             self.skipTest("no installed Superset bundle on this machine")
         with asar.open("rb") as stream:
             with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
-                for region in MODULE.STATUS_FILTER_REGIONS:
+                _name, regions, variants = MODULE.status_filter_layout(data)
+                for region in regions:
                     with self.subTest(region=region.label):
                         try:
-                            MODULE._plan_region_rewrite(data, region, MODULE.STATUS_FILTER_REGION_VARIANTS)
+                            MODULE._plan_region_rewrite(data, region, variants)
                         except RuntimeError as exc:
                             # An older filter generation is recognised, but its
                             # stock bytes cannot be checked until it is reverted.
@@ -2660,7 +2671,7 @@ assert.equal(element.props.children[0].props.onExpandedChange(false), undefined)
             entries = list(files(header))
             with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
                 containing = set()
-                for region in MODULE.STATUS_FILTER_REGIONS:
+                for region in MODULE.status_filter_layout(data)[1]:
                     offsets = MODULE._find_all(data, region.start)
                     self.assertEqual(len(offsets), 1, region.label)
                     containing |= {path for path, start, size in entries if start <= offsets[0] < start + size}
@@ -2677,7 +2688,7 @@ assert.equal(element.props.children[0].props.onExpandedChange(false), undefined)
         defined = r"(?:const|function) {name}\b"
         for name in (
             "jsxRuntimeExports", "reactExports", "cn", "Tooltip", "TooltipTrigger", "TooltipContent",
-            "LuGitMerge", "LuGitPullRequest", "createLucideIcon", "LuChevronsUpDown",
+            "LuGitMerge", "LuGitPullRequest", "createLucideIcon", "LuChevronsUpDown", "LuFolderInput", "LuFolderOpen",
         ):
             with self.subTest(name=name):
                 self.assertIsNotNone(re.search(imported.format(name=name).encode(), chunk), f"{name} is not imported by {path}")
@@ -2748,10 +2759,75 @@ assert.equal(element.props.children[0].props.onExpandedChange(false), undefined)
             )
 
             self.assertEqual(backup.read_bytes(), original)
-            self.assertIn(MODULE.STATUS_FILTER_REGIONS[0].label, changes)
+            self.assertIn(self.REGIONS[0].label, changes)
             self.assertIn(b"function SsfStatusChips({", asar.read_bytes())
             MODULE.revert(asar, backup_dir)
             self.assertEqual(asar.read_bytes(), original)
+
+
+def _fixture_1_38(kind: str, n: int, suffix: str = ".js") -> Path:
+    """The 1.38.0 cut of region n, or the earlier release's cut it is byte-identical to."""
+    for release in ("1.38.0", "1.37.0", "1.36.0"):
+        path = FIXTURES / f"superset-{release}-{kind}-r{n}{suffix}"
+        if path.exists():
+            return path
+    raise FileNotFoundError(f"{kind} r{n}")
+
+
+class SupersetSidebarStatusFilter138PatchTest(SupersetSidebarStatusFilterPatchTest):
+    """The same filter on the desktop-v1.38.0 layout (LUBOS-2525): every inherited test runs on the 1.38 regions.
+
+    Regions 1, 2, 3, 7, 12 and 13 are cut from desktop-v1.38.0 layout-LF5A5mOm.js;
+    the others are byte-identical to the 1.36 / 1.37 fixtures they reuse.
+    """
+
+    REGIONS = MODULE.STATUS_FILTER_REGIONS_1_38
+    PALETTE_REGIONS = MODULE.PALETTE_SEARCH_REGIONS_1_38
+    PALETTE_FIXTURES = ["superset-1.37.0-palette-r1.js"] + [f"superset-1.38.0-palette-r{n}.js" for n in range(2, 5)]
+    # 1.38 has no region 14: ssfFirst moves into region 12 (patch-asar.py STATUS_FILTER_REGIONS_1_38).
+    REGION_FIXTURES = [_fixture_1_38("status-filter", n) for n in range(1, 14)]
+    PATCHED_FIXTURES = [_fixture_1_38("status-filter", n, ".patched.js") for n in range(1, 14)]
+    # The 1.37 layout's legacy digests and the installed-bundle checks run once, in the parent.
+    test_legacy_generation_asks_for_a_revert_first = None
+    test_installed_bundle_accepts_the_status_filter = None
+    test_installed_bundle_defines_the_names_the_status_filter_uses = None
+
+    # Value: protects=the 1.38 regions are pinned on the real 1.38 bytes and reuse only regions that are byte-identical there; fails_when=a 1.38 fixture is missing, a reused 1.37 region drifted, or a 1.38 region inherits a 1.37 legacy / upgrade digest that never ran on 1.38; why_new=LUBOS-2525 release layout; seam=real 1.38.0 bytes
+    def test_layout_reuses_identical_regions_and_has_no_earlier_generations(self):
+        # Region 14 (UpdatesPill) lies inside the 1.38 palette room region; its ssfFirst sits in region 12.
+        self.assertEqual([r.label for r in self.REGIONS], [r.label for r in MODULE.STATUS_FILTER_REGIONS[:13]])
+        self.assertEqual(b"".join(r.edits[0][1] for r in self.REGIONS[11:]).count(MODULE.STATUS_FILTER_FIRST_JS), 1)
+        rebased = {1, 2, 3, 7, 12, 13}
+        for n, (region, old) in enumerate(zip(self.REGIONS, MODULE.STATUS_FILTER_REGIONS[:13], strict=True), 1):
+            with self.subTest(region=n):
+                self.assertEqual(region is old, n not in rebased)
+                self.assertEqual(self.REGION_FIXTURES[n - 1].name.startswith("superset-1.38.0-"), n in rebased)
+                if n in rebased:
+                    self.assertEqual((region.legacy_sha256, region.upgrades), ((), ()))
+
+    # Value: protects=a bundle is planned with the one release layout it holds whole; fails_when=the 1.38 bundle is planned with 1.37 regions (regions span several files / missing anchors) or the 1.37 bundle with 1.38 ones; why_new=LUBOS-2525; seam=none
+    def test_each_release_selects_its_own_layout(self):
+        self.assertEqual(MODULE.status_filter_layout(self.stock_bundle())[0], "1.38")
+        earlier = SupersetSidebarStatusFilterPatchTest("test_status_filter_is_idempotent").stock_bundle()
+        self.assertEqual(MODULE.status_filter_layout(earlier)[0], "1.36-1.37")
+        patched, _changes = self.patch(self.stock_bundle())
+        self.assertEqual(MODULE.status_filter_layout(patched)[0], "1.38")
+
+    # Value: protects=a bundle mixing 1.37 and 1.38 region bytes fails closed instead of patching half of each; fails_when=layout selection falls back per region, or the closest layout is applied without checking every region; why_new=REBASE.md mixed-release rule for the new layout; seam=none
+    def test_mixed_release_bundle_fails_closed(self):
+        stock_137 = SupersetSidebarStatusFilterPatchTest.REGION_FIXTURES[0].read_bytes()
+        stock_138 = self.REGION_FIXTURES[0].read_bytes()
+        mixed = self.stock_bundle().replace(stock_138, stock_137)
+        self.assertNotEqual(mixed, self.stock_bundle())
+        with self.assertRaisesRegex(RuntimeError, "status filter"):
+            self.patch(mixed)
+
+    # Value: protects=two layouts that both fit a bundle whole are refused, never resolved by list order; fails_when=_select_layout returns the first whole fit; why_new=LUBOS-2525; seam=none
+    def test_bundle_fitting_two_layouts_is_refused(self):
+        data = self.stock_bundle()
+        layouts = (("a", self.REGIONS, ()), ("b", self.REGIONS, ()))
+        with self.assertRaisesRegex(RuntimeError, "several release layouts"):
+            MODULE._select_layout(data, layouts, "status filter")
 
 
 class SupersetHideNavButtonsPatchTest(unittest.TestCase):
@@ -2820,6 +2896,7 @@ class SupersetHideSidebarFooterPatchTest(unittest.TestCase):
     WORKSPACE_NEW_SHORTCUT = SupersetUiPatchTest.WORKSPACE_NEW_SHORTCUT
     # Exact stock bytes of the desktop-v1.36.0 DashboardSidebar footer row.
     FOOTER = FIXTURES / "superset-1.36.0-sidebar-footer.js"
+    REGIONS = SupersetSidebarStatusFilterPatchTest.REGIONS
     REGION_FIXTURES = SupersetSidebarStatusFilterPatchTest.REGION_FIXTURES
     regions = SupersetSidebarStatusFilterPatchTest.regions
 
@@ -2889,6 +2966,19 @@ class SupersetHideSidebarFooterPatchTest(unittest.TestCase):
         for footer in (True, False):
             with self.subTest(footer=footer):
                 self.assertEqual(self.patch(together, footer=footer, status_filter=True), (together, []))
+
+
+class SupersetHideSidebarFooter138PatchTest(SupersetHideSidebarFooterPatchTest):
+    """--hide-sidebar-footer composed with the 1.38.0 status filter regions (LUBOS-2525)."""
+
+    REGIONS = SupersetSidebarStatusFilter138PatchTest.REGIONS
+    REGION_FIXTURES = SupersetSidebarStatusFilter138PatchTest.REGION_FIXTURES
+
+    # Value: protects=the 1.38 footer row is still the one shared write inside status filter region 3; fails_when=1.38 moves the row out of region 3 (the fold would then be unexpected) or duplicates it; why_new=LUBOS-2525; seam=real 1.38.0 region 3
+    def test_anchor_is_the_real_footer_row_and_hides_only_the_expanded_sidebar(self):
+        region3 = (FIXTURES / "superset-1.38.0-status-filter-r3.js").read_bytes()
+        self.assertEqual(region3.count(MODULE.SIDEBAR_FOOTER), 1)
+        self.assertEqual(self.REGIONS[2].shared, ((MODULE.SIDEBAR_FOOTER, MODULE.SIDEBAR_FOOTER_HIDDEN),))
 
 
 class SupersetSoundOnlyWhenWaitingPatchTest(unittest.TestCase):
@@ -3152,9 +3242,15 @@ class SupersetStatusFilterCollapseTest(unittest.TestCase):
     PATCHED = [
         FIXTURES / f"superset-1.36.0-status-filter-r{n}.patched.js" for n in (1, 2, 4, 5, 6, 7, 8)
     ] + [FIXTURES / f"superset-1.37.0-status-filter-r{n}.patched.js" for n in (10, 11, 12, 13, 14)]
+    # Region 9 holds the chip hotkeys and upstream's sections store, which the
+    # harness stubs; only its ssfFolder line (Collapse groups) is loaded.
+    HOTKEYS_REGION = FIXTURES / "superset-1.37.0-status-filter-r9.patched.js"
 
     def harness(self, assertions: str) -> str:
         regions = b"\n".join(path.read_bytes() for path in self.PATCHED).decode()
+        folder = [line for line in self.HOTKEYS_REGION.read_text().splitlines() if line.startswith("const ssfFolder = ")]
+        self.assertEqual(len(folder), 1)
+        regions += "\n" + folder[0] + "\n"
         return f"""
 import assert from "node:assert/strict";
 const StatusStoreContext = {{}}, DashboardSidebarSelectionContext = {{}};
@@ -3238,10 +3334,12 @@ const useDashboardSidebarProjectSectionActions = () => ({{
   startRename: noop, submitRename: noop, toggleSectionCollapsed: toggleStored,
 }});
 const [SortableContext, verticalListSortingStrategy, SidebarDropZone$1, AnimatePresence, WorkspaceBulkMenuScope] = ["SortableContext", "vertical", "SidebarDropZone", "AnimatePresence", "WorkspaceBulkMenuScope"];
+// 1.38 drops the v1 sidebar, so Rollup no longer suffixes the alias.
+const SidebarDropZone = SidebarDropZone$1;
 const motion = {{ div: "motion.div" }};
 const [DashboardSidebarWorkspaceItem, DashboardSidebarProjectRow, DashboardSidebarGroupHeader, RenameInput] = ["WorkspaceItem", "ProjectRow", "GroupHeader", "RenameInput"];
 const [Tooltip, TooltipTrigger, TooltipContent, LuPlus, Trans, HiChevronRight, DeleteProjectDialog, ImportWorktreesDialog] = ["Tooltip", "TooltipTrigger", "TooltipContent", "LuPlus", "Trans", "HiChevronRight", "DeleteProjectDialog", "ImportWorktreesDialog"];
-const createLucideIcon = (name) => name, LuChevronsUpDown = "LuChevronsUpDown";
+const createLucideIcon = (name) => name, LuChevronsUpDown = "LuChevronsUpDown", LuFolderInput = "LuFolderInput", LuFolderOpen = "LuFolderOpen";
 const dropZoneId = (id) => id, PINNED_CONTAINER = "pinned", SESSIONS_CONTAINER = "sessions", SESSIONS_TAG_SCOPE = "sessions", PROJECT_COLOR_DEFAULT = null;
 {regions}
 const find = (node, type, out = []) => {{
@@ -3301,18 +3399,24 @@ const collapseAndReopenEach = () => {{
 // SESSIONS children (sessionChildren): ses1 on its own; a test may add a folder.
 let sessionKids = [{{ type: "workspace", workspace: ses1 }}];
 const sessionList = () => getProjectChildrenWorkspaces(sessionKids);
-// The Collapse all / Expand all button as the sticky search row renders it, with the ssfF array of region 3.
-const fold = (listShut = false) => {{
+// The Collapse all / Expand all button (or, with g, Collapse groups / Expand groups, LUBOS-2525) as the
+// sticky search row renders it, with the ssfF array of region 3; keys lists the groups the button acts on.
+const button = (g, listShut = false) => {{
   const groups = [project()];
   const ssfF = [groups, listShut, toggleStored, toggleStored, sessionKids, [pin1], sessionList(), [pin1, ...sessionList(), w1, w2]];
   const row = SsfSearch({{ query: ssfQ, onQueryChange: noop, pinnedWorkspaces: [pin1], sessionWorkspaces: sessionList(), groups, ssfF }});
-  assert.deepEqual(row.props.children[1].props, {{ ssfF }});
-  const element = SsfFold(row.props.children[1].props);
-  const button = element.props.children[0].props.children;
-  const icon = button.props.children.type;
-  assert.equal(icon, button.props["aria-label"] === "Collapse all" ? SsfChevronsDownUp : LuChevronsUpDown);
-  return {{ label: button.props["aria-label"], click: () => button.props.onClick() }};
+  assert.deepEqual(row.props.children.slice(1).map((child) => child.props), [{{ ssfF, g: 1 }}, {{ ssfF }}]);
+  const element = SsfFold(row.props.children[g ? 1 : 2].props);
+  const target = element.props.children[0].props.children;
+  const label = target.props["aria-label"];
+  assert.equal(element.props.children[1].props.children, label, "the tooltip says what the button does");
+  const icons = g ? {{ "Collapse groups": LuFolderInput, "Expand groups": LuFolderOpen }} : {{ "Collapse all": SsfChevronsDownUp, "Expand all": LuChevronsUpDown }};
+  assert.equal(target.props.children.type, icons[label], label);
+  const listed = ssfFolds(store, {{ isWorkspaceSelected: () => false }}, ssfF);
+  return {{ label, click: () => target.props.onClick(), keys: (g ? listed.filter(ssfFolder()) : listed).map(([key]) => key) }};
 }};
+const fold = (listShut = false) => button(false, listShut);
+const folders = (listShut = false) => button(true, listShut);
 const search = (query, groups = [project()]) => SsfSearch({{ query, onQueryChange: noop, pinnedWorkspaces: [pin1], sessionWorkspaces: [ses1], groups }});
 for (const id of ["pin1", "ses1", "w1", "w2"]) statuses.set(id, "permission");
 {assertions}
@@ -3498,6 +3602,84 @@ fold().click();
 assert.ok(ssfShut.has("pinned") && ssfShut.has("sessions"));
 """))
 
+    # Value: protects=A1/A2/A4 without a filter: Collapse groups / Expand groups acts on the folders on screen only (inside an open project or an open SESSIONS, PROJECTS list collapsed included), writes the stored state of exactly the folders that differ, and never toggles PINNED, SESSIONS or a project, while Collapse all keeps listing every group; fails_when=the groups button lists a parent, counts a folder inside a collapsed parent, toggles a folder that already matches, or Collapse all loses a group; why_new=LUBOS-2525 scope add (Collapse groups); seam=real patched regions with stubbed hooks
+    def test_fold_groups_without_a_filter_writes_only_the_folders(self):
+        run_node(self, self.harness("""
+const sf1 = ws("sf1", "session folder one");
+stored.sfold = true;
+sessionKids = [{ type: "workspace", workspace: ses1 }, { type: "section", section: { id: "sfold", name: "Folder", color: null, get isCollapsed() { return stored.sfold; }, workspaces: [sf1] } }];
+statuses.set("sf1", "permission");
+// Everything collapsed: no folder is on screen, its project and SESSIONS are collapsed.
+assert.deepEqual(folders().keys, []);
+assert.equal(folders().label, "Expand groups");
+folders().click();
+assert.deepEqual(writes, []);
+views.project().click(); views.sessions().click();
+writes.length = 0;
+assert.deepEqual(folders().keys, ["sfold", "fold"]);
+assert.deepEqual(fold().keys, ["pinned", "sessions", "sfold", "proj", "fold"], "Collapse all still lists every group");
+assert.equal(folders().label, "Expand groups");
+folders().click();
+assert.deepEqual(writes.sort(), ["fold", "sfold"]);
+assert.deepEqual(state(), { ...all(false), pinned: true }, "the parents and PINNED keep their state");
+assert.equal(stored.sfold, false);
+// One open folder is enough to collapse, and only the open ones are written.
+views.folder().click(); writes.length = 0;
+assert.equal(folders().label, "Collapse groups");
+folders().click();
+assert.deepEqual(writes, ["sfold"]);
+assert.deepEqual(state(), { ...all(false), pinned: true, folder: true });
+assert.equal(stored.sfold, true);
+assert.equal(folders().label, "Expand groups");
+assert.equal(fold().label, "Collapse all", "Collapse all still sees the open project and SESSIONS");
+// A folder inside a collapsed project is off screen; with PROJECTS collapsed only SESSIONS folders count.
+views.project().click();
+assert.deepEqual(folders().keys, ["sfold"]);
+views.project().click(); writes.length = 0;
+assert.deepEqual(folders(true).keys, ["sfold"]);
+folders(true).click();
+assert.deepEqual(writes, ["sfold"]);
+assert.deepEqual(state(), { ...all(false), pinned: true, folder: true });
+"""))
+
+    # Value: protects=A1/A2/A4 under a chip, an Option-click solo chip and a search: Collapse groups / Expand groups sets the in-memory overrides of the shown folders only, leaves projects, PINNED and SESSIONS open, skips a folder whose project is collapsed, never writes the stored state, and its overrides go with the filter; fails_when=the groups button writes the stored state under a filter, shuts a parent, weighs a hidden folder, or its overrides survive the filter; why_new=LUBOS-2525 scope add (Collapse groups); seam=real patched regions with stubbed hooks
+    def test_fold_groups_under_a_chip_a_solo_chip_and_a_search_uses_the_overrides(self):
+        run_node(self, self.harness("""
+const sf1 = ws("sf1", "session folder one");
+stored.sfold = true;
+sessionKids = [{ type: "workspace", workspace: ses1 }, { type: "section", section: { id: "sfold", name: "Folder", color: null, get isCollapsed() { return stored.sfold; }, workspaces: [sf1] } }];
+statuses.set("sf1", "permission");
+for (const [name, on, off] of [
+  ["chip", () => ssfToggle(1, false), () => ssfToggle(1, false)],
+  ["solo chip", () => { ssfToggle(4, false); ssfToggle(1, true); }, () => ssfToggle(1, true)],
+  ["search", () => search("one"), () => search("")],
+]) {
+  on();
+  assert.ok(ssfMask || ssfQ, name);
+  assert.deepEqual(folders().keys, ["sfold", "fold"], name);
+  assert.equal(folders().label, "Collapse groups", name);
+  folders().click();
+  assert.deepEqual([...ssfShut].sort(), ["fold", "sfold"], name);
+  assert.deepEqual(state(), { ...all(false), folder: true }, `${name}: projects, PINNED and SESSIONS stay open`);
+  assert.equal(folders().label, "Expand groups", name);
+  assert.equal(fold().label, "Collapse all", name);
+  folders().click();
+  assert.equal(ssfShut.size, 0, name);
+  assert.deepEqual(state(), all(false), name);
+  // A collapsed project hides its folder: only the SESSIONS folder is on screen.
+  views.project().click();
+  assert.deepEqual(folders().keys, ["sfold"], name);
+  folders().click();
+  assert.deepEqual([...ssfShut].sort(), ["proj", "sfold"], name);
+  off();
+  assert.equal(ssfMask, 0, name); assert.equal(ssfQ, "", name);
+  assert.equal(ssfShut.size, 0, name);
+  assert.deepEqual(state(), all(true), `${name}: the stored state again`);
+}
+assert.deepEqual(writes, []);
+assert.deepEqual(stored, { pinned: true, sessions: true, proj: true, fold: true, sfold: true });
+"""))
+
     # Value: protects=a Shift range never spans the rows of a folder collapsed under the filter, and spans them again once it reopens; fails_when=ssfRange ignores the override, so a bulk action reaches rows the user cannot see; why_new=LUBOS-2519; seam=real patched regions with stubbed hooks
     def test_shift_range_skips_a_folder_collapsed_under_the_filter(self):
         run_node(self, self.harness("""
@@ -3515,6 +3697,13 @@ assert.deepEqual(range(), ["w2"]);
 views.folder().click();
 assert.deepEqual(range(), ["w2", "w1"]);
 """))
+
+
+class SupersetStatusFilterCollapse138Test(SupersetStatusFilterCollapseTest):
+    """The v5 collapse behaviour on the desktop-v1.38.0 regions (LUBOS-2525), Collapse all list and ssfOn in the new room regions."""
+
+    PATCHED = [_fixture_1_38("status-filter", n, ".patched.js") for n in (1, 2, 4, 5, 6, 7, 8, 10, 11, 12, 13)]
+    HOTKEYS_REGION = _fixture_1_38("status-filter", 9, ".patched.js")
 
 
 class SupersetStatusFilterGenerationsTest(unittest.TestCase):
@@ -3554,6 +3743,21 @@ class SupersetStatusFilterGenerationsTest(unittest.TestCase):
                 else:
                     patched = SupersetSidebarStatusFilterPatchTest.PATCHED_FIXTURES[n - 1].read_bytes()
                     self.assertEqual([], MODULE._plan_region_rewrite(patched + region.end, region, MODULE.STATUS_FILTER_REGION_VARIANTS))
+
+    # Value: protects=a host on v5 before Collapse groups (live on 1.37 since LUBOS-2519 and on 1.38 since LUBOS-2525's first apply) gets the --revert hint in both release layouts for the four regions Collapse groups changes, and the other regions stay patched no-ops; fails_when=a pre-groups v5 digest drops out of legacy_sha256 so the live 1.38 bundle fails as "neither stock nor patched", or the change leaks into another region; why_new=LUBOS-2525 scope add (Collapse groups); seam=real v5 fixtures
+    def test_v5_before_collapse_groups_asks_for_revert(self):
+        changed = {5: "1.36.0", 9: "1.37.0", 10: "1.37.0", 11: "1.37.0"}
+        for layout, regions, variants in MODULE.STATUS_FILTER_LAYOUTS:
+            for n, region in enumerate(regions, 1):
+                if n not in changed:
+                    continue
+                with self.subTest(layout=layout, region=region.label):
+                    v5 = (FIXTURES / f"superset-{changed[n]}-status-filter-r{n}.v5-patched.js").read_bytes()
+                    self.assertIn(hashlib.sha256(v5).hexdigest(), region.legacy_sha256)
+                    with self.assertRaisesRegex(RuntimeError, "older --sidebar-status-filter generation"):
+                        MODULE._plan_region_rewrite(v5 + region.end, region, variants)
+                    patched = (FIXTURES / f"superset-{changed[n]}-status-filter-r{n}.patched.js").read_bytes()
+                    self.assertEqual([], MODULE._plan_region_rewrite(patched + region.end, region, variants))
 
     # Value: protects=a host on the v4 filter (forced-open groups) gets the --revert hint for the nine regions v5 changes (the sticky row on 1.36 and 1.37 included, it hands Collapse all and the chip hotkeys the sidebar data; region 9, whose hotkey target now follows the rows on screen), while the new regions stay a patched no-op; the v3 second auto-clear (upgraded in place by v4) now asks for a revert as well; fails_when=a v4 or v3 digest drops out of legacy_sha256, so the live bundle fails as "neither stock nor patched"; why_new=LUBOS-2519 v5; seam=real v4 and v3 fixtures
     def test_v4_generation_asks_for_revert(self):
@@ -3608,6 +3812,7 @@ class SupersetStatusFilterHotkeysPatchTest(unittest.TestCase):
     """--status-filter-hotkeys moves two registry defaults and switches the chip key map on."""
 
     WORKSPACE_NEW_SHORTCUT = SupersetUiPatchTest.WORKSPACE_NEW_SHORTCUT
+    REGIONS = SupersetSidebarStatusFilterPatchTest.REGIONS
     REGION_FIXTURES = SupersetSidebarStatusFilterPatchTest.REGION_FIXTURES
     regions = SupersetSidebarStatusFilterPatchTest.regions
     HOTKEYS = FIXTURES / "superset-1.37.0-hotkeys-registry.js"
@@ -3703,6 +3908,7 @@ class SupersetStatusFilterNamesTest(unittest.TestCase):
     """The status filter refuses a real ASAR whose region chunk lacks a name the injected JS reads."""
 
     WORKSPACE_NEW_SHORTCUT = SupersetUiPatchTest.WORKSPACE_NEW_SHORTCUT
+    REGIONS = SupersetSidebarStatusFilterPatchTest.REGIONS
     REGION_FIXTURES = SupersetSidebarStatusFilterPatchTest.REGION_FIXTURES
     regions = SupersetSidebarStatusFilterPatchTest.regions
     # Minimal upstream declarations of every name the injected code reads from
@@ -3710,7 +3916,7 @@ class SupersetStatusFilterNamesTest(unittest.TestCase):
     NAMES = (
         b'import { j as jsxRuntimeExports, r as reactExports, c as cn, T as Tooltip, a as TooltipTrigger, '
         b'b as TooltipContent, m as LuGitMerge, p as LuGitPullRequest, u as useNavigate, n as navigateToV2Workspace, '
-        b'l as createLucideIcon, v as LuChevronsUpDown } from "./shared.js";\n'
+        b'l as createLucideIcon, v as LuChevronsUpDown, f as LuFolderInput, o as LuFolderOpen } from "./shared.js";\n'
         b"const StatusStoreContext = 1;\nconst DashboardSidebarSelectionContext = 1;\nconst PR_COLOR_BY_STATE = {};\n"
         b"function getProjectChildrenWorkspaces() {}\nfunction AsciiSpinner() {}\n"
         b"function DashboardSidebarProjectsFilterInput() {}\nconst useSidebarSectionsCollapseStore = 1;\n"
@@ -3767,7 +3973,7 @@ class SupersetStatusFilterNamesTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "bundle structure may have changed"):
             self.patch(elsewhere)
         chunk = self.chunk()
-        cut = chunk.index(MODULE.STATUS_FILTER_REGIONS[-1].start)
+        cut = chunk.index(self.REGIONS[-1].start)
         split = self.asar(("layout-a.js", chunk[:cut] + self.NAMES), ("layout-b.js", chunk[cut:]))
         with self.assertRaisesRegex(RuntimeError, "regions span several files"):
             self.patch(split)
@@ -3812,6 +4018,27 @@ class SupersetStatusFilterNamesTest(unittest.TestCase):
         self.assertIn(stray, kept)
         with self.assertRaisesRegex(RuntimeError, "overlapping replacements"):
             MODULE._require_disjoint(kept)
+
+
+class SupersetStatusFilterHotkeys138PatchTest(SupersetStatusFilterHotkeysPatchTest):
+    """--status-filter-hotkeys on the 1.38.0 regions and registry (LUBOS-2525).
+
+    1.38 renames UNDO_ARCHIVE_WORKSPACE to UNDO in the registry; the moved
+    entries and the chords the chips use are unchanged.
+    """
+
+    REGIONS = SupersetSidebarStatusFilter138PatchTest.REGIONS
+    REGION_FIXTURES = SupersetSidebarStatusFilter138PatchTest.REGION_FIXTURES
+    HOTKEYS = FIXTURES / "superset-1.38.0-hotkeys-registry.js"
+    # v4 never ran on 1.38: no host can hold the v4 bytes there.
+    test_live_v4_filter_asks_for_a_revert_first = None
+
+
+class SupersetStatusFilterNames138Test(SupersetStatusFilterNamesTest):
+    """The name check on a 1.38.0 chunk (LUBOS-2525)."""
+
+    REGIONS = SupersetSidebarStatusFilter138PatchTest.REGIONS
+    REGION_FIXTURES = SupersetSidebarStatusFilter138PatchTest.REGION_FIXTURES
 
 
 class SupersetAsarIntegrityFuseTest(unittest.TestCase):

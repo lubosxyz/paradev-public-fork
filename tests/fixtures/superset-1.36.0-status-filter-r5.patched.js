@@ -222,10 +222,9 @@ function SsfSearch({
     const sections = useSidebarSectionsCollapseStore.getState();
     if (value.trim() && sections.collapsed.workspaces) sections.toggle("workspaces");
     onQueryChange(value);
-  } }), jsxRuntimeExports.jsx(SsfFold, { ssfF })] });
+  } }), jsxRuntimeExports.jsx(SsfFold, { ssfF, g: 1 }), jsxRuntimeExports.jsx(SsfFold, { ssfF })] });
 }
 function ssfOpen(folds) {
   const shut = new Set();
   return folds.some(([key, stored, , parent]) => (ssfMask || ssfQ ? ssfShut.has(key) : stored) ? !shut.add(key) : !shut.has(parent));
 }
-                                                

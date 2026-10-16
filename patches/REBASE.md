@@ -123,6 +123,21 @@ upstream change inside the range is therefore a `neither stock nor patched` (or
    `test_chip_row_sits_between_the_header_and_the_scroller`), and check that `require_asar_integrity_fuse_disabled()` still passes on the
    new app.
 
+### Release layouts (`STATUS_FILTER_LAYOUTS`, `PALETTE_SEARCH_LAYOUTS`)
+
+When a release deletes or reshapes the code that hosts several regions, a
+second region tuple for that release (a *layout*) is cleaner than per-region
+variants. `_select_layout()` picks the one layout whose every region the bundle
+holds (one start anchor, the end anchor at the pinned length). Two layouts
+that both fit whole are refused. A bundle that no layout fits whole (a changed
+or mixed-release bundle) is planned with the layout that fits most of its
+regions, so the error names the region that drifted. Regions that are
+byte-identical in the new release are reused as the same objects. Rebased ones
+use `_rebased()`, which keeps the edits and drops `legacy_sha256` and
+`upgrades`, because no earlier generation ever ran on the new bytes. A room
+region of the new layout must hold no anchor of another family. Check the
+other layout regions as well (`test_status_filter_and_palette_regions_do_not_overlap`).
+
 The sound family (`SOUND_MAIN_*`, `SOUND_RENDERER_*`) is an ordinary anchor
 pair. It rebases with the procedure above, and its node harness tests have to
 reproduce upstream's behaviour on the stock excerpt first.
@@ -188,3 +203,52 @@ call site fails closed. Real Node harnesses cover waiting vs Stop/Failed,
 muting, visible-pane suppression and the right-pane layout. The main sound
 anchor is unchanged. Fixtures come from the installed 1.37 stock snapshot,
 not from constants, and 1.36 fixtures remain in the targeted tests.
+
+## Worked example: 1.37.0 → 1.38.0 (2026-10-15, LUBOS-2525)
+
+The base set, compact sidebar, hidden nav buttons, pinned icons, sound, footer
+and the Cmd+K swap still match. The status filter, its hotkeys and the palette
+search failed with `regions span several files`. Upstream deleted the v1
+workspace sidebar (`WorkspaceSection`, `ProjectHeader`, `WorkspaceListItem`,
+`WorkspaceSidebarFooter`, ...) and the v1 palette list (`V1WorkspaceList`), so
+the start anchor of status filter region 13 and of palette regions 3-7 now
+resolves to no region, or to the same name in another chunk.
+
+- Status filter: the 1.38 layout re-pins regions 1, 2, 3 (the 1.37 shape,
+  now 13,863 B with a cloud-sidebar entry filter) and 7. The only changes in
+  them are Rollup aliases that lost their suffix (`SidebarDropZone$1` →
+  `SidebarDropZone`, `ChecksList$1`, ...). Regions 4-6 and 8-11 are
+  byte-identical. Region 12 (`NewProjectModal`) lost the v1 clone path and
+  its room (−96 B), and region 13 is gone. Both helper sets move to room-only
+  runs of v2 cloud-sidebar functions (`DashboardSidebarCloudPortsButton` ..
+  `SidebarKbdHint`, `DashboardSidebarCloudGroup` .. `keepKeysInSearch`).
+  Region 14 (`UpdatesPill`, v5) is byte-identical too, but on 1.38 it lies
+  inside the palette room region below, and the first full apply on the copy
+  failed closed with `overlapping replacements`. Its `ssfFirst` moved into
+  region 12, so the 1.38 layout has 13 regions. The overlap test now checks
+  each release's own palette layout.
+- Palette search: region 1 is byte-identical. Region 2 keeps its edits. It is
+  3.2 KB shorter and 181 B short of room, so it also deletes one four-line `//`
+  comment block. The five helpers of the deleted regions 3-7 move, unchanged,
+  to two room-only v2 regions (`PreUpdateConfirmPopover` ..
+  `OrganizationDropdown`, `DashboardSidebarAgentHoverRow` .. `PR_STATE_LABEL`).
+  The 1.38 layout knows only stock and the current generation.
+- The hotkey registry renames `UNDO_ARCHIVE_WORKSPACE` to `UNDO`. The moved
+  entries and the chip chords are unchanged.
+- 1.36 / 1.37 stay supported (invariant 3): `~/.superset` keeps a verified
+  1.37.0 stock backup and the checker cache, so a rollback can still present
+  1.37. The 1.38 fixtures are cut from the real `desktop-v1.38.0` bundle
+  (`tests/fixtures/superset-1.38.0-*.js`). The 1.38 test classes inherit every
+  test of the 1.37 classes and run them on those fixtures. `node --test` runs
+  the palette behaviour suite on both releases
+  (`tests/palette_search_1_38.test.mjs`).
+- Proof on a copy of the 1.38.0 stock bundle: the full flag set applies,
+  a re-run prints `already patched` with the same SHA-256, and `--revert`
+  restores the stock SHA-256 `b1b1eb1d…`.
+- Collapse groups / Expand groups (scope add in the same generation) edits
+  shared regions 5, 9, 10 and 11, so both release layouts change. It fits the
+  existing padding: `ssfFolder` takes 140 of region 9's 148 free bytes (short
+  parameter names for room), `ssfIcon` region 10, the second `SsfFold` mount
+  region 5 (0 B left). The pre-groups v5 digests of those regions moved to
+  `legacy_sha256` (fixtures `*.v5-patched.js`), so the live 1.38 host, which
+  ran v5 without the button, needed `--revert` before the re-apply.

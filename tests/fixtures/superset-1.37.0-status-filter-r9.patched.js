@@ -150,6 +150,7 @@ function ssfUseKeys(ssfF) {
     return () => removeEventListener("keydown", onKey, true);
   }, []);
 }
+const ssfFolder = (s = new Set()) => ([key, stored, , p]) => ((ssfMask || ssfQ ? ssfShut.has(key) : stored) && s.add(key), p && !s.has(p));
 const SIDEBAR_SECTIONS_COLLAPSE_STORAGE_KEY = "sidebar-workspaces-collapse";
 const useSidebarSectionsCollapseStore = create()(devtools(persist((set) => ({
   collapsed: {
@@ -182,4 +183,4 @@ const useSidebarSectionsCollapseStore = create()(devtools(persist((set) => ({
     return persisted;
   }
 })));
-                                                                                                                                                    
+        

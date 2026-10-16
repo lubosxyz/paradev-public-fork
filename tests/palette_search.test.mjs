@@ -8,6 +8,13 @@ import { test } from "node:test";
 
 const FIXTURES = new URL("./fixtures/", import.meta.url);
 const read = (name) => readFileSync(new URL(name, FIXTURES), "utf8");
+// palette_search_1_38.test.mjs re-runs every test on the desktop-v1.38.0 layout (LUBOS-2525): the same
+// injected JS in region 2 and the two room regions that replace the deleted v1 sidebar regions 3-7.
+const RELEASE = globalThis.SSP_PALETTE_RELEASE ?? "1.37.0";
+const LAYOUT_FIXTURES = {
+  "1.37.0": ["r2.v5-", "r3.", "r4.", "r5.", "r6.", "r7."].map((region) => `superset-1.37.0-palette-${region}patched.js`),
+  "1.38.0": ["r2.", "r3.", "r4."].map((region) => `superset-1.38.0-palette-${region}patched.js`),
+}[RELEASE];
 
 // Any value: callable, constructible and indexable, so module-scope code of a region that the
 // test does not exercise (icons, stores, providers) loads without its real imports.
@@ -126,7 +133,7 @@ function harness({ v2 = true, query = "", path = "/v2-workspace/w3", icons = "cu
     Trans: "Trans",
   };
   const layout = load(
-    ["r2.v5-", "r3.", "r4.", "r5.", "r6.", "r7."].map((region) => read(`superset-1.37.0-palette-${region}patched.js`)),
+    LAYOUT_FIXTURES.map(read),
     mocks,
     [
       "SspPaletteSearch", "SspPaletteResults", "SspProjectFrame", "sspScore", "sspProvider", "V2WorkspaceList", "registerAllModules",
@@ -547,8 +554,8 @@ function registry(fixture) {
 }
 
 test("--command-palette-cmd-k swaps only the two mac defaults", () => {
-  const stock = registry("superset-1.37.0-hotkeys-registry.js");
-  const patched = registry("superset-1.37.0-hotkeys-registry.patched.js");
+  const stock = registry(`superset-${RELEASE}-hotkeys-registry.js`);
+  const patched = registry(`superset-${RELEASE}-hotkeys-registry.patched.js`);
   assert.equal(stock.OPEN_COMMAND_PALETTE.key.mac.chord, "meta+shift+k");
   assert.equal(stock.CLEAR_TERMINAL.key.mac.chord, "meta+k");
   assert.equal(patched.OPEN_COMMAND_PALETTE.key.mac.chord, "meta+k");

@@ -13,7 +13,7 @@ explicit production acknowledgement.
 
 import argparse
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import fcntl
 import hashlib
 import json
@@ -659,18 +659,33 @@ STATUS_FILTER_FOLD_ALL_JS = b'''function ssfFoldAll(folds) {
   ssfEmit();
 }
 '''
+# Collapse groups / Expand groups keeps the folders on screen: the entries with
+# a parent (a project or SESSIONS) that is open, under a filter by its override,
+# else by its stored state. A parent precedes its folders in ssfFolds, so one
+# pass over the list sees it first. ssfOpen and ssfFoldAll then work unchanged,
+# because the list holds no parent. `s` collects the closed groups, `p` is the
+# parent key (short names for room, region 9).
+STATUS_FILTER_FOLD_GROUPS_JS = b'''const ssfFolder = (s = new Set()) => ([key, stored, , p]) => ((ssfMask || ssfQ ? ssfShut.has(key) : stored) && s.add(key), p && !s.has(p));
+'''
+# The icon of each button state: Collapse all / Expand all keep the chevrons,
+# Collapse groups / Expand groups use the bundle's folder-input / folder-open
+# (region 10).
+STATUS_FILTER_FOLD_ICON_JS = b'''const ssfIcon = (g, open) => g ? open ? LuFolderInput : LuFolderOpen : open ? SsfChevronsDownUp : LuChevronsUpDown;
+'''
 # The button: it re-renders on the shared state (chips, query, overrides), the
 # status of every workspace (which groups a chip shows), the sections store
-# (PINNED / SESSIONS) and the sidebar data (projects, folders).
-STATUS_FILTER_FOLD_JS = b'''function SsfFold({ ssfF }) {
+# (PINNED / SESSIONS) and the sidebar data (projects, folders). With `g` it is
+# Collapse groups / Expand groups (SCOPE ADD of LUBOS-2525), the same button
+# over the folders only (ssfFolder, region 9; icons ssfIcon, region 10).
+STATUS_FILTER_FOLD_JS = b'''function SsfFold({ ssfF, g }) {
   const store = reactExports.useContext(StatusStoreContext);
   const selection = reactExports.useContext(DashboardSidebarSelectionContext);
   useSidebarSectionsCollapseStore((s) => s.collapsed);
-  const folds = () => ssfFolds(store, selection, ssfF);
+  const folds = () => ssfFolds(store, selection, ssfF).filter(g ? ssfFolder() : Boolean);
   const open = reactExports.useSyncExternalStore(ssfUseSub(store, ssfF[7]), () => ssfOpen(folds()));
-  const label = open ? "Collapse all" : "Expand all";
+  const label = `${open ? "Collapse" : "Expand"} ${g ? "groups" : "all"}`;
   return jsxRuntimeExports.jsxs(Tooltip, { delayDuration: 700, children: [
-    jsxRuntimeExports.jsx(TooltipTrigger, { asChild: true, children: jsxRuntimeExports.jsx("button", { type: "button", "aria-label": label, onClick: () => ssfFoldAll(folds()), className: "flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-fill-hover hover:text-foreground", children: jsxRuntimeExports.jsx(open ? SsfChevronsDownUp : LuChevronsUpDown, { className: "size-3.5" }) }) }),
+    jsxRuntimeExports.jsx(TooltipTrigger, { asChild: true, children: jsxRuntimeExports.jsx("button", { type: "button", "aria-label": label, onClick: () => ssfFoldAll(folds()), className: "flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-fill-hover hover:text-foreground", children: jsxRuntimeExports.jsx(ssfIcon(g, open), { className: "size-3.5" }) }) }),
     jsxRuntimeExports.jsx(TooltipContent, { children: label })
   ] });
 }
@@ -796,7 +811,7 @@ STATUS_FILTER_SEARCH_JS = b'''function SsfSearch({
     const sections = useSidebarSectionsCollapseStore.getState();
     if (value.trim() && sections.collapsed.workspaces) sections.toggle("workspaces");
     onQueryChange(value);
-  } }), jsxRuntimeExports.jsx(SsfFold, { ssfF })] });
+  } }), jsxRuntimeExports.jsx(SsfFold, { ssfF, g: 1 }), jsxRuntimeExports.jsx(SsfFold, { ssfF })] });
 }
 '''
 
@@ -1106,18 +1121,19 @@ STATUS_FILTER_REGIONS = (
         end=b"function useDashboardSidebarWorkspaceItemActions({\n",
         length=9227,
         stock_sha256="7167a1331345ee26b1d7594826a0669e2bab76976b418009e16280d3e0518c39",
-        patched_sha256="f4c91edb834115b06c5410cfa34fbfcf1d261e9dcad8e48f076f2e7878490d15",
+        patched_sha256="ce76236d880c258a85a1c133e5d1a4dc6edb16b1c9dd3dc0684275c787c51e4b",
         edits=(_insert_after(b"    ] })\n  ] });\n}\n", STATUS_FILTER_SEARCH_JS + STATUS_FILTER_FOLD_OPEN_JS),),
         # The first and second v2 builds (before the chip label moved here),
         # v2 final (matching lived here), v3 before the auto-clear and the
         # first auto-clear, whose history ignored a store swap; v3 / v4 (the
-        # search cleanup notified).
+        # search cleanup notified); v5 before Collapse groups (one SsfFold).
         legacy_sha256=(
             "1c17da8dba0b8fd2bf26c01a29a678e8231059b89c93dfad4008f442f1adacc9",
             "98f21f27a7848b4a85f55f43190715f187b5e62525f6e5f1eca343680559d2b5",
             "0169b7b80eeb43ac471b90a81ddda7a677395859f14da76d6a0c4da11f7f29c1",
             "11cf66ab426fd01806c2a0a31b172271a9344d61cc0322a10d216ff95b7e3588",
             "c3acafba03b544f8dbd9333aa26172a1078883e8b14f535cd1800de3c81c1cfa",
+            "f4c91edb834115b06c5410cfa34fbfcf1d261e9dcad8e48f076f2e7878490d15",
         ),
     ),
     # DashboardSidebarProjectContextMenu: no edit of its own, only room (600 B
@@ -1164,7 +1180,8 @@ STATUS_FILTER_REGIONS = (
     ),
     # OrganizationDropdown .. useSidebarSectionsCollapseStore (v4):
     # room only (830 B of no-op comments and two `//` lines inside the persist
-    # options object) for the chip hotkeys. The key map is a `shared` pair, so
+    # options object) for the chip hotkeys and ssfFolder (Collapse groups,
+    # LUBOS-2525). The key map is a `shared` pair, so
     # --status-filter-hotkeys switches it on with or without a filter rewrite
     # in the same run. Pinned on 1.37.0 bytes.
     RegionRewrite(
@@ -1173,18 +1190,22 @@ STATUS_FILTER_REGIONS = (
         end=b"function getDiffStatsQueryKey(hostUrl, workspaceId) {\n",
         length=8638,
         stock_sha256="bcc778fd83b5f91965d880e878395866956658489115b4dbbd6759f0c57b193c",
-        patched_sha256="694d80ac77ff44689d776ca883bddcf29230c28398b0fa8af86b4c5484ec982a",
+        patched_sha256="044d253aaedcf35c5982040fcc304413ec2ba5c9a03ffdde64e820b0df29a873",
         edits=(
             (
                 b"  // Legacy key: v0 held only the workspaces-list flag as\n"
                 b"  // { isCollapsed }, before Pinned/Sessions became collapsible.\n",
                 b"",
             ),
-            _insert_before(b'const SIDEBAR_SECTIONS_COLLAPSE_STORAGE_KEY = "sidebar-workspaces-collapse";\n', STATUS_FILTER_KEYS_JS),
+            _insert_before(b'const SIDEBAR_SECTIONS_COLLAPSE_STORAGE_KEY = "sidebar-workspaces-collapse";\n', STATUS_FILTER_KEYS_JS + STATUS_FILTER_FOLD_GROUPS_JS),
         ),
         # v4 (the hotkey target came from every counted project, in manual
-        # order, ignoring the search and the filter collapse overrides).
-        legacy_sha256=("6cced2b24d8f802076d487298d28bf2e22337195c1cb52e2f71c391fe9400473",),
+        # order, ignoring the search and the filter collapse overrides); v5
+        # before Collapse groups (no ssfFolder).
+        legacy_sha256=(
+            "6cced2b24d8f802076d487298d28bf2e22337195c1cb52e2f71c391fe9400473",
+            "694d80ac77ff44689d776ca883bddcf29230c28398b0fa8af86b4c5484ec982a",
+        ),
         shared=((STATUS_FILTER_KEYS_OFF, STATUS_FILTER_KEYS_ON),),
     ),
     # DashboardSidebarSectionHeader (v5): the PINNED and SESSIONS headers read
@@ -1193,14 +1214,15 @@ STATUS_FILTER_REGIONS = (
     # 2 or 3) the chevron shows the filter collapse override and a click flips
     # it (ssfFlip) instead of the stored state. The PROJECTS and cloud headers
     # pass no ssfV and stay stock. Room: the no-op comments and one `//` line
-    # inside `return (`. Pinned on 1.37.0 bytes.
+    # inside `return (`; it also holds ssfIcon (Collapse groups, LUBOS-2525).
+    # Pinned on 1.37.0 bytes.
     RegionRewrite(
         label="status filter: section header",
         start=b"function DashboardSidebarSectionHeader({\n",
         end=b"const DashboardSidebarGroupHeader = reactExports.forwardRef((",
         length=1593,
         stock_sha256="6854a4345167b417fe958d3d935ba4d673703de39d2ff1679a1f3067e05ba9ca",
-        patched_sha256="361ee0ad07fee9341a8bfea8749d9e9e051d9b92ec72dda906c4e5649f3d9353",
+        patched_sha256="38df923d4b2b4c9e0dcdc97aae6b486246bc5180ffd9ac0810d1b60898f6b931",
         edits=(
             (b"  labelHidden = false,\n  children\n}) {\n", b"  labelHidden = false,\n  ssfV,\n  children\n}) {\n"),
             (
@@ -1215,7 +1237,10 @@ STATUS_FILTER_REGIONS = (
                 b"    // biome-ignore lint/a11y/useSemanticElements: can't be a native <button> \xe2\x80\x94 it may nest action buttons\n",
                 b"",
             ),
+            _insert_after(b"      }\n    )\n  );\n}\n", STATUS_FILTER_FOLD_ICON_JS),
         ),
+        # v5 before Collapse groups (no ssfIcon).
+        legacy_sha256=("361ee0ad07fee9341a8bfea8749d9e9e051d9b92ec72dda906c4e5649f3d9353",),
     ),
     # Room only (v5, Collapse all / Expand all): functions with many no-op
     # comments that no other patch family (command palette regions included)
@@ -1229,8 +1254,10 @@ STATUS_FILTER_REGIONS = (
         end=b"function DashboardSidebarBulkDeleteMount() {\n",
         length=8651,
         stock_sha256="144352a6d3e93fa4ba79c73b66e4961b05ffbe12c2c6621f641c35f6b0200e51",
-        patched_sha256="3803f54c3861b9bfead5b7180ea587d9c3a648145ef757dc4357335e539ca901",
+        patched_sha256="3252534e1aefdab268fc6b492a706f45b4d1eab670af4e08beb68894397a77a9",
         edits=(_insert_before(b"function DashboardSidebarBulkDeleteDialog({\n", STATUS_FILTER_FOLD_JS),),
+        # v5 before Collapse groups (Collapse all only).
+        legacy_sha256=("3803f54c3861b9bfead5b7180ea587d9c3a648145ef757dc4357335e539ca901",),
     ),
     RegionRewrite(
         label="status filter: collapse all groups",
@@ -1297,6 +1324,66 @@ STATUS_FILTER_REGION_VARIANTS = (
 )
 
 
+
+def _rebased(region: RegionRewrite, length: int, stock_sha256: str, patched_sha256: str, **changes) -> RegionRewrite:
+    """The same region pinned on another release's bytes; no earlier filter generation ever ran there."""
+    return replace(
+        region, length=length, stock_sha256=stock_sha256, patched_sha256=patched_sha256,
+        legacy_sha256=(), upgrades=(), **changes,
+    )
+
+
+# 1.38 deletes the v1 workspace sidebar (WorkspaceSection and the rest of the
+# v1 tree) and the v1 project-clone path of NewProjectModal. Regions 1, 2, 3
+# and 7 keep their anchors and edits; only Rollup aliases inside them changed
+# (`SidebarDropZone$1` -> `SidebarDropZone`, `ChecksList$1` -> `ChecksList`, ...)
+# and region 3 gained the cloud-sidebar entry filter, so they are re-pinned on
+# the 1.38 bytes. Regions 4-6 and 8-11 are byte-identical to 1.37. Region 12
+# (NewProjectModal) lost 1.3 KB and no longer has room, and region 13
+# (WorkspaceSection) is gone: both helpers move to v2 cloud-sidebar functions
+# that no other family touches (REBASE.md room rule). A release layout is
+# chosen as a whole (_select_layout), so a bundle mixing 1.37 and 1.38 regions
+# fails closed. Fixtures: tests/fixtures/superset-1.38.0-status-filter-r*.js.
+STATUS_FILTER_REGIONS_1_38 = (
+    _rebased(STATUS_FILTER_REGIONS[0], 22547, "d0736062afcf27906b746101323fb9085274adce104f0915890484edbfb6a8a9", "d306dc499d12dd867db179e30107cba16e843e0c70461d0ded07800cfee505fe"),
+    _rebased(STATUS_FILTER_REGIONS[1], 19270, "38b98c72ba81a61d01d7ff0b0b5bbb5a879ac824fc1ac6c69a0ea24ed5f813bd", "fb56583de1046362a9f7fb3e67e7cb6e7fc80c3399bf292200ccf8156424ee1d"),
+    # The 1.37 shape's edits (the header sits one level deeper since 1.37).
+    _rebased(STATUS_FILTER_REGION_VARIANTS[0], 13863, "78138d9ad15d05c65e4e407b4de4cc45c18e2c9bf4aecc1ec76cd7877f2b0c0e", "18974b9d9650d1eb44790693fb1c4ca8169e3ebe8467ba78f1c32b97d630b3c2"),
+    *STATUS_FILTER_REGIONS[3:6],
+    _rebased(STATUS_FILTER_REGIONS[6], 8073, "11c469332fd8da9bcd7e62bab1d80202b6d2d68f42048efab2285702ebc419dd", "341333ae2caf7ef3c3842249db77f19aae85b630fbf76801572f54789993927a"),
+    *STATUS_FILTER_REGIONS[7:11],
+    # DashboardSidebarCloudPortsButton .. SidebarKbdHint: room only (1,635 B
+    # of no-op comments) for the group list (ssfFolds) and the chip hotkey
+    # target (ssfFirst). Region 14 (UpdatesPill) is byte-identical on 1.38 but
+    # lies inside the palette's 1.38 room region (PreUpdateConfirmPopover ..
+    # OrganizationDropdown), so 1.38 has no region 14.
+    RegionRewrite(
+        label=STATUS_FILTER_REGIONS[11].label,
+        start=b"function DashboardSidebarCloudPortsButton({\n",
+        end=b"function SidebarKbdHint({\n",
+        length=37057,
+        stock_sha256="77b5567970cc534f0bed77a7a42f0738020c6f261dc0d40156d9c0f91cd59e6e",
+        patched_sha256="75ed3a410e4c3e0ddd7f3a18fe9942e6d2de41164f073704ae2a674ed6a6833b",
+        edits=(_insert_before(b"function DashboardSidebarCloudSection({\n", STATUS_FILTER_FOLD_LIST_JS + STATUS_FILTER_FIRST_JS),),
+    ),
+    # DashboardSidebarCloudGroup .. LinkTaskCommand: room only (915 B) for
+    # ssfOn and the chip auto-clear.
+    RegionRewrite(
+        label=STATUS_FILTER_REGIONS[12].label,
+        start=b"function DashboardSidebarCloudGroup({\n",
+        end=b"function keepKeysInSearch(event) {\n",
+        length=11083,
+        stock_sha256="274084fa394d56fe56ee98c65c365b743e0580a507ff156a102a05ea12db916c",
+        patched_sha256="17c8b5c9a8a7ebfd655a4b01849849a333b4e6a80465b8c60f7c99a11d9dd5c0",
+        edits=(_insert_before(b"function LinkTaskCommand({\n", STATUS_FILTER_FOLD_ON_JS + STATUS_FILTER_CLEAR_JS),),
+    ),
+)
+# (name, regions, sibling variants): every supported release layout of the filter.
+STATUS_FILTER_LAYOUTS = (
+    ("1.36-1.37", STATUS_FILTER_REGIONS, STATUS_FILTER_REGION_VARIANTS),
+    ("1.38", STATUS_FILTER_REGIONS_1_38, ()),
+)
+
 # Names the injected filter JS reads from upstream code outside the pinned
 # regions. The region digests cannot see them, so a release that renames or
 # moves one (or Rollup suffixes it, e.g. `matches$1`) while the regions stay
@@ -1307,6 +1394,7 @@ STATUS_FILTER_REGION_VARIANTS = (
 STATUS_FILTER_IMPORTED_NAMES = (
     "jsxRuntimeExports", "reactExports", "cn", "Tooltip", "TooltipTrigger", "TooltipContent",
     "LuGitMerge", "LuGitPullRequest", "useNavigate", "navigateToV2Workspace", "createLucideIcon", "LuChevronsUpDown",
+    "LuFolderInput", "LuFolderOpen",
 )
 STATUS_FILTER_DEFINED_NAMES = (
     "StatusStoreContext", "DashboardSidebarSelectionContext", "PR_COLOR_BY_STATE", "getProjectChildrenWorkspaces",
@@ -1373,9 +1461,45 @@ def _require_chunk_names(path: str, chunk: bytes, imported, defined, label: str)
                 raise RuntimeError(f"{label}: {name} is not available in {path}; bundle structure may have changed")
 
 
-def require_status_filter_names(data) -> None:
+def _region_fits(data, region: RegionRewrite, variants: tuple[RegionRewrite, ...]) -> bool:
+    """True when the region's start occurs once and one explicit shape's end sits at its pinned length."""
+    offsets = _find_all(data, region.start)
+    if len(offsets) != 1:
+        return False
+    stop = offsets[0]
+    return any(
+        candidate.start == region.start and candidate.end == region.end
+        and data[stop + candidate.length : stop + candidate.length + len(candidate.end)] == candidate.end
+        for candidate in (region, *variants)
+    )
+
+
+def _select_layout(data, layouts, label: str):
+    """Return the one release layout (name, regions, variants, ...) whose every region the bundle holds.
+
+    A bundle no layout fits whole (a changed or mixed-release bundle) gets the
+    layout that fits most of its regions, so planning it raises the precise
+    per-region error; two layouts that both fit whole are refused.
+    """
+    fits = [sum(_region_fits(data, region, layout[2]) for region in layout[1]) for layout in layouts]
+    whole = [layout for layout, fit in zip(layouts, fits, strict=True) if fit == len(layout[1])]
+    if len(whole) > 1:
+        raise RuntimeError(f"{label}: the bundle fits several release layouts; bundle structure may have changed")
+    if whole:
+        return whole[0]
+    return layouts[fits.index(max(fits))]
+
+
+def status_filter_layout(data):
+    """(name, regions, variants) of the status filter's release layout in this bundle."""
+    return _select_layout(data, STATUS_FILTER_LAYOUTS, "status filter")
+
+
+def require_status_filter_names(data, regions=None) -> None:
     """Refuse the filter when its regions span files or their chunk lacks a name the injected JS uses."""
-    found = _region_chunk(data, STATUS_FILTER_REGIONS, "status filter")
+    if regions is None:
+        regions = status_filter_layout(data)[1]
+    found = _region_chunk(data, regions, "status filter")
     if found is None:
         return
     path, _start, chunk = found
@@ -1470,7 +1594,7 @@ def _fold_into_regions(replacements: list[tuple[int, bytes, bytes, str]]) -> lis
     bytes, not its offset; it has to occur exactly once in the rewrite.
     """
     shared = {}
-    for region in (*STATUS_FILTER_REGIONS, *STATUS_FILTER_REGION_VARIANTS):
+    for region in (region for _name, regions, variants in STATUS_FILTER_LAYOUTS for region in (*regions, *variants)):
         shared.setdefault(region.label, set()).update(region.shared)
     hosts = [list(item) for item in replacements if item[3] in shared]
     rest = []
@@ -1664,7 +1788,10 @@ def _plan_status_filter_hotkeys(data, replacements: list[tuple[int, bytes, bytes
             replacements.append((offset, old, STATUS_FILTER_KEYS_ON, label))
         return replacements
     # No map in the bundle yet: this run writes the room region from stock.
-    room = next(region.label for region in STATUS_FILTER_REGIONS if (STATUS_FILTER_KEYS_OFF, STATUS_FILTER_KEYS_ON) in region.shared)
+    [room] = {
+        region.label for _name, regions, _variants in STATUS_FILTER_LAYOUTS for region in regions
+        if (STATUS_FILTER_KEYS_OFF, STATUS_FILTER_KEYS_ON) in region.shared
+    }
     hosts = [index for index, item in enumerate(replacements) if item[3] == room]
     if len(hosts) != 1:
         raise RuntimeError("status filter hotkeys: chip key map not found; bundle structure may have changed")
@@ -2111,6 +2238,73 @@ PALETTE_SEARCH_CHUNKS = (
         ("ROW_CLASS", "V2WorkspaceList"),
     ),
 )
+# 1.38 deletes the v1 workspace sidebar that held regions 3-7, and the v1 list
+# of the palette (V1WorkspaceList) from region 2. Region 1 is byte-identical.
+# Region 2 keeps its edits; it is 3.2 KB shorter and lacks 181 B, so it also
+# drops one four-line `//` comment block. The five helpers move, unchanged, to
+# two room-only runs of v2 functions no other family touches:
+# PreUpdateConfirmPopover .. OrganizationDropdown and
+# DashboardSidebarAgentHoverRow .. PR_STATE_LABEL.
+# No palette generation ever ran on 1.38, so it knows only stock and current.
+PALETTE_SEARCH_REGIONS_1_38 = (
+    PALETTE_SEARCH_REGIONS[0],
+    _rebased(
+        PALETTE_SEARCH_REGIONS[1], 60514, "0b26145ab87f6299e47ffca8d201204aa5665bfbc10977a8f7812686f4d9bb14", "aab2aac41fcd44480f18a40011f00e38efdfc739d90f64f8d65d8e53dc469aab",
+        edits=(
+            (
+                b"        // A dynamic import here would only defer this file's own module \xe2\x80\x94\n"
+                b"        // AnimatedStarButton (and framer-motion) is already statically\n"
+                b"        // imported by useStarNagCard, which DashboardSidebar/WorkspaceSidebar\n"
+                b"        // import unconditionally, so it's already in the eager bundle.\n",
+                b"",
+            ),
+            *PALETTE_SEARCH_REGIONS[1].edits,
+        ),
+    ),
+    RegionRewrite(
+        label="command palette: search helpers, new workspace frame and button",
+        start=b"function PreUpdateConfirmPopover({\n",
+        end=b"function OrganizationDropdown({\n",
+        length=26223,
+        stock_sha256="0c4585f527edc108ef2d285423228a91cc0b6608f648eecb12f4256657ea9da6",
+        patched_sha256="551d57cae5e43e7885d9b512ea813980c8b8d5b764d51afac99987e3403da0f8",
+        edits=(
+            _insert_before(
+                b"function HelpSubMenu({\n",
+                PALETTE_SEARCH_HELPERS_JS + PALETTE_NEW_WORKSPACE_FRAME_JS + PALETTE_NEW_WORKSPACE_PLUS_JS,
+            ),
+        ),
+    ),
+    RegionRewrite(
+        label="command palette: new workspace key and action",
+        start=b"function DashboardSidebarAgentHoverRow({\n",
+        end=b"const PR_STATE_LABEL = {\n",
+        length=13712,
+        stock_sha256="42bb6b3361b9e8acc89d5da73ea95a11e6f17527d01d82718bbbcd27f1d4380c",
+        patched_sha256="ba8b9945f4230f357b8db1f003abd20e7b26ddc72b0714792db0ce7ce173113a",
+        edits=(
+            _insert_before(
+                b"function DashboardSidebarPortsChip({\n",
+                PALETTE_NEW_WORKSPACE_KEY_JS + PALETTE_NEW_WORKSPACE_CREATE_JS,
+            ),
+        ),
+    ),
+)
+PALETTE_SEARCH_CHUNKS_1_38 = (
+    (PALETTE_SEARCH_REGIONS_1_38[:1], *PALETTE_SEARCH_CHUNKS[0][1:]),
+    (PALETTE_SEARCH_REGIONS_1_38[1:], *PALETTE_SEARCH_CHUNKS[1][1:]),
+)
+# (name, regions, variants, chunks, generations): every supported release layout.
+PALETTE_SEARCH_LAYOUTS = (
+    ("1.37", PALETTE_SEARCH_REGIONS, (), PALETTE_SEARCH_CHUNKS, PALETTE_SEARCH_GENERATIONS),
+    (
+        "1.38", PALETTE_SEARCH_REGIONS_1_38, (), PALETTE_SEARCH_CHUNKS_1_38,
+        {
+            "stock": tuple(region.stock_sha256 for region in PALETTE_SEARCH_REGIONS_1_38),
+            "generation 6": tuple(region.patched_sha256 for region in PALETTE_SEARCH_REGIONS_1_38),
+        },
+    ),
+)
 # Names the injected JS declares; none may occur in its chunk outside the regions.
 PALETTE_SEARCH_NEW_NAMES = (
     "sspProvider", "SspPaletteResults", "SspProjectFrame", "SspPaletteSearch", "sspScore",
@@ -2120,7 +2314,8 @@ PALETTE_SEARCH_NEW_NAMES = (
 
 def _plan_command_palette_workspace_search(data) -> list[tuple[int, bytes, bytes, str]]:
     """Validate the palette chunks and regions and return the rewrites still needed."""
-    for regions, imported, defined in PALETTE_SEARCH_CHUNKS:
+    _layout, layout_regions, _variants, chunks, generations = _select_layout(data, PALETTE_SEARCH_LAYOUTS, "command palette")
+    for regions, imported, defined in chunks:
         found = _region_chunk(data, regions, "command palette")
         if found is None:
             break  # synthetic test bundles have no file boundaries
@@ -2135,11 +2330,11 @@ def _plan_command_palette_workspace_search(data) -> list[tuple[int, bytes, bytes
             if re.search(rf"(?<![\w$]){name}(?![\w$])".encode(), outside):
                 raise RuntimeError(f"command palette: {path} already uses {name}; bundle structure may have changed")
     replacements, state = [], []
-    for region in PALETTE_SEARCH_REGIONS:
+    for region in layout_regions:
         planned = _plan_region_rewrite(data, region)
         state.append(hashlib.sha256(planned[0][1]).hexdigest() if planned else region.patched_sha256)
         replacements.extend(planned)
-    if tuple(state) not in PALETTE_SEARCH_GENERATIONS.values():
+    if tuple(state) not in generations.values():
         raise RuntimeError(
             "command palette: the palette regions mix generations (a partial upgrade or a hand edit); "
             "run --revert to the backup of one whole generation first"
@@ -2483,9 +2678,10 @@ def plan_replacements(
         replacements.extend(_plan_pinned_icon_only(data))
 
     if sidebar_status_filter:
-        require_status_filter_names(data)
-        for region in STATUS_FILTER_REGIONS:
-            replacements.extend(_plan_region_rewrite(data, region, STATUS_FILTER_REGION_VARIANTS))
+        _layout, regions, variants = status_filter_layout(data)
+        require_status_filter_names(data, regions)
+        for region in regions:
+            replacements.extend(_plan_region_rewrite(data, region, variants))
 
     if status_filter_hotkeys:
         replacements = _plan_status_filter_hotkeys(data, replacements)

@@ -37,7 +37,7 @@ All `size-N` strings are 6 chars, so asar header offsets stay valid — no repac
 unpacking-pattern issues with native modules.
 
 With `--compact-sidebar`, the expanded utility navigation becomes a four-column
-icon grid. Anchor families track desktop-v1.25.1 and desktop-v1.26.0–v1.37.0:
+icon grid. Anchor families track desktop-v1.25.1 and desktop-v1.26.0–v1.38.0:
 eight buttons (New Workspace, Search,
 Workspaces, Automations, Tasks, Pull requests, plus the flag-gated Pages and
 Plugins; Usage left this header and later returned flag-gated, see below). Labels render through Lingui
@@ -90,7 +90,7 @@ Pages fill one row of the four-column grid. Keyboard shortcuts (New Workspace,
 run without the flag keeps the buttons hidden, so a routine re-apply never
 brings them back; `--revert` restores them.
 
-`--hide-sidebar-footer` (desktop-v1.36.0–v1.37.0 `DashboardSidebar`) hides the
+`--hide-sidebar-footer` (desktop-v1.36.0–v1.38.0 `DashboardSidebar`) hides the
 expanded sidebar's bottom row: the organization menu (avatar, team name, PRO
 badge), the updates pill and the settings cog. Only the expanded branch of the
 row's `cn(isCollapsed ? … : …)` becomes `"hidden"` (`SIDEBAR_FOOTER_HIDDEN`),
@@ -105,7 +105,7 @@ either order. The anchor is checked only when the flag is given or the row is
 already hidden, so it never blocks a release that lacks the row. Hidden is
 sticky like `--hide-nav-buttons`; `--revert` restores it.
 
-With `--pinned-icon-only` (anchors track desktop-v1.30.2–v1.37.0), rows in the sidebar
+With `--pinned-icon-only` (anchors track desktop-v1.30.2–v1.38.0), rows in the sidebar
 **PINNED** section show only the workspace name — `budtekomfi-cz/SSZ křivka…`
 becomes `SSZ křivka…` — and the project is identified by its icon (the project
 name stays in the icon tooltip). Two length-preserving edits in
@@ -126,7 +126,7 @@ Both anchors are validated as exactly one stock-or-patched variant; drift fails
 closed and a re-run is a no-op. Without the flag the pinned rows are left as
 they are; undo with `--revert`.
 
-With `--sidebar-status-filter` (desktop-v1.36.0–v1.37.0, `layout-*.js`) the expanded
+With `--sidebar-status-filter` (desktop-v1.36.0–v1.38.0, `layout-*.js`) the expanded
 sidebar gets two sticky rows at the very top, right below the
 `--compact-sidebar` navigation grid: a search field and below it a row of
 status chips. Both sit outside the scrolling list, so they stay in place while
@@ -246,6 +246,23 @@ contract as a single chevron: the stored state stays untouched and the
 overrides go when the filter does. The PROJECTS and cloud sections are not
 groups of this button.
 
+**Collapse groups / Expand groups (LUBOS-2525).** A second button right
+before Collapse all (the same `SsfFold` with `g: 1`; the icon rail is
+unchanged) does the same for the folders only: the groups inside the
+projects and inside SESSIONS, which typically hold orchestrated sessions.
+PINNED, SESSIONS, the projects, PROJECTS and the cloud section are never
+toggled, so the projects stay open. The "on screen" rule is that of Collapse
+all: a folder counts only while its project or SESSIONS is open (under a
+filter by its override, else by its stored state) and while the filter or
+search shows it (`ssfFolder` keeps those entries of `ssfFolds`). If any
+folder on screen is open, a click collapses all of them (icon folder-input,
+tooltip and `aria-label` "Collapse groups"); otherwise it expands them all
+(folder-open, "Expand groups"). The contract is the same as well: without a
+filter the click writes the stored state of the folders that differ, through
+the upstream folder toggle, so it persists like a chevron click; with a chip
+(an Option-click solo chip included) or a search it sets only the in-memory
+overrides (`ssfShut`) and the stored state stays untouched.
+
 A project section stays while its delete or import dialog or its rename is
 open, so a status change cannot close a dialog mid-confirm.
 
@@ -271,9 +288,10 @@ Known limitations:
   again. Revealing a workspace (opening it from elsewhere, a chip hotkey) opens
   only the stored collapse state, so its row can stay inside a group the
   filter collapsed.
-- Collapse all reaches the groups the sidebar renders from its own data: the
-  cloud section, hidden projects and a collapsed PROJECTS list are left as
-  they are. Its label follows the shared filter state, the status of every
+- Collapse all and Collapse groups reach the groups the sidebar renders from
+  its own data: the cloud section, hidden projects and a collapsed PROJECTS
+  list are left as they are (with PROJECTS collapsed Collapse groups reaches
+  only the SESSIONS folders). Their labels follow the shared filter state, the status of every
   workspace (a chip showing a new group), the sections store and the sidebar
   data; a change only another component sees (a project row
   re-rendering on its own) updates the label on the next sidebar render, and
@@ -337,13 +355,13 @@ since v5, the section header, Collapse all and the chip hotkey target):
 | 2 | `DashboardSidebarProjectSection` → `GettingStartedChecklist` | 19,272 B | 1,438 B + 2 `//` lines + the header's search input | project and SESSIONS guards and filter collapse overrides, search labels, `SsfStatusChip`, `ssfSubscribe` |
 | 3 | `DashboardSidebar` → `const SEED_FLAG_KEY` | 12,134 B | 588 B | `ssfF` (the sidebar data Collapse all and the chip hotkeys read), the search row and the chip row |
 | 4 | `DashboardSidebarCloudContextMenu` → `DashboardSidebarCloudPortsButton` | 8,643 B | 1,446 B | `ssfMatches` / `ssfRange` / `ssfLabel`, `ssfUseCounts` |
-| 5 | `DashboardSidebarWorkspaceContextMenu` → `useDashboardSidebarWorkspaceItemActions` | 9,227 B | 1,350 B | `SsfSearch`, `ssfOpen` |
+| 5 | `DashboardSidebarWorkspaceContextMenu` → `useDashboardSidebarWorkspaceItemActions` | 9,227 B | 1,350 B | `SsfSearch` (it mounts both fold buttons), `ssfOpen` |
 | 6 | `DashboardSidebarProjectContextMenu` → `const DashboardSidebarProjectRow` | 3,767 B | 600 B | `SSF_CHIPS` / `ssfBits`, `ssfShut` / `ssfFlip` |
 | 7 | `DashboardSidebarWorkspaceHoverCardContent` → `DashboardSidebarHoverCardOverlay` | 8,079 B | 931 B | `ssfUseSub` / `ssfUseShow`, `ssfFoldAll` |
 | 8 | `DashboardSidebarBulkActions` → `executeBulkWorkspaceDeleteTargets` | 7,692 B | 847 B | shared state (`ssfMask`, `ssfQ`, `ssfHide`, `ssfEmit`, `ssfToggle`) |
-| 9 | `OrganizationDropdown` → `getDiffStatsQueryKey` | 8,638 B | 830 B + 2 `//` lines | `SSF_KEYS` / `ssfUseKeys` (chip hotkeys, §Status chip hotkeys) |
-| 10 | `DashboardSidebarSectionHeader` → `const DashboardSidebarGroupHeader` | 1,593 B | 80 B + 1 `//` line | PINNED and SESSIONS header chevrons read and flip the override |
-| 11 | `DashboardSidebarBulkDeleteFailures` → `DashboardSidebarBulkDeleteMount` | 8,651 B | 1,073 B | `SsfFold` (the Collapse all / Expand all button) |
+| 9 | `OrganizationDropdown` → `getDiffStatsQueryKey` | 8,638 B | 830 B + 2 `//` lines | `SSF_KEYS` / `ssfUseKeys` (chip hotkeys, §Status chip hotkeys), `ssfFolder` (the folders Collapse groups acts on) |
+| 10 | `DashboardSidebarSectionHeader` → `const DashboardSidebarGroupHeader` | 1,593 B | 80 B + 1 `//` line | PINNED and SESSIONS header chevrons read and flip the override, `ssfIcon` (the fold buttons' icons) |
+| 11 | `DashboardSidebarBulkDeleteFailures` → `DashboardSidebarBulkDeleteMount` | 8,651 B | 1,073 B | `SsfFold` (the Collapse all / Expand all and Collapse groups / Expand groups button) |
 | 12 | `NewProjectModal` → `deriveForwardSyncInput` | 11,464 B | 946 B | `ssfFolds` (the groups on screen) |
 | 13 | `WorkspaceSection` → `useSetupScriptCard` | 18,386 B | 784 B | `ssfOn`, the chevrons-down-up icon, `ssfClear` (the chip auto-clear) |
 | 14 | `UpdatesPill` → `FiUsers` | 8,287 B | 609 B | `ssfFirst` (the row a chip hotkey opens) |
@@ -367,7 +385,7 @@ regions 4 to 8, outside every command palette region (a test checks that no
 region of either family contains the other's start anchor); region 13 also
 took the chip auto-clear from region 5, which needed room for `ssfOpen`.
 After the rewrite regions 1 to 14 keep 31, 49, 102 (130 on 1.37), 36, 48, 55,
-1, 11, 148, 138, 65, 2, 75 and 96 B of trailing padding.
+1, 11, 148, 138, 65, 2, 75 and 96 B of trailing padding (1.38 layout below).
 
 Each region:
 1. starts at a unique top-level anchor and has a fixed length. The end anchor
@@ -432,7 +450,7 @@ pre-v1 backup `b1a1ad1c…` the same evening):
 - `inspect_asar()` reports `patches_needed: 0`.
 - `--revert` restores the original SHA-256.
 
-With `--sound-only-when-waiting` (desktop-v1.36.0–v1.37.0) the notification sound plays
+With `--sound-only-when-waiting` (desktop-v1.36.0–v1.38.0) the notification sound plays
 only while an agent is waiting for you (`PermissionRequest`, `PendingQuestion`).
 It no longer plays on `Stop`, i.e. when a task finishes. Notifications, ringtone
 choice, volume, mute and the Settings UI are unchanged. Two code paths play the
@@ -469,6 +487,27 @@ cover these variants; the 1.36 fixtures remain. Before any write the patcher
 also checks that the chunk holding the regions imports or defines every
 upstream name the injected code reads (`require_status_filter_names`), so a
 release that renames one fails closed instead of crashing the sidebar.
+
+Desktop 1.38.0 deletes the v1 workspace sidebar and the v1 palette list
+(LUBOS-2525). The filter, its hotkeys and the palette search therefore carry
+a second release layout: `STATUS_FILTER_LAYOUTS` and `PALETTE_SEARCH_LAYOUTS`
+in `patch-asar.py`, selected as a whole by `_select_layout()`. A bundle mixing
+1.37 and 1.38 regions fails closed. On 1.38, filter regions 1, 2, 3 and 7 are
+re-pinned (Rollup aliases lost their `$1` suffix; region 3 has a cloud-sidebar
+entry filter). Regions 4-6 and 8-11 are byte-identical. Regions 12 and 13
+move to room-only v2 cloud-sidebar functions (`DashboardSidebarCloudPortsButton`,
+`DashboardSidebarCloudGroup`), because `NewProjectModal` lost its room and
+`WorkspaceSection` is gone. Region 14 (`UpdatesPill`) is byte-identical but
+lies inside the palette's 1.38 room region, so 1.38 has no region 14 and
+region 12 also holds `ssfFirst`. The 1.38 padding of regions 1 to 13 is 31,
+49, 130, 36, 48, 55, 1, 11, 148, 138, 65, 178 and 206 B. The palette keeps region 1, re-pins
+region 2 (which drops one `//` comment block for room) and moves the five
+helpers of the deleted regions 3-7 into two room-only v2 regions. The hotkey
+registry only renames `UNDO_ARCHIVE_WORKSPACE` to `UNDO`. 1.36 / 1.37 stay
+supported, because a retained 1.37 backup can still present them
+(REBASE.md invariant 3). The 1.38 fixtures (`tests/fixtures/superset-1.38.0-*.js`)
+are cut from the real bundle, and the 1.38 test classes inherit every test of
+the 1.37 ones. Worked example: `REBASE.md` "1.37.0 → 1.38.0".
 
 The `LIVE_HOST_ONLY` anchor tests (`test_installed_bundle_accepts_*`) read the
 installed release's stock bytes, not the live file. `stock_snapshot()` follows
@@ -522,7 +561,7 @@ first (`--size 6 --hide-tray --custom-project-icons --keep-icon-on-hover
 --compact-sidebar --ack-invalid-apple-signature`) to bring back icons and the
 compact header, and rebase the failing optional family per `REBASE.md`.
 
-### Command palette on Cmd+K and workspace search (opt-in, desktop-v1.37.0)
+### Command palette on Cmd+K and workspace search (opt-in, desktop-v1.37.0–v1.38.0)
 
 Two optional flags (LUBOS-2290, icons LUBOS-2406, icon size LUBOS-2414, new workspace LUBOS-2423). Like every new optional flag they stay
 **outside** the approved set (`approved-flags.json`, `PATCH_OPTIONS`, the
@@ -708,7 +747,7 @@ Enter, ⌘Enter from outside the palette untouched, the drill-down New workspace
 and without a match, last after matching workspaces with Enter switching to the
 first match, prefilled name).
 
-### Status chip hotkeys (opt-in, desktop-v1.37.0)
+### Status chip hotkeys (opt-in, desktop-v1.37.0–v1.38.0)
 
 `--status-filter-hotkeys` (needs `--sidebar-status-filter`) gives three chips
 a mac shortcut. It stays outside the approved set like the palette flags and
