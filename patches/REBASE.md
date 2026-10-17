@@ -138,6 +138,37 @@ use `_rebased()`, which keeps the edits and drops `legacy_sha256` and
 region of the new layout must hold no anchor of another family. Check the
 other layout regions as well (`test_status_filter_and_palette_regions_do_not_overlap`).
 
+### Automations header and sidebar device filter (`AUTOMATIONS_HEADER_REGIONS`, `SIDEBAR_DEVICE_LAYOUTS`)
+
+Both families are region rewrites with the procedure above. Their fixtures are
+`tests/fixtures/superset-1.38.0-automations-header-r{1,2}.js` and
+`superset-1.38.0-device-filter-r{1..5}.js` (stock and `.patched.js`); every
+region is byte-identical in 1.37.0, so one set covers both releases.
+
+- Names: `_require_family_chunks` checks per chunk that the imports the
+  injected JS reads exist (`AUTOMATIONS_HEADER_CHUNKS`,
+  `SIDEBAR_DEVICE_CHUNK_NAMES[0]`) and that no added name (`sah*`, `Sah*`,
+  `sdf*`, `Sdf*`) occurs outside the regions and the swaps. A rename upstream
+  fails as `X is not available`; re-derive the import, never inline a guess.
+- Automations: the tab row (`AUTOMATIONS_TAB_ROW`) is matched as the stock
+  bytes without `JS_NOOP_COMMENTS`; regenerate it from the new excerpt with
+  the same stripping. `SahHeader` sits after the page function, never before
+  the region's start anchor (the start anchor has to stay at the region start).
+- Device filter: the data edits (`sdfUseRows`, `sdfUseList` for the groups and
+  `sessionChildren`) must stay on the hook's single source rows; check that
+  PINNED, SESSIONS and the groups are still built from
+  `visibleSidebarWorkspaces` (`test_sidebar_data_is_filtered_at_its_source`).
+  The four room regions hold no anchor of another family; device regions 1, 2
+  and 3 start where status filter regions 2, 9 and 7 end (adjacent, not
+  overlapping). Room was found by ranking top-level functions of the layout
+  chunk by free bytes in both releases at once.
+- Swaps: `SIDEBAR_DEVICE_MOUNT` carries its compiled indentation because the
+  page top bar (`PageHeader`) mounts the same `PortsDropdown` six spaces deep;
+  `SIDEBAR_DEVICE_CLOUD` carries its two-space indent because the layout's
+  source map holds the TSX line tab-indented. On 1.38 the guard is inside
+  status filter region 12 (`shared` pair); if a rebase moves it into another
+  status region, move the pair with it.
+
 The sound family (`SOUND_MAIN_*`, `SOUND_RENDERER_*`) is an ordinary anchor
 pair. It rebases with the procedure above, and its node harness tests have to
 reproduce upstream's behaviour on the stock excerpt first.

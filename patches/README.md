@@ -803,6 +803,81 @@ map on refused with the `--revert` hint, fail-closed guards)
 and the node harness tests `test_chip_hotkeys_*` (inert map, toggles, render
 order including folders, search skip, modifiers, repeat, zero chips).
 
+### Automations header (opt-in, desktop-v1.37.0–v1.38.0)
+
+`--automations-header` (LUBOS-2658) reshapes the `/automations` list page.
+Like the palette flags it stays outside the approved set and is applied by
+hand on top of it (add the flag to the command above; a re-run is a no-op,
+`--revert` undoes exactly that step, a later re-apply without the flag keeps
+it).
+
+- The Mine / Team tabs are gone: the table lists every automation the
+  organization returns (`automation.list`, Mine and Team merged). The Owner
+  column shows while any listed automation belongs to someone else, the rule
+  the Team tab had; the column widths, the owner sort and the two empty states
+  keep their upstream code (`scope` is now derived from the counts).
+- The header row carries, between the title and **New automation**: a project
+  filter, **All runs** (opens the runs page with every run, `scope: "all"`) and
+  the search (upstream's input and labels).
+- Project filter: **All projects** plus every project with at least one
+  automation, by name, with the sidebar's project icon (`ProjectThumbnail`);
+  a project the recent-projects list does not know is "Unknown project", and
+  automations without a project are **Session** (upstream's label), last. The
+  selection is component state (not persisted); when its project loses its
+  last automation the page falls back to All projects. The search narrows the
+  filtered list.
+- Stat cards: **Automations** (the total) follows the filter. The 7-day
+  succeeded / failed / missed counts and the sparkline do not: they come from
+  the server-side org aggregate `automation.orgRunStats`, which has no project
+  dimension, so they stay organization-wide (known limitation).
+- `FeatureHeader` (the header of every feature page) gains an optional
+  `extra` slot rendered left of the create button. Pages that do not pass it
+  render exactly as upstream (node test).
+
+Two hash-pinned regions in two chunks (`FeatureHeader-*.js`, the automations
+`page-*.js`), byte-identical in 1.37.0 and 1.38.0. The tab row is deleted
+whole (`AUTOMATIONS_TAB_ROW`, its stock bytes without the no-op comments).
+
+### Sidebar device filter (opt-in, desktop-v1.37.0–v1.38.0)
+
+`--sidebar-device-filter` (LUBOS-2658) adds a compact device dropdown to the
+expanded sidebar's title-bar row, right of the back / forward arrows (it
+renders before the ports button, at upstream's `PortsDropdown` mount). Opt-in
+and sticky like the flags above. The trigger stays within the 280 px default
+sidebar: a layers icon under All devices, the device name (truncated at 5 rem)
+once one is selected.
+
+- Options: **All devices**, this Mac (laptop icon) first, every other host
+  that has a workspace in the sidebar by its name from the host roster
+  (`useKnownHosts`; an unnamed host shows the first 8 characters of its id),
+  and **Cloud** when cloud workspaces exist. A selected device stays listed
+  after its last workspace goes, so it can always be cleared.
+- A device filters the sidebar data at its source (`useDashboardSidebarData`):
+  the workspace rows keep only that `hostId`, so **PINNED**, **SESSIONS**, the
+  project groups, the PR polling, the workspace shortcuts and the
+  `--sidebar-status-filter` chip counts (they read the same lists) follow. A
+  project or folder left without a workspace is hidden. **Cloud** hides every
+  host list and keeps the cloud section; a host hides the cloud section.
+- Drag and drop is off while a device is selected: a reorder of a partial list
+  would write partial tab orders.
+- **All devices** is upstream: every hook returns its input list unchanged and
+  the guards read as upstream (node test).
+- The selection persists in localStorage `sdf-sidebar-device` (it survives a
+  relaunch).
+
+Five hash-pinned regions in the sidebar `layout-*.js` chunk (four of them are
+room only: no-op comments and listed whole `//` comment lines; the drag-guard
+region ends at `invalidateWorkspaceQueries` on 1.37.0 and at
+`RenameBranchDialog` on 1.38.0) and two anchor swaps: the title-bar mount and
+the cloud-section guard. On 1.38.0 the guard lies inside status filter region
+12, which declares it as a `shared` pair, so both flags compose in either order
+(`CompositionTest`). Tests: `tests/test_superset_device_automations_patch.py`
+(pinned regions, fail-closed bundles, names, apply / re-run / revert,
+composition with `--sidebar-status-filter` and `--pinned-icon-only` in either
+order on both releases, the installed bundle) and
+`tests/device_automations.test.mjs` (the real sidebar pipeline per device, the
+dropdown, the project filter, FeatureHeader without `extra`).
+
 `project-icons/komfi-ops.svg` is an intentional palette exception: its
 slate-900 (`#0f172a`) background and slate-200 (`#e2e8f0`) gear stroke retain
 the approved dark-background identity instead of following the light sibling

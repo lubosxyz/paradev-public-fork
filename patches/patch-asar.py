@@ -5,7 +5,8 @@ The selected patches cover the compact sidebar, 24 px project icons,
 project-owned icon URLs, project icons retained on hover, icon-only pinned
 workspace rows, sidebar status filter chips, notification sound only while an agent
 waits, no menu-bar tray icon, the command palette on Cmd+K and project and
-workspace search in the palette, with a new workspace per project. Every replacement has exactly the
+workspace search in the palette, with a new workspace per project, the Automations
+page header (one list, project filter) and a sidebar device filter. Every replacement has exactly the
 same byte length as its source. That preserves ASAR offsets, but any app.asar
 mutation still invalidates Apple's resource seal and therefore requires an
 explicit production acknowledgement.
@@ -1333,6 +1334,24 @@ def _rebased(region: RegionRewrite, length: int, stock_sha256: str, patched_sha2
     )
 
 
+# --sidebar-device-filter: the two anchors it swaps outside its own regions
+# (SIDEBAR_DEVICE_SWAPS). The cloud section guard lies inside the 1.38 status
+# filter room region 12, which therefore declares it as a shared pair. Both
+# carry their compiled indentation: PageHeader (the top bar of the pages
+# outside a workspace) mounts the same PortsDropdown six spaces deep, and the
+# layout source map holds the guard's TSX line, tab-indented.
+SIDEBAR_DEVICE_MOUNT = (
+    b"NavigationControls, {}),\n"
+    b'                /* @__PURE__ */ jsxRuntimeExports.jsx(PortsDropdown, { align: "start" })'
+)
+SIDEBAR_DEVICE_MOUNT_FILTER = _pad_variant(
+    SIDEBAR_DEVICE_MOUNT,
+    b'NavigationControls, {}),\n                jsxRuntimeExports.jsx(SdfDevices, { align: "start" })',
+)
+SIDEBAR_DEVICE_CLOUD = b"  if (cloudFlag === false || organizationId === null) return null;"
+SIDEBAR_DEVICE_CLOUD_FILTER = _pad_variant(SIDEBAR_DEVICE_CLOUD, b"  if (sdfUseCloud(cloudFlag, organizationId)) return null;")
+
+
 # 1.38 deletes the v1 workspace sidebar (WorkspaceSection and the rest of the
 # v1 tree) and the v1 project-clone path of NewProjectModal. Regions 1, 2, 3
 # and 7 keep their anchors and edits; only Rollup aliases inside them changed
@@ -1365,6 +1384,7 @@ STATUS_FILTER_REGIONS_1_38 = (
         stock_sha256="77b5567970cc534f0bed77a7a42f0738020c6f261dc0d40156d9c0f91cd59e6e",
         patched_sha256="75ed3a410e4c3e0ddd7f3a18fe9942e6d2de41164f073704ae2a674ed6a6833b",
         edits=(_insert_before(b"function DashboardSidebarCloudSection({\n", STATUS_FILTER_FOLD_LIST_JS + STATUS_FILTER_FIRST_JS),),
+        shared=((SIDEBAR_DEVICE_CLOUD, SIDEBAR_DEVICE_CLOUD_FILTER),),
     ),
     # DashboardSidebarCloudGroup .. LinkTaskCommand: room only (915 B) for
     # ssfOn and the chip auto-clear.
@@ -2342,6 +2362,514 @@ def _plan_command_palette_workspace_search(data) -> list[tuple[int, bytes, bytes
     return replacements
 
 
+# --automations-header (desktop-v1.37.0-v1.38.0; the regions are byte-identical
+# in both). Upstream splits /automations into Mine / Team tabs and keeps All runs
+# and the search in that tab row. The page now lists every automation the
+# organization returns (Mine and Team merged) and the header row carries, between
+# the title and New automation: a project filter (All projects plus every project
+# with at least one automation, with its icon; sessions as "Session"), All runs
+# (scope all) and the search. Owner column: shown while any listed automation has
+# another owner, the same rule as the Team tab (`scope` is now derived, so the
+# column widths, the owner sort and the empty states keep their upstream code).
+# The filter is component state; a selection whose project lost its last
+# automation falls back to All projects. Stat cards: the total follows the
+# filter; the 7-day succeeded / failed / missed counts and the sparkline come
+# from the server-side org aggregate automation.orgRunStats, which has no
+# project dimension, so they stay organization-wide. Two regions in two chunks:
+# FeatureHeader gains an optional `extra` slot (rendered left of the create
+# button only when passed, so the other FeatureHeader pages render as upstream)
+# and AutomationsPage drops its tab row (AUTOMATIONS_TAB_ROW, the stock bytes
+# without their no-op comments) for SahHeader.
+AUTOMATIONS_HEADER_WRAP_JS = b'''// patch-asar.py --automations-header
+function sahWrap(extra, node) {
+  return extra ? jsxRuntimeExports.jsxs("div", { className: "flex flex-wrap items-center gap-2", children: [extra, node] }) : node;
+}
+'''
+AUTOMATIONS_HEADER_JS = b'''// patch-asar.py --automations-header
+const sahKeyOf = (automation) => automation.v2ProjectId ?? "";
+function sahOptions(automations, projectsById) {
+  const keys = [...new Set(automations.map(sahKeyOf))];
+  return keys.map((key) => [key, projectsById.get(key)]).sort(([a, p], [b, q]) => !a - !b || !p - !q || (p?.name ?? "").localeCompare(q?.name ?? ""));
+}
+function sahLabel([key, project]) {
+  return jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+    project && jsxRuntimeExports.jsx(ProjectThumbnail, { projectName: project.name, iconUrl: project.iconUrl, className: "!size-3.5 shrink-0" }),
+    jsxRuntimeExports.jsx("span", { className: "truncate", children: key ? project?.name ?? "Unknown project" : jsxRuntimeExports.jsx(Trans, { id: "CqO9qC" }) })
+  ] });
+}
+function SahHeader({ options, value, onValue, search, onSearch }) {
+  const { _: _t } = useLingui();
+  const navigate = useNavigate();
+  const current = options.find(([key]) => key === value);
+  return jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-2", children: [
+    jsxRuntimeExports.jsxs(DropdownMenu, { children: [
+      jsxRuntimeExports.jsx(DropdownMenuTrigger, { asChild: true, children: jsxRuntimeExports.jsxs(Button, { type: "button", variant: "ghost", size: "sm", className: cn("h-8 max-w-48 gap-1.5 px-3", current ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"), children: [
+        current ? sahLabel(current) : jsxRuntimeExports.jsx("span", { children: "All projects" }),
+        jsxRuntimeExports.jsx(LuChevronDown, { className: "size-3.5 shrink-0" })
+      ] }) }),
+      jsxRuntimeExports.jsxs(DropdownMenuContent, { align: "end", className: "max-h-80 min-w-44 overflow-y-auto", children: [
+        jsxRuntimeExports.jsx(DropdownMenuItem, { className: cn(!current && "bg-accent"), onSelect: () => onValue(null), children: "All projects" }),
+        jsxRuntimeExports.jsx(DropdownMenuSeparator, {}),
+        options.map((option) => jsxRuntimeExports.jsx(DropdownMenuItem, { className: cn("gap-2", option === current && "bg-accent"), onSelect: () => onValue(option[0]), children: sahLabel(option) }, option[0]))
+      ] })
+    ] }),
+    jsxRuntimeExports.jsxs(Button, { type: "button", variant: "ghost", size: "sm", className: "h-8 gap-1.5 px-3 text-muted-foreground hover:text-foreground", onClick: () => navigate({ to: "/automations/runs", search: { scope: "all" } }), children: [
+      jsxRuntimeExports.jsx("span", { children: jsxRuntimeExports.jsx(Trans, { id: "R0NXcY" }) }),
+      jsxRuntimeExports.jsx(LuArrowUpRight, { className: "size-3.5" })
+    ] }),
+    jsxRuntimeExports.jsxs("div", { className: "relative", children: [
+      jsxRuntimeExports.jsx(LuSearch, { className: "pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" }),
+      jsxRuntimeExports.jsx(Input, { value: search, onChange: (e) => onSearch(e.target.value), placeholder: _t({ id: "A1taO8" }), "aria-label": _t({ id: "8dX1fH" }), className: "h-8 w-44 pl-8" })
+    ] })
+  ] });
+}
+'''
+AUTOMATIONS_TAB_ROW = (
+    b'      !orgEmpty && jsxRuntimeExports.jsxs("div", { className: "mt-6 flex items-center justify-between gap-2", children: [\n'
+    b'        jsxRuntimeExports.jsx(Tabs, { value: scope, onValueChange: handleScopeChange, children: jsxRuntimeExports.jsxs(TabsList, { className: "h-8 bg-transparent p-0 gap-1", children: [\n'
+    b'          jsxRuntimeExports.jsxs(TabsTrigger, { value: "mine", className: "h-8 rounded-md px-3 data-[state=active]:bg-accent data-[state=active]:text-foreground data-[state=inactive]:text-muted-foreground", children: [\n'
+    b'            jsxRuntimeExports.jsx("span", { className: "text-sm", children: jsxRuntimeExports.jsx(Trans, { ...\n'
+    b'            {\n'
+    b'              id: "oSrMRT"\n'
+    b'            } }) }),\n'
+    b'            jsxRuntimeExports.jsx("span", { className: "ml-1 tabular-nums text-xs text-muted-foreground", children: mineCount })\n'
+    b'          ] }),\n'
+    b'          jsxRuntimeExports.jsxs(TabsTrigger, { value: "team", className: "h-8 rounded-md px-3 data-[state=active]:bg-accent data-[state=active]:text-foreground data-[state=inactive]:text-muted-foreground", children: [\n'
+    b'            jsxRuntimeExports.jsx("span", { className: "text-sm", children: jsxRuntimeExports.jsx(Trans, { ...\n'
+    b'            {\n'
+    b'              id: "KM6m8p"\n'
+    b'            } }) }),\n'
+    b'            jsxRuntimeExports.jsx("span", { className: "ml-1 tabular-nums text-xs text-muted-foreground", children: teamCount })\n'
+    b'          ] })\n'
+    b'        ] }) }),\n'
+    b'        jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-2", children: [\n'
+    b'          jsxRuntimeExports.jsxs(Button, { type: "button", variant: "ghost", size: "sm", className: "h-8 gap-1.5 px-3 text-muted-foreground hover:text-foreground", onClick: () => navigate({\n'
+    b'            to: "/automations/runs",\n'
+    b'            search: {\n'
+    b'              scope: scope === "mine" ? "mine" : "all"\n'
+    b'            }\n'
+    b'          }), children: [\n'
+    b'            jsxRuntimeExports.jsx("span", { children: jsxRuntimeExports.jsx(Trans, { ...\n'
+    b'            {\n'
+    b'              id: "R0NXcY"\n'
+    b'            } }) }),\n'
+    b'            jsxRuntimeExports.jsx(LuArrowUpRight, { className: "size-3.5" })\n'
+    b'          ] }),\n'
+    b'          jsxRuntimeExports.jsxs("div", { className: "relative", children: [\n'
+    b'            jsxRuntimeExports.jsx(LuSearch, { className: "pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" }),\n'
+    b'            jsxRuntimeExports.jsx(Input, { value: search, onChange: (e) => setSearch(e.target.value), placeholder: _t(\n'
+    b'              \n'
+    b'              {\n'
+    b'                id: "A1taO8"\n'
+    b'              }\n'
+    b'            ), "aria-label": _t(\n'
+    b'              \n'
+    b'              {\n'
+    b'                id: "8dX1fH"\n'
+    b'              }\n'
+    b'            ), className: "h-8 w-44 pl-8" })\n'
+    b'          ] })\n'
+    b'        ] })\n'
+    b'      ] }),\n'
+)
+AUTOMATIONS_HEADER_REGIONS = (
+    RegionRewrite(
+        label="automations header: FeatureHeader extra slot",
+        start=b"function FeatureHeader({\n",
+        end=b"export {\n",
+        length=3338,
+        stock_sha256="d8af72cdb0dde8a678360b89554a49009986cab97a662bbce33ad1a965bd271e",
+        patched_sha256="5ebade2bf9184910d69736e53cb5800b4250e0429f044fc3d7f334179acfea90",
+        edits=(
+            (b"  primaryAction\n}) {\n", b"  primaryAction,\n  extra\n}) {\n"),
+            (b"    showCreate && (primaryAction ? ", b"    sahWrap(extra, showCreate && (primaryAction ? "),
+            (b"    ] }))\n  ] });\n}\n", b"    ] })))\n  ] });\n}\n" + AUTOMATIONS_HEADER_WRAP_JS),
+        ),
+    ),
+    RegionRewrite(
+        label="automations header: all automations, project filter",
+        start=b"function AutomationsPage() {\n",
+        end=b"export {\n",
+        length=25227,
+        stock_sha256="99b54edb2340a2448f3fb7c698e52c726846a5789652aaae8dda161f6be3260b",
+        patched_sha256="4af36b2d8dba6ae7f04d7d43e9b81a8676c92d44f9947e54f5df504f99c7bed2",
+        edits=(
+            (b'  const [scope, setScope] = reactExports.useState("mine");\n', b"  const [sahProject, setSahProject] = reactExports.useState(null);\n"),
+            (
+                b"  const tabVisible = reactExports.useMemo(() => {\n"
+                b"    if (!currentUserId) return automations;\n"
+                b'    return scope === "mine" ? automations.filter((a) => a.ownerUserId === currentUserId) : '
+                b"automations.filter((a) => a.ownerUserId !== currentUserId);\n"
+                b"  }, [automations, scope, currentUserId]);\n",
+                b'  const scope = teamCount > 0 ? "team" : "mine";\n'
+                b"  const sahProjects = reactExports.useMemo(() => sahOptions(automations, projectsById), [automations, projectsById]);\n"
+                b"  const sahKey = sahProjects.some(([key]) => key === sahProject) ? sahProject : null;\n"
+                b"  const tabVisible = reactExports.useMemo(() => sahKey === null ? automations : "
+                b"automations.filter((a) => sahKeyOf(a) === sahKey), [automations, sahKey]);\n",
+            ),
+            (
+                b"  const handleScopeChange = (value) => {\n    if (!value) return;\n    const next = value;\n"
+                b'    setScope(next);\n    if (next !== "team" && sortField === "owner") setSortField(null);\n  };\n',
+                b"",
+            ),
+            (
+                b"        onSelect: handleCreateManually,\n        disabled: createMutation.isPending\n      } }),\n",
+                b"        onSelect: handleCreateManually,\n        disabled: createMutation.isPending\n"
+                b"      }, extra: !orgEmpty && jsxRuntimeExports.jsx(SahHeader, "
+                b"{ options: sahProjects, value: sahKey, onValue: setSahProject, search, onSearch: setSearch }) }),\n",
+            ),
+            (b"AutomationStatCards, { totalAutomations: automations.length,", b"AutomationStatCards, { totalAutomations: tabVisible.length,"),
+            (AUTOMATIONS_TAB_ROW, b""),
+            # The tab row's mt-6 gap now sits above the table.
+            (b'className: cn("mt-3", tabEmpty && "flex flex-1 flex-col")', b'className: cn("mt-6", tabEmpty && "flex flex-1 flex-col")'),
+            # After the page function: the region start anchor has to stay at the region start.
+            _insert_after(b"    ] }) })\n  ] });\n}\n", AUTOMATIONS_HEADER_JS),
+        ),
+    ),
+)
+# Per chunk: the regions it holds, the module-scope imports the injected JS reads
+# and the names it declares (none may occur in the chunk outside its region).
+AUTOMATIONS_HEADER_CHUNKS = (
+    (AUTOMATIONS_HEADER_REGIONS[:1], ("jsxRuntimeExports",), ("sahWrap",)),
+    (
+        AUTOMATIONS_HEADER_REGIONS[1:],
+        (
+            "jsxRuntimeExports", "reactExports", "cn", "useLingui", "useNavigate", "Trans", "Button", "Input",
+            "LuSearch", "LuArrowUpRight", "LuChevronDown", "DropdownMenu", "DropdownMenuTrigger",
+            "DropdownMenuContent", "DropdownMenuItem", "DropdownMenuSeparator", "ProjectThumbnail", "FeatureHeader",
+        ),
+        ("sahKeyOf", "sahOptions", "sahLabel", "SahHeader"),
+    ),
+)
+
+
+def _require_family_chunks(data, chunks, label: str, swaps=()) -> None:
+    """Fail closed unless each chunk imports what the injected JS reads and lacks the names it adds.
+
+    `swaps` are (stock, patched) anchors the family writes outside its regions:
+    each must lie in the chunk, and its patched form is not a foreign use.
+    """
+    for regions, imported, added in chunks:
+        found = _region_chunk(data, regions, label)
+        if found is None:
+            continue  # synthetic test bundles have no file boundaries
+        path, _start, chunk = found
+        _require_chunk_names(path, chunk, imported, (), label)
+        outside = chunk
+        for region in regions:
+            offset = outside.find(region.start)
+            outside = outside[:offset] + b" " * region.length + outside[offset + region.length :]
+        for stock, patched in swaps:
+            if stock not in chunk and patched not in chunk:
+                raise RuntimeError(f"{label}: {path} lacks a swap anchor; bundle structure may have changed")
+            outside = outside.replace(patched, b" " * len(patched))
+        for name in added:
+            if re.search(rf"(?<![\w$]){name}(?![\w$])".encode(), outside):
+                raise RuntimeError(f"{label}: {path} already uses {name}; bundle structure may have changed")
+
+
+def _plan_automations_header(data) -> list[tuple[int, bytes, bytes, str]]:
+    """Validate both automations chunks and return the region rewrites still needed."""
+    _require_family_chunks(data, AUTOMATIONS_HEADER_CHUNKS, "automations header")
+    replacements = []
+    for region in AUTOMATIONS_HEADER_REGIONS:
+        replacements.extend(_plan_region_rewrite(data, region))
+    return replacements
+
+
+# --sidebar-device-filter (desktop-v1.37.0-v1.38.0; every region is
+# byte-identical in both). A compact device dropdown in the expanded sidebar's
+# title-bar row, right of the back / forward arrows (it renders with the ports
+# button through the PortsDropdown mount, SIDEBAR_DEVICE_MOUNT; a layers icon,
+# or the selected device's name, so it fits the default sidebar): All devices
+# plus this Mac, every other host that has a workspace in the sidebar (named
+# from the host roster, useKnownHosts) and Cloud when cloud workspaces exist.
+# A device filters the sidebar data at its source, useDashboardSidebarData:
+# the decorated workspace rows keep only that hostId, so PINNED, SESSIONS, the
+# project groups, the PR polling and every list derived from them (the status
+# chip counts of --sidebar-status-filter read the same lists) follow; a project
+# or folder left without a workspace is dropped. Cloud hides every host list and
+# keeps the cloud section; a host hides the cloud section (SIDEBAR_DEVICE_CLOUD).
+# Drag and drop is off while a device is selected (useSidebarDnd), because a
+# reorder of a partial list would write partial tab orders. With All devices
+# every hook returns its input list unchanged and the guards read as upstream.
+# The selection persists in localStorage `sdf-sidebar-device`; a device that no
+# longer has workspaces stays listed while selected, so it can be cleared.
+# The JS lives in five room regions (no-op comments and the listed `//`
+# comment lines, REBASE.md room rule); no other flag touches them.
+SIDEBAR_DEVICE_MARK = b"// patch-asar.py --sidebar-device-filter\n"
+SIDEBAR_DEVICE_STATE_JS = b'''let sdfHost = null;
+const sdfListeners = new Set();
+try {
+  sdfHost = localStorage.getItem("sdf-sidebar-device") || null;
+} catch {
+}
+function sdfEmit() {
+  for (const listener of [...sdfListeners]) listener();
+}
+function sdfSet(host) {
+  sdfHost = host;
+  try {
+    host ? localStorage.setItem("sdf-sidebar-device", host) : localStorage.removeItem("sdf-sidebar-device");
+  } catch {
+  }
+  sdfEmit();
+}
+'''
+SIDEBAR_DEVICE_SUBSCRIBE_JS = b'''let sdfIds = [];
+function sdfSubscribe(listener) {
+  sdfListeners.add(listener);
+  return () => sdfListeners.delete(listener);
+}
+const sdfUseHost = () => reactExports.useSyncExternalStore(sdfSubscribe, () => sdfHost);
+'''
+# Device list: this Mac first, then by name; Cloud last.
+SIDEBAR_DEVICE_HOSTS_JS = b'''function sdfUseDevices(host) {
+  const ids = reactExports.useSyncExternalStore(sdfSubscribe, () => sdfIds);
+  const { machineId } = useLocalHostService();
+  const { hosts } = useKnownHosts();
+  const { workspaces: cloud } = useCloudWorkspaces();
+  return reactExports.useMemo(() => {
+    const device = (id) => [id, hosts.find((row) => row.machineId === id)?.name || id.slice(0, 8), id === machineId ? LuLaptop : LuMonitor];
+    const list = [...new Set([machineId, ...ids, host].filter((id) => id && id !== CLOUD_HOST_ID))].map(device).sort((a, b) => (b[0] === machineId) - (a[0] === machineId) || a[1].localeCompare(b[1]));
+    return cloud?.length || host === CLOUD_HOST_ID ? [...list, [CLOUD_HOST_ID, "Cloud", LuCloud]] : list;
+  }, [host, ids, machineId, hosts, cloud]);
+}
+'''
+# The workspace rows of the selected device; publishes the sidebar's host ids
+# (after render, for the dropdown) as a side effect.
+SIDEBAR_DEVICE_ROWS_JS = b'''function sdfUseRows(rows) {
+  const host = sdfUseHost();
+  const ids = [...new Set(rows.map((row) => row.hostId))].sort().join("\\n");
+  reactExports.useEffect(() => {
+    sdfIds = ids ? ids.split("\\n") : [];
+    sdfEmit();
+  }, [ids]);
+  return reactExports.useMemo(() => host === null ? rows : rows.filter((row) => row.hostId === host), [rows, host]);
+}
+'''
+SIDEBAR_DEVICE_MENU_JS = b'''function SdfDevices(props) {
+  const host = sdfUseHost();
+  const devices = sdfUseDevices(host);
+  const current = devices.find(([id]) => id === host);
+  return jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [jsxRuntimeExports.jsxs(DropdownMenu, { children: [
+    jsxRuntimeExports.jsx(DropdownMenuTrigger, { asChild: true, children: jsxRuntimeExports.jsxs("button", { type: "button", title: "Filter by device", "aria-label": current?.[1] ?? "All devices", className: cn("no-drag flex h-6 max-w-20 items-center gap-1 rounded-md px-1.5 text-xs hover:bg-fill-hover", current ? "bg-fill-selected text-foreground" : "text-muted-foreground hover:text-foreground"), children: [
+      current ? jsxRuntimeExports.jsx("span", { className: "truncate", children: current[1] }) : jsxRuntimeExports.jsx(LuLayers, { className: "size-3.5 shrink-0" }),
+      jsxRuntimeExports.jsx(LuChevronDown, { className: "size-3 shrink-0 opacity-60" })
+    ] }) }),
+    jsxRuntimeExports.jsx(DropdownMenuContent, { align: "start", className: "w-56", children: jsxRuntimeExports.jsx(SdfDeviceItems, { host, devices }) })
+  ] }), jsxRuntimeExports.jsx(PortsDropdown, props)] });
+}
+'''
+SIDEBAR_DEVICE_LIST_JS = b'''function sdfUseList(list, keep) {
+  const host = sdfUseHost();
+  return reactExports.useMemo(() => host === null ? list : keep(list), [list, host, keep]);
+}
+const sdfKids = (kids) => kids.filter((kid) => kid.type !== "section" || kid.section.workspaces.length > 0);
+const sdfGroups = (groups) => groups.map((group) => ({ ...group, children: sdfKids(group.children) })).filter((group) => group.children.length > 0);
+'''
+SIDEBAR_DEVICE_ITEMS_JS = b'''function SdfDeviceItems({ host, devices }) {
+  return jsxRuntimeExports.jsxs(DropdownMenuRadioGroup, { value: host ?? "", onValueChange: (value) => sdfSet(value || null), children: [
+    jsxRuntimeExports.jsx(DropdownMenuRadioItem, { value: "", children: "All devices" }),
+    jsxRuntimeExports.jsx(DropdownMenuSeparator, {}),
+    devices.map(([id, name, Icon]) => jsxRuntimeExports.jsxs(DropdownMenuRadioItem, { value: id, className: "gap-2", children: [
+      jsxRuntimeExports.jsx(Icon, { className: "size-3.5 shrink-0" }),
+      jsxRuntimeExports.jsx("span", { className: "truncate", children: name })
+    ] }, id))
+  ] });
+}
+'''
+# The cloud section guard: one hook, called where upstream tests its flag.
+SIDEBAR_DEVICE_CLOUD_JS = b'''function sdfUseCloud(flag, organizationId) {
+  const host = sdfUseHost();
+  return host !== null && host !== CLOUD_HOST_ID || flag === false || organizationId === null;
+}
+'''
+SIDEBAR_DEVICE_REGIONS = (
+    RegionRewrite(
+        label="sidebar device filter: sidebar data",
+        start=b"function GettingStartedChecklist({\n",
+        end=b"function DashboardSidebar({\n",
+        length=54957,
+        stock_sha256="a21e658519d8d1c253b8ce28a4767c76f86c62a74b243d961262ba7d5cb84586",
+        patched_sha256="fb8565196ae7cbc7977dfa4ca3ac931b85589524854eda167ea12f86b811dc85",
+        edits=(
+            (
+                b"    // Configure \xe2\x86\x92 open the new-workspace modal seeded with a prompt that walks\n"
+                b"    // the agent through writing setup/teardown scripts for this project, rather\n"
+                b"    // than sending the user to the settings page to hand-write config.json.\n",
+                b"",
+            ),
+            (
+                b"    // Sessions (null projectId) have no remote and never carry PRs.\n"
+                b"    // A hidden project renders nothing, so its workspaces stop\n"
+                b"    // polling too.\n",
+                b"",
+            ),
+            (
+                b"      // Unreachable host: keep the query mounted so cached chips stay\n"
+                b"      // rendered through the outage; fetches resume when the URL returns.\n",
+                b"",
+            ),
+            (
+                b"    // Sessions render above the project groups.\n",
+                b"",
+            ),
+            (
+                b"    // A destroy in flight keeps its row until the archive commit \xe2\x80\x94\n"
+                b"    // don't hand shortcuts a workspace that is about to vanish.\n",
+                b"",
+            ),
+            (
+                b"      // The overlay clone's rows must not register sortables into\n"
+                b"      // the live context (their ids already exist in the sidebar),\n"
+                b"      // so isolate them in an inert nested DndContext.\n",
+                b"",
+            ),
+            (b"  const visibleSidebarWorkspaces = sidebarWorkspaces;\n", b"  const visibleSidebarWorkspaces = sdfUseRows(sidebarWorkspaces);\n"),
+            (
+                b"  const groups = useStableDashboardSidebarProjects(computedGroups);\n",
+                b"  const groups = sdfUseList(useStableDashboardSidebarProjects(computedGroups), sdfGroups);\n",
+            ),
+            (b"    sessionChildren: sessions.children,\n", b"    sessionChildren: sdfUseList(sessions.children, sdfKids),\n"),
+            _insert_before(b"const GETTING_STARTED_STEPS = [{\n", SIDEBAR_DEVICE_MARK + SIDEBAR_DEVICE_ROWS_JS + SIDEBAR_DEVICE_MENU_JS),
+        ),
+    ),
+    RegionRewrite(
+        label="sidebar device filter: room for the device list",
+        start=b"function getDiffStatsQueryKey(hostUrl, workspaceId) {\n",
+        end=b"function DashboardSidebarBulkActions({\n",
+        length=31940,
+        stock_sha256="3251463d6dca475200f87695137f15878406b012b18e70cd71a2872863b633c7",
+        patched_sha256="6e4fdd1064ee9779ca3522f99c759a4af34babbf127046b8c1905b01b72ff30b",
+        edits=(
+            (
+                b"    // A sandbox row gets no live subscription from the sidebar: holding\n"
+                b"    // a socket to it keeps its VM awake for as long as the app is open,\n"
+                b"    // and the sidebar is open all day. Its status goes live when the\n"
+                b"    // workspace itself is opened and its own subscribers connect.\n",
+                b"",
+            ),
+            (
+                b"      // Lifecycle events invalidate for instant updates; the finite\n"
+                b"      // staleTime lets focus/remount refetches self-heal any staleness\n"
+                b"      // from events missed while the WS was down (host restart, sleep).\n",
+                b"",
+            ),
+            (
+                b"      // Subagent rows expire host-side on read (a lost stop hook); keep\n"
+                b"      // reading while any are shown so an expired child does not linger\n"
+                b"      // until an unrelated lifecycle event.\n",
+                b"",
+            ),
+            _insert_before(
+                b"function useDiffStats(workspaceId, options) {\n",
+                SIDEBAR_DEVICE_MARK + SIDEBAR_DEVICE_SUBSCRIBE_JS + SIDEBAR_DEVICE_HOSTS_JS,
+            ),
+        ),
+    ),
+    RegionRewrite(
+        label="sidebar device filter: drag guard",
+        start=b"function DashboardSidebarHoverCardOverlay({\n",
+        end=b"function RenameBranchDialog({\n",
+        length=32608,
+        stock_sha256="4ff47643d886a8f823e1717933b87655e340e4653db4aacf337a2a32882ec481",
+        patched_sha256="e34160f3369d0db2d0ef3f2dc0c4b34e19fe50e1812c97c4b7e663835a41d3ae",
+        edits=(
+            (
+                b"    // 5px absorbs the 1-3px of jitter a real click carries without\n"
+                b"    // turning it into a pickup; anything smaller starts reordering rows\n"
+                b"    // on sloppy clicks. The trailing click after an activated drag is\n"
+                b"    // already swallowed by dnd-kit (capture-phase document click\n"
+                b"    // listener installed at activation, detached one event loop after\n"
+                b"    // the drag ends).\n",
+                b"",
+            ),
+            (
+                b"        // One drag pins at most one new workspace; the mutation drops\n"
+                b"        // any other not-yet-pinned id as a corrupted-state safety net.\n",
+                b"",
+            ),
+            (
+                b"    // Per-pointer-move value, consumed only by the provider's DragOverlay so\n"
+                b"    // its churn never fans out through the context.\n",
+                b"",
+            ),
+            (
+                b"  const noDragsPossible = projectDragDisabled && childDragDisabled;\n",
+                b"  const noDragsPossible = sdfUseHost() !== null || projectDragDisabled && childDragDisabled;\n",
+            ),
+            _insert_before(
+                b"const DRAG_ACTIVATION_DISTANCE_PX = 5;\n", SIDEBAR_DEVICE_MARK + SIDEBAR_DEVICE_ITEMS_JS + SIDEBAR_DEVICE_CLOUD_JS,
+            ),
+        ),
+    ),
+    RegionRewrite(
+        label="sidebar device filter: room for the state",
+        start=b"const WorkspaceBulkMenuScopeContext = reactExports.createContext(null);\n",
+        end=b"function DashboardSidebarWorkspaceContextMenu({\n",
+        length=5995,
+        stock_sha256="022de210f354cf715864a4d4caf9546d1a49b5cb942c4fcfc107fb05068e8003",
+        patched_sha256="db8e017adb515bf83246ead62e47d01e83a1d2c8ce0fde5f6a68dcb8865df2a2",
+        edits=(_insert_before(b"function WorkspaceBulkMenuScope({\n", SIDEBAR_DEVICE_MARK + SIDEBAR_DEVICE_STATE_JS),),
+    ),
+    RegionRewrite(
+        label="sidebar device filter: room for the group filter",
+        start=b"function ImportWorktreesDialog({\n",
+        end=b"function DashboardSidebarProjectSection({\n",
+        length=10774,
+        stock_sha256="672d0bff4e3a173ec365f3685c04826bd53188a4ede9f9ecce9cc79a4b03b076",
+        patched_sha256="9340dc5225c40cb77ca7e63900f04924671111e9cc6698023f98dba88e940e74",
+        edits=(
+            _insert_before(b"function useDashboardSidebarProjectSectionActions({\n", SIDEBAR_DEVICE_MARK + SIDEBAR_DEVICE_LIST_JS),
+        ),
+    ),
+)
+# 1.37 follows useSidebarDnd with invalidateWorkspaceQueries instead of
+# RenameBranchDialog; the drag guard region itself is byte-identical.
+SIDEBAR_DEVICE_REGIONS_1_37 = (
+    *SIDEBAR_DEVICE_REGIONS[:2],
+    replace(SIDEBAR_DEVICE_REGIONS[2], end=b"async function invalidateWorkspaceQueries(utils) {\n"),
+    *SIDEBAR_DEVICE_REGIONS[3:],
+)
+# (name, regions, variants): every supported release layout of the device filter.
+SIDEBAR_DEVICE_LAYOUTS = (("1.37", SIDEBAR_DEVICE_REGIONS_1_37, ()), ("1.38", SIDEBAR_DEVICE_REGIONS, ()))
+# (name, stock, filtered, label) of the two anchor swaps outside the regions.
+SIDEBAR_DEVICE_SWAPS = (
+    ("sidebar device filter mount", SIDEBAR_DEVICE_MOUNT, SIDEBAR_DEVICE_MOUNT_FILTER, "sidebar device filter: title-bar dropdown"),
+    ("sidebar device filter cloud guard", SIDEBAR_DEVICE_CLOUD, SIDEBAR_DEVICE_CLOUD_FILTER, "sidebar device filter: cloud section"),
+)
+SIDEBAR_DEVICE_CHUNK_NAMES = (
+    (
+        "jsxRuntimeExports", "reactExports", "cn", "DropdownMenu", "DropdownMenuTrigger", "DropdownMenuContent",
+        "DropdownMenuRadioGroup", "DropdownMenuRadioItem", "DropdownMenuSeparator", "LuChevronDown", "LuLaptop",
+        "LuMonitor", "LuCloud", "LuLayers", "CLOUD_HOST_ID", "useLocalHostService", "useKnownHosts",
+        "useCloudWorkspaces", "PortsDropdown",
+    ),
+    (
+        "sdfHost", "sdfListeners", "sdfEmit", "sdfSet", "sdfIds", "sdfSubscribe", "sdfUseHost", "sdfUseDevices",
+        "sdfUseRows", "SdfDevices", "sdfUseList", "sdfKids", "sdfGroups", "SdfDeviceItems", "sdfUseCloud",
+    ),
+)
+
+
+def _plan_sidebar_device_filter(data) -> list[tuple[int, bytes, bytes, str]]:
+    """Validate the layout chunk, its regions and both swaps; return the writes still needed."""
+    _layout, regions, _variants = _select_layout(data, SIDEBAR_DEVICE_LAYOUTS, "sidebar device filter")
+    _require_family_chunks(
+        data, ((regions, *SIDEBAR_DEVICE_CHUNK_NAMES),), "sidebar device filter",
+        [pair for _name, *pair, _label in SIDEBAR_DEVICE_SWAPS],
+    )
+    replacements = []
+    for region in regions:
+        replacements.extend(_plan_region_rewrite(data, region))
+    for name, stock, filtered, label in SIDEBAR_DEVICE_SWAPS:
+        offset, old = _single_variant(data, name, [stock, filtered])
+        if old == stock:
+            replacements.append((offset, stock, filtered, label))
+    return replacements
+
+
 # Electron fuse wire: sentinel, version byte, length byte, one char per fuse.
 # Fuse index 4 is EnableEmbeddedAsarIntegrityValidation ('1' enabled, '0'
 # disabled, 'r' removed). When enabled, Electron checks every file block against
@@ -2442,6 +2970,8 @@ def plan_replacements(
     command_palette_cmd_k: bool = False,
     command_palette_workspace_search: bool = False,
     status_filter_hotkeys: bool = False,
+    automations_header: bool = False,
+    sidebar_device_filter: bool = False,
 ) -> list[tuple[int, bytes, bytes, str]]:
     """Validate the complete bundle first, then return equal-length writes."""
     if not 4 <= size <= 9:
@@ -2701,6 +3231,12 @@ def plan_replacements(
 
     if command_palette_workspace_search:
         replacements.extend(_plan_command_palette_workspace_search(data))
+
+    if automations_header:
+        replacements.extend(_plan_automations_header(data))
+
+    if sidebar_device_filter:
+        replacements.extend(_plan_sidebar_device_filter(data))
 
     replacements = _fold_into_regions(replacements)
 
@@ -3049,6 +3585,16 @@ def main(argv=None):
         help="with --sidebar-status-filter, mac: Cmd+I / Cmd+Shift+E / Cmd+Shift+W toggle the needs-input / failed / "
         "working chips and open the first matching workspace (Rich Input moves to Cmd+Shift+I, Close Tab to Cmd+Option+W)",
     )
+    parser.add_argument(
+        "--automations-header",
+        action="store_true",
+        help="Automations page: one list without the Mine / Team tabs; project filter, All runs and search in the header row",
+    )
+    parser.add_argument(
+        "--sidebar-device-filter",
+        action="store_true",
+        help="device dropdown next to the sidebar back / forward arrows: show only the workspaces of one host",
+    )
     parser.add_argument("--revert", action="store_true")
     parser.add_argument("--asar", type=Path, default=DEFAULT_ASAR)
     parser.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
@@ -3079,6 +3625,8 @@ def main(argv=None):
             command_palette_cmd_k=args.command_palette_cmd_k,
             command_palette_workspace_search=args.command_palette_workspace_search,
             status_filter_hotkeys=args.status_filter_hotkeys,
+            automations_header=args.automations_header,
+            sidebar_device_filter=args.sidebar_device_filter,
             acknowledge_invalid_signature=args.ack_invalid_apple_signature,
         )
     except (OSError, RuntimeError, ValueError) as exc:

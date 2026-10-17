@@ -1,0 +1,502 @@
+"""Tests for --automations-header and --sidebar-device-filter (LUBOS-2658).
+
+Byte-level safety lives here (pinned regions, fail-closed anchors and names, apply / re-run /
+revert, composition with --sidebar-status-filter and --pinned-icon-only in either order); the
+rendered behaviour of the patched bytes is tests/device_automations.test.mjs.
+"""
+
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import re
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+
+MODULE_PATH = Path(__file__).parents[1] / "patches/patch-asar.py"
+APPROVED_FLAGS = Path(__file__).parents[1] / "patches/approved-flags.json"
+FIXTURES = Path(__file__).parent / "fixtures"
+SPEC = importlib.util.spec_from_file_location("patch_superset_asar_device_automations", MODULE_PATH)
+MODULE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MODULE)
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from isolated_locks import isolate  # noqa: E402  (tests/isolated_locks.py)
+from live_host import live_host_only  # noqa: E402  (LIVE_HOST_ONLY, tests/live_host.py)
+from test_superset_icon_patch import installed_stock_snapshot, node_check  # noqa: E402
+from test_superset_palette_patch import BASE, asar  # noqa: E402
+import test_superset_icon_patch as icon_tests  # noqa: E402  (module, so its TestCases are not collected twice)
+
+isolate(MODULE)
+
+# Every region of both families is byte-identical in desktop-v1.37.0 and v1.38.0; the fixtures are
+# cut from the real 1.38.0 FeatureHeader-js7vLfg4.js, page-BrmkiX2_.js and layout-LF5A5mOm.js.
+AH_REGIONS = MODULE.AUTOMATIONS_HEADER_REGIONS
+AH_STOCK = [(FIXTURES / f"superset-1.38.0-automations-header-r{n}.js").read_bytes() for n in (1, 2)]
+AH_PATCHED = [(FIXTURES / f"superset-1.38.0-automations-header-r{n}.patched.js").read_bytes() for n in (1, 2)]
+DF_REGIONS = MODULE.SIDEBAR_DEVICE_REGIONS
+DF_REGIONS_137 = MODULE.SIDEBAR_DEVICE_REGIONS_1_37
+DF_STOCK = [(FIXTURES / f"superset-1.38.0-device-filter-r{n}.js").read_bytes() for n in range(1, 6)]
+DF_PATCHED = [(FIXTURES / f"superset-1.38.0-device-filter-r{n}.patched.js").read_bytes() for n in range(1, 6)]
+AH_LABELS = [region.label for region in AH_REGIONS]
+DF_SWAP_LABELS = [label for *_rest, label in MODULE.SIDEBAR_DEVICE_SWAPS]
+DF_LABELS = [region.label for region in DF_REGIONS] + DF_SWAP_LABELS
+# The swaps as the real 1.38.0 layout chunk holds them, written out by hand so anchor drift fails here.
+MOUNT = (
+    b"          /* @__PURE__ */ jsxRuntimeExports.jsx(NavigationControls, {}),\n"
+    b'                /* @__PURE__ */ jsxRuntimeExports.jsx(PortsDropdown, { align: "start" })\n'
+)
+CLOUD = b"  if (cloudFlag === false || organizationId === null) return null;\n"
+
+
+def imports(names) -> bytes:
+    """One Rollup import line binding every name (`import { a0 as X, ... } from`)."""
+    return b"import { " + b", ".join(b"a%d as %s" % (i, n.encode()) for i, n in enumerate(names)) + b' } from "./index.js";\n'
+
+
+FEATURE_NAMES = imports(MODULE.AUTOMATIONS_HEADER_CHUNKS[0][1])
+PAGE_NAMES = imports(MODULE.AUTOMATIONS_HEADER_CHUNKS[1][1])
+LAYOUT_NAMES = imports(MODULE.SIDEBAR_DEVICE_CHUNK_NAMES[0])
+
+
+def feature_chunk(region=AH_STOCK[0], names=FEATURE_NAMES):
+    return names + region + AH_REGIONS[0].end + b"  FeatureHeader as F\n};\n"
+
+
+def page_chunk(region=AH_STOCK[1], names=PAGE_NAMES):
+    return names + region + AH_REGIONS[1].end + b"  AutomationsPage as A\n};\n"
+
+
+def device_chains(regions=None, layout=DF_REGIONS, cloud=CLOUD):
+    """The five device regions, each followed by its end anchor, plus the two swap anchors."""
+    regions = DF_STOCK if regions is None else regions
+    body = b"".join(region + spec.end + b"}) {}\n" for spec, region in zip(layout, regions, strict=True))
+    return body + MOUNT + (cloud or b"")
+
+
+def layout_chunk(names=LAYOUT_NAMES, **chains):
+    return names + device_chains(**chains)
+
+
+def bundle(feature=None, page=None, layout=None):
+    return asar(
+        ("index.js", BASE),
+        ("FeatureHeader-js7vLfg4.js", feature_chunk() if feature is None else feature),
+        ("page-BrmkiX2_.js", page_chunk() if page is None else page),
+        ("layout-LF5A5mOm.js", layout_chunk() if layout is None else layout),
+    )
+
+
+def patch(data, header=True, device=True, **flags):
+    return MODULE.patch_bytes(
+        data, size=6, hide_tray=False, custom_project_icons=False, keep_icon_on_hover=False,
+        automations_header=header, sidebar_device_filter=device, **flags,
+    )
+
+
+def without_comments(stock: bytes) -> bytes:
+    for comment in MODULE.JS_NOOP_COMMENTS:
+        stock = stock.replace(comment, b"")
+    return stock
+
+
+class RegionTest(unittest.TestCase):
+    """The seven real regions are hash-pinned, rewritten in place, re-plan to nothing and parse."""
+
+    # Value: protects=the shipped rewrites are exactly the reviewed fixtures, keep their length and are a no-op on re-run; fails_when=an edit, the injected JS or a digest changes without its fixture, or a re-run rewrites again; why_new=new families; seam=real 1.38.0 bytes
+    def test_real_regions_are_pinned_idempotent_and_parseable(self):
+        for region, stock, patched in zip((*AH_REGIONS, *DF_REGIONS), AH_STOCK + DF_STOCK, AH_PATCHED + DF_PATCHED, strict=True):
+            with self.subTest(region=region.label):
+                self.assertEqual(len(stock), region.length)
+                self.assertEqual(hashlib.sha256(stock).hexdigest(), region.stock_sha256)
+                self.assertEqual(hashlib.sha256(patched).hexdigest(), region.patched_sha256)
+                self.assertEqual(MODULE._plan_region_rewrite(stock + region.end, region), [(0, stock, patched, region.label)])
+                self.assertEqual(MODULE._plan_region_rewrite(patched + region.end, region), [])
+                self.assertTrue(patched.startswith(region.start))
+                node_check(self, patched)
+
+    # Value: protects=any upstream change inside a region (or a foreign patch of it) is refused before a write; fails_when=the digest or the pinned length check is loosened; why_new=new families; seam=none
+    def test_unknown_region_bytes_fail_closed(self):
+        for region, stock in zip((*AH_REGIONS, *DF_REGIONS), AH_STOCK + DF_STOCK, strict=True):
+            with self.subTest(region=region.label):
+                changed = stock.replace(b"  ", b" \t", 1)
+                with self.assertRaisesRegex(RuntimeError, "neither stock nor patched"):
+                    MODULE._plan_region_rewrite(changed + region.end, region)
+                with self.assertRaisesRegex(RuntimeError, "end anchor not at the pinned length"):
+                    MODULE._plan_region_rewrite(stock[:-1] + region.end, region)
+
+    # Value: protects=1.37 differs only in what follows the drag-guard region, so both layouts pin the same bytes; fails_when=a 1.37 region drifts from 1.38 or the 1.37 layout loses its end anchor; why_new=new family; seam=real 1.38.0 bytes and the installed 1.37.0 (InstalledTest)
+    def test_1_37_layout_differs_only_in_the_drag_guard_end_anchor(self):
+        for n, (old, new) in enumerate(zip(DF_REGIONS_137, DF_REGIONS, strict=True), 1):
+            with self.subTest(region=n):
+                same = (old.start, old.length, old.stock_sha256, old.patched_sha256, old.edits)
+                self.assertEqual(same, (new.start, new.length, new.stock_sha256, new.patched_sha256, new.edits))
+                self.assertEqual(old.end == new.end, n != 3)
+        self.assertEqual(DF_REGIONS_137[2].end, b"async function invalidateWorkspaceQueries(utils) {\n")
+
+
+class AutomationsHeaderEditsTest(unittest.TestCase):
+    """--automations-header: one list, the header row carries the filter, All runs and the search."""
+
+    FEATURE, PAGE = AH_PATCHED
+
+    # Value: protects=FeatureHeader renders as upstream unless a page passes `extra` (every other FeatureHeader page keeps its header); fails_when=the slot wraps the create button unconditionally or the helper lands outside the region; why_new=new family; seam=real 1.38.0 FeatureHeader
+    def test_feature_header_slot_is_optional(self):
+        self.assertIn(b"  primaryAction,\n  extra\n}) {\n", self.FEATURE)
+        self.assertIn(b"    sahWrap(extra, showCreate && (primaryAction ? ", self.FEATURE)
+        self.assertEqual(self.FEATURE.count(MODULE.AUTOMATIONS_HEADER_WRAP_JS), 1)
+        self.assertIn(b"return extra ? jsxRuntimeExports.jsxs(", MODULE.AUTOMATIONS_HEADER_WRAP_JS)
+        self.assertIn(b": node;", MODULE.AUTOMATIONS_HEADER_WRAP_JS)
+
+    # Value: protects=the Mine / Team tab row is gone whole (tabs, the scope state and its handler) and All runs plus the search move into the header; fails_when=part of the tab row survives, the scope state is still read before it is declared, or the search loses its input binding; why_new=new family; seam=real 1.38.0 AutomationsPage
+    def test_tab_row_is_replaced_by_the_header_controls(self):
+        stock, page = AH_STOCK[1], self.PAGE
+        self.assertEqual(without_comments(stock).count(MODULE.AUTOMATIONS_TAB_ROW), 1)
+        for gone in (b"Tabs", b"TabsTrigger", b"handleScopeChange", b"setScope", b'useState("mine")'):
+            with self.subTest(gone=gone):
+                self.assertIn(gone, stock)
+                self.assertNotIn(gone, page)
+        self.assertIn(
+            b"}, extra: !orgEmpty && jsxRuntimeExports.jsx(SahHeader, { options: sahProjects, value: sahKey, "
+            b"onValue: setSahProject, search, onSearch: setSearch }) }),\n",
+            page,
+        )
+        # `scope` is derived after the counts it reads (no temporal dead zone) and before its first use.
+        derived = page.index(b'  const scope = teamCount > 0 ? "team" : "mine";\n')
+        self.assertLess(page.index(b"  const teamCount = automations.length - mineCount;\n"), derived)
+        self.assertLess(derived, page.index(b"scope === "))
+        self.assertEqual(page.count(b"function SahHeader("), 1)
+        self.assertLess(page.index(b"function AutomationsPage() {\n"), page.index(b"function SahHeader("))
+
+    # Value: protects=the list is Mine and Team merged (the filter only narrows by project), the Owner column shows while any listed automation has another owner, and the total stat card follows the filter; fails_when=the list still splits by owner, the owner rule changes, or the total keeps counting the unfiltered list; why_new=new family; seam=real 1.38.0 AutomationsPage
+    def test_one_list_with_a_project_filter(self):
+        page = self.PAGE
+        self.assertIn(
+            b"  const tabVisible = reactExports.useMemo(() => sahKey === null ? automations : "
+            b"automations.filter((a) => sahKeyOf(a) === sahKey), [automations, sahKey]);\n",
+            page,
+        )
+        self.assertNotIn(b"a.ownerUserId !== currentUserId", page)
+        self.assertIn(b'showOwner: scope === "team"', page)
+        self.assertIn(b"AutomationStatCards, { totalAutomations: tabVisible.length,", page)
+        # A selection whose project lost its last automation falls back to All projects.
+        self.assertIn(b"const sahKey = sahProjects.some(([key]) => key === sahProject) ? sahProject : null;", page)
+        # All runs opens every run, the search keeps upstream's labels.
+        self.assertIn(b'navigate({ to: "/automations/runs", search: { scope: "all" } })', page)
+        self.assertIn(b'placeholder: _t({ id: "A1taO8" }), "aria-label": _t({ id: "8dX1fH" })', page)
+
+
+class DeviceFilterEditsTest(unittest.TestCase):
+    """--sidebar-device-filter: the sidebar data is filtered at its source, room regions only lose comments."""
+
+    # Value: protects=PINNED, SESSIONS and the project groups all read the filtered rows, and drag and drop is off under a device; fails_when=one list keeps the unfiltered rows, or reorders of a partial list stay possible; why_new=new family; seam=real 1.38.0 layout
+    def test_sidebar_data_is_filtered_at_its_source(self):
+        data, _room, drag, *_rest = DF_PATCHED
+        self.assertIn(b"  const visibleSidebarWorkspaces = sdfUseRows(sidebarWorkspaces);\n", data)
+        self.assertIn(b"  const groups = sdfUseList(useStableDashboardSidebarProjects(computedGroups), sdfGroups);\n", data)
+        self.assertIn(b"    sessionChildren: sdfUseList(sessions.children, sdfKids),\n", data)
+        self.assertIn(b"  const noDragsPossible = sdfUseHost() !== null || projectDragDisabled && childDragDisabled;\n", drag)
+        # The rows feed everything else: the stock region builds groups, sessions and pins from them.
+        stock = DF_STOCK[0]
+        rows = stock.index(b"  const visibleSidebarWorkspaces = sidebarWorkspaces;\n")
+        self.assertLess(rows, stock.index(b"  const groups = useStableDashboardSidebarProjects(computedGroups);\n"))
+
+    # Value: protects=each injected helper lands once, inside the region that declares it, and a room region changes nothing but its comments; fails_when=a helper is dropped, lands twice, or a room region rewrites upstream code; why_new=new family; seam=real 1.38.0 layout
+    def test_every_helper_lands_once_and_rooms_only_lose_comments(self):
+        patched = b"".join(DF_PATCHED)
+        for name in MODULE.SIDEBAR_DEVICE_CHUNK_NAMES[1]:
+            with self.subTest(name=name):
+                declared = len(re.findall(rb"^(?:function|const|let) %s\b" % name.encode(), patched, re.M))
+                self.assertEqual(declared, 1)
+                self.assertNotRegex(b"".join(DF_STOCK), rb"(?<![\w$])%s(?![\w$])" % name.encode())
+        for region, stock, new in zip(DF_REGIONS, DF_STOCK, DF_PATCHED, strict=True):
+            with self.subTest(region=region.label):
+                self.assertEqual(new.count(MODULE.SIDEBAR_DEVICE_MARK), 1)
+                body = without_comments(stock)
+                for anchor, replacement in region.edits:
+                    if replacement == b"":
+                        # Only whole `//` comment lines are deleted for room.
+                        self.assertTrue(all(line.lstrip().startswith(b"// ") for line in anchor.splitlines()))
+                    body = body.replace(anchor, replacement)
+                self.assertEqual(new.rstrip(b" "), body)
+
+    # Value: protects=both swaps are length-preserving and the dropdown renders the ports button it replaces at the mount; fails_when=a swap changes length or the ports button disappears from the title bar; why_new=new family; seam=none
+    def test_swaps_are_length_preserving_and_keep_the_ports_button(self):
+        for _name, stock, filtered, _label in MODULE.SIDEBAR_DEVICE_SWAPS:
+            self.assertEqual(len(stock), len(filtered))
+        self.assertIn(b"jsxRuntimeExports.jsx(PortsDropdown, props)", MODULE.SIDEBAR_DEVICE_MENU_JS)
+        self.assertIn(MODULE.SIDEBAR_DEVICE_MOUNT, MOUNT)
+        self.assertIn(MODULE.SIDEBAR_DEVICE_CLOUD, CLOUD)
+
+
+class BundleTest(unittest.TestCase):
+    """Both flags on a real ASAR layout: names, apply, re-run, revert, foreign bundles."""
+
+    # Value: protects=the documented lifecycle: nine writes, a re-run is a no-op without a second backup, --revert restores the original bytes; fails_when=a flag is not wired, a write is not length-preserving, or revert does not restore; why_new=new families; seam=temp ASAR
+    def test_apply_rerun_and_revert(self):
+        original = bundle()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target, backups = root / "app.asar", root / "backups"
+            target.write_bytes(original)
+            options = dict(size=6, hide_tray=False, custom_project_icons=False, keep_icon_on_hover=False,
+                           automations_header=True, sidebar_device_filter=True)
+            backup, changes = MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options)
+            self.assertEqual(sorted(changes), sorted(AH_LABELS + DF_LABELS))
+            patched = target.read_bytes()
+            self.assertEqual(len(patched), len(original))
+            for new in AH_PATCHED + DF_PATCHED + [MODULE.SIDEBAR_DEVICE_MOUNT_FILTER, MODULE.SIDEBAR_DEVICE_CLOUD_FILTER]:
+                self.assertEqual(patched.count(new), 1)
+            self.assertEqual(MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options), (None, []))
+            self.assertEqual(len(list(backups.glob("app.asar.backup-pre-ui-patch-*[0-9]"))), 1)
+            MODULE.revert(target, backups)
+            self.assertEqual(target.read_bytes(), original)
+            self.assertEqual(backup.read_bytes(), original)
+
+    # Value: protects=each flag stays independent and sticky: one flag never writes the other's bytes, and a run without a flag keeps what it wrote; fails_when=the families share a code path or a run without the flag reverts its bytes; why_new=new families; seam=none
+    def test_flags_are_independent_and_sticky(self):
+        data = bundle()
+        header, changes = patch(data, device=False)
+        self.assertEqual(sorted(changes), sorted(AH_LABELS))
+        device, changes = patch(data, header=False)
+        self.assertEqual(sorted(changes), sorted(DF_LABELS))
+        both, _changes = patch(header, header=False)
+        self.assertEqual(both, patch(device, device=False)[0])
+        self.assertEqual(both, patch(data)[0])
+        self.assertEqual(patch(both, header=False, device=False), (both, []))
+        self.assertEqual(patch(data, header=False, device=False)[1], [])
+
+    # Value: protects=a bundle without the automations page or the sidebar regions (another app, a reshaped release) is refused before a write; fails_when=a missing region is skipped silently; why_new=new families; seam=none
+    def test_foreign_bundle_fails_closed(self):
+        foreign = asar(("index.js", BASE), ("other.js", b'import { a as jsxRuntimeExports } from "./index.js";\nfunction Other() {}\n'))
+        with self.assertRaisesRegex(RuntimeError, "automations header"):
+            patch(foreign, device=False)
+        with self.assertRaisesRegex(RuntimeError, "sidebar device filter"):
+            patch(foreign, header=False)
+        self.assertEqual(patch(foreign, header=False, device=False)[1], [])
+
+    # Value: protects=a missing swap anchor (the title-bar mount or the cloud guard) refuses the device filter whole; fails_when=the family patches the regions and silently skips a swap, leaving a dropdown with no mount or a cloud section that ignores the device; why_new=new family; seam=none
+    def test_missing_swap_anchor_fails_closed(self):
+        for anchor in (MOUNT, CLOUD):
+            with self.subTest(anchor=anchor[:40]):
+                layout = layout_chunk().replace(anchor, b"")
+                with self.assertRaisesRegex(RuntimeError, "lacks a swap anchor"):
+                    patch(bundle(layout=layout), header=False)
+                twice = layout_chunk() + b"function Again() {}\n" + anchor
+                with self.assertRaisesRegex(RuntimeError, "sidebar device filter"):
+                    patch(bundle(layout=twice), header=False)
+
+    # Value: protects=a chunk lacking a name the injected JS reads is refused before any write instead of a ReferenceError at render; fails_when=the check misses a name or runs on the wrong file; why_new=the region digests cannot see names outside the regions; seam=none
+    def test_missing_name_refuses_the_family(self):
+        cases = (
+            ("feature", MODULE.AUTOMATIONS_HEADER_CHUNKS[0][1], lambda n: bundle(feature=feature_chunk(names=n)), dict(device=False)),
+            ("page", MODULE.AUTOMATIONS_HEADER_CHUNKS[1][1], lambda n: bundle(page=page_chunk(names=n)), dict(device=False)),
+            ("layout", MODULE.SIDEBAR_DEVICE_CHUNK_NAMES[0], lambda n: bundle(layout=layout_chunk(names=n)), dict(header=False)),
+        )
+        for chunk, names, build, flags in cases:
+            for name in names:
+                with self.subTest(chunk=chunk, name=name):
+                    data = build(imports([n + ("X" if n == name else "") for n in names]))
+                    with self.assertRaisesRegex(RuntimeError, f"{name} is not available"):
+                        patch(data, **flags)
+
+    # Value: protects=an upstream release that starts using an injected name (sdfSet, SahHeader, ...) is refused instead of shadowed, and the patched bundle still passes, so a re-run stays a no-op; fails_when=the collision check also counts the family's own regions or swaps; why_new=new families; seam=none
+    def test_name_collision_outside_the_regions_is_refused(self):
+        clashes = (
+            (bundle(feature=feature_chunk() + b"function sahWrap() {}\n"), "already uses sahWrap", dict(device=False)),
+            (bundle(page=page_chunk() + b"const SahHeader = 1;\n"), "already uses SahHeader", dict(device=False)),
+            (bundle(layout=layout_chunk() + b"function sdfSet() {}\n"), "already uses sdfSet", dict(header=False)),
+            (bundle(layout=layout_chunk() + b"x(SdfDevices);\n"), "already uses SdfDevices", dict(header=False)),
+        )
+        for data, message, flags in clashes:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(RuntimeError, message):
+                    patch(data, **flags)
+        patched, _changes = patch(bundle())
+        self.assertEqual(patch(patched)[1], [])
+
+    # Value: protects=regions split over two files are refused; fails_when=the chunk lookup accepts the first file only; why_new=new families; seam=none
+    def test_split_regions_are_refused(self):
+        chains = device_chains()
+        cut = chains.index(DF_REGIONS[2].start)
+        split = asar(("index.js", BASE), ("FeatureHeader-js7vLfg4.js", feature_chunk()), ("page-BrmkiX2_.js", page_chunk()),
+                     ("layout-a.js", LAYOUT_NAMES + chains[:cut]), ("layout-b.js", LAYOUT_NAMES + chains[cut:]))
+        with self.assertRaisesRegex(RuntimeError, "regions span several files"):
+            patch(split, header=False)
+
+    # Value: protects=each release is planned with its own layout (1.37 ends the drag-guard region at invalidateWorkspaceQueries); fails_when=the 1.37 bundle is planned with the 1.38 end anchor or the other way round; why_new=new family; seam=none
+    def test_each_release_selects_its_own_layout(self):
+        layout_137 = layout_chunk(layout=DF_REGIONS_137)
+        data_137, data_138 = bundle(layout=layout_137), bundle()
+        self.assertEqual(MODULE._select_layout(data_137, MODULE.SIDEBAR_DEVICE_LAYOUTS, "sidebar device filter")[0], "1.37")
+        self.assertEqual(MODULE._select_layout(data_138, MODULE.SIDEBAR_DEVICE_LAYOUTS, "sidebar device filter")[0], "1.38")
+        patched, changes = patch(data_137, header=False)
+        self.assertEqual(sorted(changes), sorted(DF_LABELS))
+        self.assertEqual(patch(patched, header=False)[1], [])
+
+    def test_cli_forwards_both_flags(self):
+        with mock.patch.object(MODULE, "patch_file", return_value=(None, [])) as patch_file:
+            self.assertEqual(MODULE.main(["--asar", "/tmp/x.asar", "--automations-header", "--sidebar-device-filter"]), 0)
+        kwargs = patch_file.call_args.kwargs
+        self.assertTrue(kwargs["automations_header"])
+        self.assertTrue(kwargs["sidebar_device_filter"])
+
+    # Value: protects=the new flags stay opt-in (README §1): the unattended re-apply set does not carry them; fails_when=someone adds them to approved-flags.json without the confirmation step; why_new=new families; seam=none
+    def test_flags_are_not_in_the_approved_set(self):
+        options = json.loads(APPROVED_FLAGS.read_text())["patch_options"]
+        self.assertNotIn("automations_header", options)
+        self.assertNotIn("sidebar_device_filter", options)
+
+
+class CompositionTest(unittest.TestCase):
+    """--sidebar-device-filter with --sidebar-status-filter and --pinned-icon-only, in either order.
+
+    The 1.38 cloud guard lies inside status filter region 12 (CloudPortsButton .. SidebarKbdHint),
+    which declares it as a shared pair; on 1.37 it lies outside every status region.
+    """
+
+    PINNED = icon_tests.SupersetPinnedIconOnlyPatchTest
+
+    def stock(self, release):
+        """The status filter test's synthetic bundle with the device regions chained into its regions.
+
+        Three status regions end where a device region starts (status 2 -> device 1, 7 -> 3, 9 -> 2), so
+        each region is followed by the one its end anchor opens, as in the real chunk (no anchor twice).
+        """
+        if release == "1.38":
+            status = icon_tests.SupersetSidebarStatusFilter138PatchTest("test_each_release_selects_its_own_layout")
+            device, cloud = DF_REGIONS, b""
+        else:
+            status = icon_tests.SupersetSidebarStatusFilterPatchTest("test_status_filter_is_idempotent")
+            device, cloud = DF_REGIONS_137, CLOUD
+        regions = status.regions() + list(zip(device, DF_STOCK, strict=True))
+        by_start = {region.start: (region, stock) for region, stock in regions}
+        followers = {region.end for region, _stock in regions if region.end in by_start}
+        chains = []
+        for region, stock in regions:
+            if region.start in followers:
+                continue
+            chain = stock
+            while region.end in by_start:
+                region, stock = by_start[region.end]
+                chain += stock
+            chains.append(chain + region.end)
+        base = icon_tests.SupersetUiPatchTest.stock_bundle(status)
+        return b"|".join([base, *chains, MOUNT + cloud, self.PINNED.STOCK_THUMBNAIL, self.PINNED.STOCK_PREFIX])
+
+    def patch(self, data, device=True, others=True):
+        return MODULE.patch_bytes(
+            data, size=6, hide_tray=True, custom_project_icons=True, keep_icon_on_hover=True, compact_sidebar=True,
+            pinned_icon_only=others, sidebar_status_filter=others, sidebar_device_filter=device,
+        )
+
+    # Value: protects=the device filter composes with the status filter and pinned-icon-only in any order: the same bytes whatever order, every later run is a no-op, and neither family undoes the other; fails_when=the cloud guard inside status region 12 is not a declared shared pair (the second run then reads "neither stock nor patched" or the region rewrite restores the stock guard), or a family's planning depends on the other's state; why_new=contract composition rule; seam=real 1.36-1.38 status regions and the real device regions
+    def test_any_order_yields_the_same_bytes(self):
+        for release in ("1.37", "1.38"):
+            with self.subTest(release=release):
+                stock = self.stock(release)
+                if release == "1.38":
+                    self.assertEqual(stock.count(CLOUD), 1)
+                    self.assertIn(CLOUD, (FIXTURES / "superset-1.38.0-status-filter-r12.js").read_bytes())
+                together, changes = self.patch(stock)
+                # On 1.38 the guard swap is folded into the status region 12 rewrite (one write, its label).
+                folded = {"sidebar device filter: cloud section"} if release == "1.38" else set()
+                self.assertEqual(set(DF_LABELS) - set(changes), folded)
+                self.assertTrue(set(DF_LABELS) <= set(self.patch(stock, others=False)[1]))
+                others_first, _ = self.patch(self.patch(stock, device=False)[0])
+                device_first, _ = self.patch(self.patch(stock, others=False)[0])
+                self.assertEqual(others_first, together)
+                self.assertEqual(device_first, together)
+                self.assertEqual(len(together), len(stock))
+                for device, others in ((True, True), (False, True), (True, False)):
+                    self.assertEqual(self.patch(together, device=device, others=others), (together, []))
+                self.assertEqual(together.count(MODULE.SIDEBAR_DEVICE_CLOUD_FILTER), 1)
+                self.assertEqual(together.count(MODULE.SIDEBAR_DEVICE_MOUNT_FILTER), 1)
+                self.assertIn(self.PINNED.PATCHED_THUMBNAIL, together)
+                self.assertIn(b"SsfStatusChips", together)
+
+    # Value: protects=the shared pair is canonicalised both ways in status region 12: a filtered guard reads as the stock region and survives the rewrite; fails_when=the shared pair is dropped from STATUS_FILTER_REGIONS_1_38; why_new=new family; seam=real 1.38.0 status region 12
+    def test_status_region_12_keeps_the_filtered_guard(self):
+        region = MODULE.STATUS_FILTER_REGIONS_1_38[11]
+        stock = (FIXTURES / "superset-1.38.0-status-filter-r12.js").read_bytes()
+        self.assertEqual(region.shared, ((MODULE.SIDEBAR_DEVICE_CLOUD, MODULE.SIDEBAR_DEVICE_CLOUD_FILTER),))
+        filtered = stock.replace(MODULE.SIDEBAR_DEVICE_CLOUD, MODULE.SIDEBAR_DEVICE_CLOUD_FILTER)
+        [(_, _, from_filtered, _)] = MODULE._plan_region_rewrite(filtered + region.end, region)
+        [(_, _, from_stock, _)] = MODULE._plan_region_rewrite(stock + region.end, region)
+        self.assertEqual(from_filtered, from_stock.replace(MODULE.SIDEBAR_DEVICE_CLOUD, MODULE.SIDEBAR_DEVICE_CLOUD_FILTER))
+        self.assertEqual(MODULE._plan_region_rewrite(from_filtered + region.end, region), [])
+        node_check(self, from_filtered)
+
+
+@live_host_only("anchors, names and chunk syntax are checked against the Superset.app bundle installed on this host")
+class InstalledTest(unittest.TestCase):
+    """The installed release still has the pinned stock bytes, and every patched chunk parses."""
+
+    def setUp(self):
+        self.stock = installed_stock_snapshot()
+        if self.stock is None:
+            self.skipTest("no installed Superset bundle on this machine")
+
+    # Value: protects=the stock snapshot of the installed release plans every write of both families, with every name present, and each whole patched chunk passes node --check; fails_when=an upstream update moves an anchor, renames a name or a patched module no longer parses; why_new=new families; seam=installed bundle
+    def test_stock_snapshot_plans_and_patched_chunks_parse(self):
+        import mmap
+
+        with self.stock.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            writes = MODULE._plan_automations_header(data) + MODULE._plan_sidebar_device_filter(data)
+            self.assertEqual(sorted(w[3] for w in writes), sorted(AH_LABELS + DF_LABELS))
+            touched_paths = []
+            for path, start, size in MODULE._asar_entries(data):
+                touched = [w for w in writes if start <= w[0] < start + size]
+                if not touched:
+                    continue
+                touched_paths.append(path)
+                with self.subTest(path=path):
+                    chunk = bytearray(data[start : start + size])
+                    for offset, old, new, _label in touched:
+                        self.assertEqual(bytes(chunk[offset - start : offset - start + len(old)]), old)
+                        chunk[offset - start : offset - start + len(old)] = new
+                    node_check(self, bytes(chunk))
+        self.assertEqual(len(touched_paths), 3, touched_paths)
+
+    # Value: protects=the installed bundle accepts the approved set plus both flags (and the other opt-in flags) without touching another family's writes; fails_when=an anchor overlap or a foreign generation would make the apply refuse or rewrite another family; why_new=new families; seam=installed bundle
+    def test_installed_bundle_accepts_both_flags_on_top_of_every_other_flag(self):
+        import mmap
+
+        options = json.loads(APPROVED_FLAGS.read_text())["patch_options"]
+        options.update(command_palette_cmd_k=True, command_palette_workspace_search=True, status_filter_hotkeys=True)
+        with MODULE.DEFAULT_ASAR.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_COPY) as data:
+            try:
+                others = MODULE.plan_replacements(data, **options)
+            except RuntimeError as exc:
+                self.skipTest(f"installed bundle carries a generation this checkout cannot plan: {exc}")
+            both = MODULE.plan_replacements(data, **options, automations_header=True, sidebar_device_filter=True)
+        extra = sorted(w[3] for w in both if w not in others)
+        self.assertTrue(set(extra) <= set(AH_LABELS + DF_LABELS), extra)
+        self.assertTrue(set(others) <= set(both))
+
+    # Value: protects=every utility class the injected JS uses is generated in the installed index-*.css (a missing one would silently not style); fails_when=the JS uses a class the stylesheet lacks or upstream drops one; why_new=new families; seam=installed bundle
+    def test_installed_css_has_every_injected_class(self):
+        import mmap
+
+        with self.stock.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            css = b"".join(bytes(data[start : start + size]) for path, start, size in MODULE._asar_entries(data) if re.search(r"/index-[^/]+\.css$", path))
+        injected = b"".join((
+            MODULE.AUTOMATIONS_HEADER_WRAP_JS, MODULE.AUTOMATIONS_HEADER_JS, MODULE.SIDEBAR_DEVICE_MENU_JS, MODULE.SIDEBAR_DEVICE_ITEMS_JS,
+        ))
+        classes = set()
+        for literal in re.findall(rb'className: (?:cn\()?"([^"]+)"', injected) + re.findall(rb'\? "([^"]+)" : "([^"]+)"', injected):
+            for group in literal if isinstance(literal, tuple) else (literal,):
+                classes.update(group.split())
+        self.assertIn(b"no-drag", classes)
+        for cls in sorted(classes):
+            with self.subTest(cls=cls):
+                variant, _, _utility = cls.rpartition(b":")
+                selector = b"." + re.sub(rb"([:!./\[\]])", rb"\\\1", cls) + (b":" + variant if variant in (b"hover",) else b"")
+                self.assertRegex(css, re.escape(selector) + rb"[\s,{:]")
+
+
+if __name__ == "__main__":
+    unittest.main()
