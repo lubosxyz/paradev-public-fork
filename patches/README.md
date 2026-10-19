@@ -937,6 +937,85 @@ family in either order on 1.37 and 1.38, the installed bundle) and
 parity with upstream, the swapped data line, the drag guard of the stock
 PINNED section).
 
+### Projects follow the sort mode and pin on top (opt-in, desktop-v1.37.0–v1.38.0)
+
+Upstream keeps the project order manual whatever the Workspaces sort menu says
+(the sort applies only inside each project). Two opt-in, sticky flags
+(LUBOS-2779), usable alone or together:
+
+- `--sort-projects` adds a **Sort projects too** checkbox at the end of the
+  Workspaces sort menu (off by default; the menu stays open when it is
+  toggled). On, with **Last active** the projects follow their newest child
+  (upstream `getChildTimestamp`: a workspace's `lastActivityAt`, else
+  `updatedAt`; a folder's newest workspace, else its `createdAt`), with
+  **Date created** the project's `createdAt`; newest first, ties by name and
+  then id, projects without a time last (upstream `makeStableComparator`).
+  Off, or under **Manual order**, the projects keep the stock order.
+- `--pin-projects` adds **Pin project** / **Unpin project** to the project
+  header context menu (after Import worktrees). Pinned projects render first
+  in pin order (the order they were pinned), whatever the sort mode or the
+  checkbox; the rest follow the line above.
+- While the order differs from stock handling (the checkbox on under a sort
+  mode, or any listed pinned project) project drag is disabled, the way
+  upstream disables child drag under a sort mode: the project drop persists
+  the displayed order (`arrayMove` + `reorderProjects`). Under Manual order
+  with pins the drag is blocked without the "sorted" notice; unpin to drag.
+- State is per machine in renderer localStorage: `lubos-patch:sort-projects`
+  (`"1"` on) and `lubos-patch:pinned-projects` (JSON array of project ids).
+  A missing, corrupt or unreadable value reads as off / no pins; ids of
+  projects the sidebar does not list are kept but ignored. Nothing reaches the
+  synced preferences or the database. Stored state of a flag that is not
+  applied is inert (the order hook checks `typeof lppSortItem` /
+  `typeof lppPinItem`).
+
+The order runs where `DashboardSidebar` computes `sortedGroups`, after
+upstream's own per-project sort, so the displayed projects, the sortable ids,
+the workspace shortcuts and `--sidebar-status-filter` /
+`--sidebar-device-filter` all read one order; an order that does not move
+keeps upstream's list (no churn).
+
+Writes in the sidebar `layout-*.js` chunk, all room regions (no-op comments
+and listed `//` comment lines, REBASE.md room rule) that no other flag touches:
+
+| Part | Region (start → end) | Bytes | Spare | Written by |
+| --- | --- | --- | --- | --- |
+| order hook `lppUse` | `DashboardLayout` → `export {` | 7,619 (1.37: 8,089) | 20 (1.37: 52) | either flag |
+| store `lppState` / `lppSet` | `useWorkspaceNamingFailedToast` → `PreUpdateConfirmPopover` | 10,971 | 102 | either flag |
+| checkbox `lppSortItem` | `buildBulkWorkspaceInspectionSummary` → `DashboardSidebarBulkDeleteFailures` | 11,438 | 135 | `--sort-projects` |
+| menu item `lppPinItem` | `DashboardSidebarWorkspaceItem` → `SidebarDropZone` | 9,179 | 69 | `--pin-projects` |
+
+plus three length-preserving swaps, each inside a status filter region that
+declares it a `shared` pair (so with `--sidebar-status-filter` they fold into
+that region's rewrite and the flags compose in either order): the
+`sortedGroups` … `isProjectDragDisabled` lines (608 B, region 3, either flag),
+the sort menu's closing `iqSA4j` hint (74 B, region 2, `--sort-projects`) and
+the context menu's `LhpIB7` Import worktrees tail (65 B, chip bits region,
+`--pin-projects`). The plan also pins the exact stock source of the seven
+upstream helpers the order calls, so a reshaped helper refuses the family
+before any write. Adding the second flag later writes only its own region
+and swap.
+
+Apply on top of the approved set and `--pinned-activity-sort`:
+
+```bash
+python3 patch-asar.py --size 6 --hide-tray --custom-project-icons \
+  --keep-icon-on-hover --compact-sidebar --pinned-icon-only \
+  --sidebar-status-filter --sound-only-when-waiting --hide-nav-buttons \
+  --hide-sidebar-footer --pinned-activity-sort --sort-projects --pin-projects \
+  --ack-invalid-apple-signature
+python3 patch-asar.py --revert   # undoes exactly this step
+```
+
+Tests: `tests/test_superset_project_order_patch.py` (the four pinned regions
+and the 1.37 hook shape, the swaps in every status region shape, fail-closed
+bundles, swaps, names and reshaped helpers, apply / re-run / revert per flag
+and combined, half-applied completion, adding the second flag later,
+composition with every family in either order on 1.37 and 1.38, the installed
+bundle) and `tests/project_order.test.mjs` (both modes incl. ties and missing
+times, pins first in pin order, checkbox off and Manual order = stock, the
+drag flag, storage incl. corrupt and unreadable values, each flag alone, the
+swapped `DashboardSidebar` lines, both menus with and without their item).
+
 `project-icons/komfi-ops.svg` is an intentional palette exception: its
 slate-900 (`#0f172a`) background and slate-200 (`#e2e8f0`) gear stroke retain
 the approved dark-background identity instead of following the light sibling

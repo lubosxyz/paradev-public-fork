@@ -772,6 +772,8 @@ class SupersetUiPatchTest(unittest.TestCase):
             automations_header=False,
             sidebar_device_filter=False,
             pinned_activity_sort=False,
+            sort_projects=False,
+            pin_projects=False,
             acknowledge_invalid_signature=False,
         )
 
@@ -2983,7 +2985,10 @@ class SupersetHideSidebarFooter138PatchTest(SupersetHideSidebarFooterPatchTest):
         self.assertEqual(region3.count(MODULE.SIDEBAR_FOOTER), 1)
         self.assertEqual(
             self.REGIONS[2].shared,
-            ((MODULE.SIDEBAR_FOOTER, MODULE.SIDEBAR_FOOTER_HIDDEN), (MODULE.PINNED_SORT_DATA, MODULE.PINNED_SORT_DATA_SORTED)),
+            (
+                (MODULE.SIDEBAR_FOOTER, MODULE.SIDEBAR_FOOTER_HIDDEN), (MODULE.PINNED_SORT_DATA, MODULE.PINNED_SORT_DATA_SORTED),
+                (MODULE.PROJECT_ORDER_DATA, MODULE.PROJECT_ORDER_DATA_SORTED),
+            ),
         )
 
 

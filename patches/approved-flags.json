@@ -19,6 +19,8 @@
     "status_filter_hotkeys",
     "automations_header",
     "sidebar_device_filter",
-    "pinned_activity_sort"
+    "pinned_activity_sort",
+    "sort_projects",
+    "pin_projects"
   ]
 }

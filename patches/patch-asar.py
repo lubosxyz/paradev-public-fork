@@ -6,9 +6,9 @@ project-owned icon URLs, project icons retained on hover, icon-only pinned
 workspace rows, sidebar status filter chips, notification sound only while an agent
 waits, no menu-bar tray icon, the command palette on Cmd+K and project and
 workspace search in the palette, with a new workspace per project, the Automations
-page header (one list, project filter), a sidebar device filter and PINNED rows that follow the
-sidebar sort mode. Every replacement has exactly the
-same byte length as its source. That preserves ASAR offsets, but any app.asar
+page header (one list, project filter), a sidebar device filter, PINNED rows that follow the
+sidebar sort mode, projects that follow it too and projects pinned on top. Every
+replacement has exactly the same byte length as its source. That preserves ASAR offsets, but any app.asar
 mutation still invalidates Apple's resource seal and therefore requires an
 explicit production acknowledgement.
 """
@@ -929,6 +929,47 @@ PINNED_SORT_DATA_SORTED = _pad_variant(
 ) + b"\n"
 
 
+# --sort-projects / --pin-projects: the three anchors they swap outside their
+# own regions (PROJECT_ORDER_SWAPS). All lie inside status filter regions on
+# every supported release, which declare them as shared pairs; none holds a
+# no-op comment, so the filter's comment strip keeps them byte for byte.
+# 1. DashboardSidebar's project order (region 3): sortedGroups comes from
+#    lppUse, which runs upstream's stock order first, and project drag is also
+#    disabled while lppUse reorders the projects.
+PROJECT_ORDER_DATA = (
+    b'  const sortedGroups = reactExports.useMemo(() => sortMode === "manual" ? orderedGroups : '
+    b"sortDashboardSidebarProjects(orderedGroups, sortMode), [sortMode, orderedGroups]);\n"
+    b"  const displayedGroups = reactExports.useMemo(() => filterDashboardSidebarProjects(sortedGroups, projectFilterQuery), "
+    b"[sortedGroups, projectFilterQuery]);\n"
+    b"  const displayedProjectIds = reactExports.useMemo(() => displayedGroups.map((project) => project.id), [displayedGroups]);\n"
+    b"  const trimmedFilterQuery = projectFilterQuery.trim();\n"
+    b'  const isFilterActive = trimmedFilterQuery !== "";\n'
+    b"  const isProjectDragDisabled = isFilterActive;\n"
+)
+# Padded at the end of its first line, so every statement keeps its own line.
+_PROJECT_ORDER_REST = PROJECT_ORDER_DATA.split(b"\n", 1)[1].replace(
+    b"  const isProjectDragDisabled = isFilterActive;\n", b"  const isProjectDragDisabled = isFilterActive || lppDrag;\n"
+)
+PROJECT_ORDER_DATA_SORTED = _pad_variant(
+    PROJECT_ORDER_DATA[: len(PROJECT_ORDER_DATA) - len(_PROJECT_ORDER_REST) - 1],
+    b"  const [sortedGroups, lppDrag] = lppUse(orderedGroups, sortMode);",
+) + b"\n" + _PROJECT_ORDER_REST
+# 2. The Workspaces sort menu (region 2): after the "sorted" hint, the last
+#    item of its DropdownMenuContent, comes the "Sort projects too" checkbox.
+#    The anchor starts after the hint's `/** i18n */`.
+SORT_PROJECTS_MENU = b'\n        {\n          id: "iqSA4j"\n        }\n      ) })\n    ] })\n  ] });\n}\n'
+SORT_PROJECTS_MENU_ITEM = _pad_variant(
+    SORT_PROJECTS_MENU[:-3], b'{ id: "iqSA4j" }) }), jsxRuntimeExports.jsx(lppSortItem, {})] })] });'
+) + b"\n}\n"
+# 3. The project header context menu (the chip bits room region): after
+#    "Import worktrees" comes "Pin project" / "Unpin project". The anchor starts
+#    after that item's `/** i18n */` and ends with the next item's indent.
+PIN_PROJECTS_MENU = b'\n        {\n          id: "LhpIB7"\n        } })\n      ] }),\n      '
+PIN_PROJECTS_MENU_ITEM = _pad_variant(
+    PIN_PROJECTS_MENU, b'{id:"LhpIB7"}})]}),jsxRuntimeExports.jsx(lppPinItem,{projectId}),'
+)
+
+
 STATUS_FILTER_REGIONS = (
     # SortableWorkspaceItem .. DashboardSidebarPinnedSection .. folder section
     # .. isBulkSelectable: PINNED rows, PINNED section, folders (all trees).
@@ -1092,13 +1133,16 @@ STATUS_FILTER_REGIONS = (
             "a867c4b8aa38d54761f5ce1eacb6236cae3d340862faefef40c359b3529f0084",
             "47a88b86f712525c842f54a4dcc5864160f17b7b4fac4c0ac4bbd1c987f50d13",
         ),
+        # The sort menu's --sort-projects checkbox swap.
+        shared=((SORT_PROJECTS_MENU, SORT_PROJECTS_MENU_ITEM),),
     ),
     # DashboardSidebar: the sticky SsfSearch row and below it the chip row go
     # between DashboardSidebarHeader (the --compact-sidebar grid) and the
     # scrolling OverflowFadeContainer, below DashboardSidebarWorkspaceStatusProvider.
-    # Expanded sidebar only. The region also holds the --hide-sidebar-footer row
-    # and the --pinned-activity-sort data line, named in `shared`; the 1.37 shape
-    # is in STATUS_FILTER_REGION_VARIANTS.
+    # Expanded sidebar only. The region also holds the --hide-sidebar-footer row,
+    # the --pinned-activity-sort data line and the --sort-projects /
+    # --pin-projects order line, named in `shared`; the 1.37 shape is in
+    # STATUS_FILTER_REGION_VARIANTS.
     RegionRewrite(
         label="status filter: sticky chip row",
         start=b"function DashboardSidebar({\n",
@@ -1121,7 +1165,10 @@ STATUS_FILTER_REGIONS = (
             "51557750a5b6afcd93bc3e1e47ee619d4bfaf0081231d5e6b4ec98033b6f4a0e",
             "02d79a1591ab5d35bcb4cc44bc2d4dda4d07c2a7899a2a349e10832d49add0e1",
         ),
-        shared=((SIDEBAR_FOOTER, SIDEBAR_FOOTER_HIDDEN), (PINNED_SORT_DATA, PINNED_SORT_DATA_SORTED)),
+        shared=(
+            (SIDEBAR_FOOTER, SIDEBAR_FOOTER_HIDDEN), (PINNED_SORT_DATA, PINNED_SORT_DATA_SORTED),
+            (PROJECT_ORDER_DATA, PROJECT_ORDER_DATA_SORTED),
+        ),
     ),
     # DashboardSidebarCloudContextMenu: no edit of its own, only room (1,446 B
     # of no-op comments) for matching, the Shift-range cut, the chip label and
@@ -1166,7 +1213,7 @@ STATUS_FILTER_REGIONS = (
     # DashboardSidebarProjectContextMenu: no edit of its own, only room (600 B
     # of no-op comments) for the chip list and bits, which region 3 gave up
     # for the search row, and (v5) the filter collapse overrides. It starts
-    # where region 1 ends.
+    # where region 1 ends. The --pin-projects menu item swap is in `shared`.
     RegionRewrite(
         label="status filter: chip bits",
         start=b"function DashboardSidebarProjectContextMenu({\n",
@@ -1177,6 +1224,7 @@ STATUS_FILTER_REGIONS = (
         edits=(_insert_after(b"      ] }) : null\n    ] })\n  ] });\n}\n", STATUS_FILTER_BITS_JS + STATUS_FILTER_SHUT_JS),),
         # v3 / v4 (chip bits only).
         legacy_sha256=("a78e2e7a9f7bda23e88c0666a33187ea526007077bd76d7abafa7add91ee8a9f",),
+        shared=((PIN_PROJECTS_MENU, PIN_PROJECTS_MENU_ITEM),),
     ),
     # DashboardSidebarWorkspaceHoverCardContent: room only (931 B) for the
     # render guard ssfUseShow.
@@ -1346,7 +1394,10 @@ STATUS_FILTER_REGION_VARIANTS = (
             "e77b3309f341457b692581f147766ce6c3ed0a993d804ed199e8e969025af73a",
             "ef72d748a66c83d089b69c9768126930ebdb72c538d2f42935de55f5ba8a0e87",
         ),
-        shared=((SIDEBAR_FOOTER, SIDEBAR_FOOTER_HIDDEN), (PINNED_SORT_DATA, PINNED_SORT_DATA_SORTED)),
+        shared=(
+            (SIDEBAR_FOOTER, SIDEBAR_FOOTER_HIDDEN), (PINNED_SORT_DATA, PINNED_SORT_DATA_SORTED),
+            (PROJECT_ORDER_DATA, PROJECT_ORDER_DATA_SORTED),
+        ),
     ),
 )
 
@@ -2569,11 +2620,15 @@ AUTOMATIONS_HEADER_CHUNKS = (
 )
 
 
-def _require_family_chunks(data, chunks, label: str, swaps=()) -> None:
+def _require_family_chunks(data, chunks, label: str, swaps=(), others=((), ())) -> None:
     """Fail closed unless each chunk imports what the injected JS reads and lacks the names it adds.
 
     `swaps` are (stock, patched) anchors the family writes outside its regions:
     each must lie in the chunk, and its patched form is not a foreign use.
+    `others` are (regions, patched anchors) of the family's unselected parts,
+    which an earlier run with another flag may have written: where present
+    byte-for-byte (a region only at its patched digest) they are not a foreign
+    use either; any other bytes stay subject to the name check.
     """
     for regions, imported, added in chunks:
         found = _region_chunk(data, regions, label)
@@ -2585,6 +2640,14 @@ def _require_family_chunks(data, chunks, label: str, swaps=()) -> None:
         for region in regions:
             offset = outside.find(region.start)
             outside = outside[:offset] + b" " * region.length + outside[offset + region.length :]
+        other_regions, other_swaps = others
+        for region in other_regions:
+            if outside.count(region.start) == 1:
+                offset = outside.find(region.start)
+                if hashlib.sha256(outside[offset : offset + region.length]).hexdigest() == region.patched_sha256:
+                    outside = outside[:offset] + b" " * region.length + outside[offset + region.length :]
+        for patched in other_swaps:
+            outside = outside.replace(patched, b" " * len(patched))
         for stock, patched in swaps:
             if stock not in chunk and patched not in chunk:
                 raise RuntimeError(f"{label}: {path} lacks a swap anchor; bundle structure may have changed")
@@ -2992,6 +3055,343 @@ def _plan_pinned_activity_sort(data) -> list[tuple[int, bytes, bytes, str]]:
     return replacements
 
 
+# --sort-projects and --pin-projects (desktop-v1.37.0-v1.38.0), usable alone or
+# together. Upstream keeps the project order manual whatever the Workspaces sort
+# menu says (sortDashboardSidebarProjects sorts only inside each project).
+#   --sort-projects: a "Sort projects too" checkbox closes the sort menu. On,
+#     with Last active the projects follow their newest child time (upstream's
+#     getChildTimestamp: a workspace's activity, else updatedAt; a folder's
+#     newest workspace, else its createdAt), with Date created the project's
+#     createdAt; newest first, ties by name and then id, projects without a time
+#     last (upstream's makeStableComparator). Off, or with Manual order, the
+#     projects keep the stock order.
+#   --pin-projects: "Pin project" / "Unpin project" in the project header
+#     context menu. Pinned projects come first in pin order (the order they were
+#     pinned), whatever the sort mode or the checkbox; the rest follow the line
+#     above. Pins of projects the sidebar does not list are kept but ignored.
+# While lppUse reorders the projects (a sort mode with the checkbox on, or any
+# listed pinned project), project drag is disabled the way upstream disables
+# child drag under a sort mode: the drop would persist the displayed order. The
+# order hook (lppUse) and both menu items read one store: localStorage
+# `lubos-patch:sort-projects` ("1" on) and `lubos-patch:pinned-projects` (JSON
+# array of project ids), per machine; an unreadable value reads as off / no
+# pins. Nothing reaches the synced preferences or the database. The order hook
+# applies only the parts whose flag is present (`typeof lppSortItem`,
+# `typeof lppPinItem`), so stored state of a flag that is not applied is inert.
+# The JS lives in four room regions (no-op comments and the listed `//` comment
+# lines, REBASE.md room rule) that no other flag touches; the core two are
+# written by either flag, the menu items only by their own flag.
+PROJECT_ORDER_MARK = b"// patch-asar.py --sort-projects --pin-projects\n"
+PROJECT_ORDER_STORE_JS = b'''const lppListeners = new Set();
+function lppRead(key, parse) {
+  try {
+    return parse(localStorage.getItem(`lubos-patch:${key}`));
+  } catch {
+    return null;
+  }
+}
+let lppState = [lppRead("sort-projects", (value) => value === "1"), lppRead("pinned-projects", (value) => JSON.parse(value).filter((id, index, all) => typeof id === "string" && all.indexOf(id) === index)) ?? []];
+function lppSet(sort, pins) {
+  lppState = [sort, pins];
+  try {
+    localStorage.setItem("lubos-patch:sort-projects", sort ? "1" : "0");
+    localStorage.setItem("lubos-patch:pinned-projects", JSON.stringify(pins));
+  } catch {
+  }
+  for (const listener of [...lppListeners]) listener();
+}
+'''
+# [displayed projects, project drag disabled]; the stock list itself when nothing moves.
+PROJECT_ORDER_USE_JS = b'''const lppSubscribe = (listener) => (lppListeners.add(listener), () => lppListeners.delete(listener));
+const lppUseState = () => reactExports.useSyncExternalStore(lppSubscribe, () => lppState);
+function lppUse(groups, mode) {
+  const [sort, pins] = lppUseState();
+  return reactExports.useMemo(() => {
+    const base = mode === "manual" ? groups : sortDashboardSidebarProjects(groups, mode);
+    const sorted = sort && mode !== "manual" && typeof lppSortItem === "function";
+    const time = (project) => mode === "created" ? toTime(project.createdAt) : newest(project.children.map((child) => getChildTimestamp(child, mode)));
+    const rows = sorted ? [...base].sort(makeStableComparator(time, (project) => project.name, (project) => project.id)) : base;
+    const pinned = typeof lppPinItem === "function" ? pins.flatMap((id) => rows.filter((project) => project.id === id)) : [];
+    const order = [...pinned, ...rows.filter((project) => !pinned.includes(project))];
+    return [haveSameItems(order, base) ? base : order, sorted || pinned.length > 0];
+  }, [groups, mode, sort, pins]);
+}
+'''
+SORT_PROJECTS_MARK = b"// patch-asar.py --sort-projects\n"
+SORT_PROJECTS_JS = b'''function lppSortItem() {
+  const [sort, pins] = lppUseState();
+  return jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+    jsxRuntimeExports.jsx(DropdownMenuSeparator, {}),
+    jsxRuntimeExports.jsxs(DropdownMenuItem, { role: "menuitemcheckbox", "aria-checked": sort, onSelect: (event) => (event.preventDefault(), lppSet(!sort, pins)), children: [
+      jsxRuntimeExports.jsx(LuCheck, { className: cn("size-4", !sort && "invisible") }),
+      "Sort projects too"
+    ] })
+  ] });
+}
+'''
+PIN_PROJECTS_MARK = b"// patch-asar.py --pin-projects\n"
+PIN_PROJECTS_JS = b'''function lppPinItem({ projectId }) {
+  const [sort, pins] = lppUseState(), pinned = pins.includes(projectId);
+  return jsxRuntimeExports.jsxs(ContextMenuItem, { onSelect: () => lppSet(sort, pinned ? pins.filter((id) => id !== projectId) : [...pins, projectId]), children: [
+    jsxRuntimeExports.jsx(pinned ? LuPinOff : LuPin, { className: "size-4 mr-2" }),
+    pinned ? "Unpin project" : "Pin project"
+  ] });
+}
+'''
+# DashboardLayout, the chunk's last function: 1.37 still branches on the v2
+# cloud flag there, so its region has a 1.37 sibling shape (same anchors, edits
+# and comments; PROJECT_ORDER_HOOK_VARIANTS).
+PROJECT_ORDER_HOOK_EDITS = (
+    (
+        b"    // The single ports-data provider for both layout modes. It lives up here\n"
+        b"    // (not in the sidebar) because in topbar mode the pill renders inside\n"
+        b"    // subtrees that remount on workspace navigation (TopBar / the workspace\n"
+        b"    // tab bar) \xe2\x80\x94 the data must survive those remounts or the pill blinks out\n"
+        b"    // for the first empty-data frames. The inline chip in the sidebar reads\n"
+        b"    // the same context; polling stays off when nothing renders ports (v1, or\n"
+        b"    // a collapsed/closed sidebar in inline mode).\n",
+        b"",
+    ),
+    (b"    // needs its port list even when no ports UI is on screen.\n", b""),
+    (
+        b"              // A v2 user on a stale v1 workspace route has nothing to go\n"
+        b"              // back to, so send them somewhere actionable instead of a\n"
+        b"              // dead-end \"pick a workspace\" screen. v1 users keep the\n"
+        b"              // static state \xe2\x80\x94 /new-workspace is a v2-only surface.\n",
+        b"",
+    ),
+    _insert_after(b"    ] }) })\n  );\n}\n", PROJECT_ORDER_MARK + PROJECT_ORDER_USE_JS),
+)
+PROJECT_ORDER_REGIONS = (
+    RegionRewrite(
+        label="project order: room for the order hook",
+        start=b"function DashboardLayout() {\n",
+        end=b"export {\n",
+        length=7619,
+        stock_sha256="1fc220eb771c64ba789a58ebbe2306f437f125bb59f96455d284c79b3488faa7",
+        patched_sha256="dfdcd0de80f85477d6d8313bacdad959bdc38da45804e358d171450dea87e293",
+        edits=PROJECT_ORDER_HOOK_EDITS,
+    ),
+    RegionRewrite(
+        label="project order: room for the store",
+        start=b"function useWorkspaceNamingFailedToast() {\n",
+        end=b"function PreUpdateConfirmPopover({\n",
+        length=10971,
+        stock_sha256="a6184bc3bd292f3a9d281af498b537c33d36cf21a263142a24a082fe1fe3c730",
+        patched_sha256="b62909d7eb42a64f48ee1712a595b38cc2333c6dab1ffabc4700e38549cd157c",
+        edits=(
+            (
+                b"      // The title already carries the amount, so the body does not repeat it.\n"
+                b"      // Stated as two facts rather than one cause. A voluntary cancellation\n"
+                b"      // can also leave its closing invoice unpaid, and telling someone who\n"
+                b"      // chose to leave that a failed charge is why they lost Pro would be\n"
+                b"      // the same wrong-reason bug this card exists to stop.\n",
+                b"",
+            ),
+            (
+                b"    // An impression of the star ask means the button was actually on screen,\n"
+                b"    // which can start false and flip true while the card stays put.\n",
+                b"",
+            ),
+            _insert_before(b"function usePaymentFailedCard({\n", PROJECT_ORDER_MARK + PROJECT_ORDER_STORE_JS),
+        ),
+    ),
+)
+PROJECT_ORDER_HOOK_VARIANTS = (
+    replace(
+        PROJECT_ORDER_REGIONS[0],
+        length=8089,
+        stock_sha256="3f28331d4e299e3295f6678738fdb9321b259a2514ebe85da3f8fb3b79797361",
+        patched_sha256="580bf7871358672af41e47aa372d73eda5bf947cc36a68f03022d4cb12a17a29",
+    ),
+)
+SORT_PROJECTS_REGIONS = (
+    RegionRewrite(
+        label="sort projects: room for the menu item",
+        start=b"function buildBulkWorkspaceInspectionSummary(workspaces, inspections) {\n",
+        end=b"function DashboardSidebarBulkDeleteFailures({\n",
+        length=11438,
+        stock_sha256="a793d49201c13f7f534b0f772d0fbc37588f255e53ad205cc779063234562b6f",
+        patched_sha256="5ad1cec2217f7b216ad388739759ae15d2fd28000920f63f8bcfd451c5bdc82c",
+        edits=(
+            (
+                b"    // Pending or failed checks flip the confirm copy to \"Delete without\n"
+                b"    // checking\" instead of disabling confirmation.\n",
+                b"",
+            ),
+            (
+                b"    // Checks never gate deletion \xe2\x80\x94 only hard blockers (main workspaces,\n"
+                b"    // which the host refuses anyway) do.\n",
+                b"",
+            ),
+            (
+                b"        // \"Delete without checking\": a conflict on a workspace whose\n"
+                b"        // preview never completed means the unverified worktree was\n"
+                b"        // dirty \xe2\x80\x94 the user already consented, so force like the\n"
+                b"        // single-workspace dialog does. Checked-clean races still\n"
+                b"        // land in the failures pane.\n",
+                b"",
+            ),
+            _insert_before(b"function useBulkWorkspaceDelete({\n", SORT_PROJECTS_MARK + SORT_PROJECTS_JS),
+        ),
+    ),
+)
+PIN_PROJECTS_REGIONS = (
+    RegionRewrite(
+        label="pin projects: room for the menu item",
+        start=b"function DashboardSidebarWorkspaceItem({\n",
+        # 1.37 names it SidebarDropZone$1 (the v1 sidebar still had its own).
+        end=b"function SidebarDropZone",
+        length=9179,
+        stock_sha256="8f9b1f87fb7061226ddbe913195edfa5a05527dfe72846bde794e8b8f5a9c448",
+        patched_sha256="a36888bc5ac3f1510e019ff7019e70f713b41d0ab62ad42a789b885d9fa960fb",
+        edits=(
+            (
+                b"    const content = (\n"
+                b"      // biome-ignore lint/a11y/noStaticElementInteractions: hover handlers drive a non-interactive "
+                b"popover, no new keyboard semantics\n",
+                b"    const content = (\n",
+            ),
+            (
+                b"  const expandedContent = (\n"
+                b"    // biome-ignore lint/a11y/noStaticElementInteractions: hover handlers drive a non-interactive "
+                b"popover, no new keyboard semantics\n",
+                b"  const expandedContent = (\n",
+            ),
+            _insert_after(
+                b"    }, onAfterRename: handleAfterBranchRename })\n  ] });\n}\n", PIN_PROJECTS_MARK + PIN_PROJECTS_JS,
+            ),
+        ),
+    ),
+)
+# (name, stock, patched, label) of the anchor swaps outside the family regions.
+PROJECT_ORDER_SWAPS = (
+    ("project order data", PROJECT_ORDER_DATA, PROJECT_ORDER_DATA_SORTED, "project order: sidebar order and drag guard"),
+)
+SORT_PROJECTS_SWAPS = (
+    ("sort projects menu", SORT_PROJECTS_MENU, SORT_PROJECTS_MENU_ITEM, "sort projects: sort menu checkbox"),
+)
+PIN_PROJECTS_SWAPS = (
+    ("pin projects menu", PIN_PROJECTS_MENU, PIN_PROJECTS_MENU_ITEM, "pin projects: project menu item"),
+)
+# (imported names, added names) of each part, checked on the layout chunk.
+PROJECT_ORDER_CHUNK_NAMES = (
+    ("reactExports",),
+    ("lppListeners", "lppRead", "lppState", "lppSet", "lppSubscribe", "lppUseState", "lppUse", "lppDrag"),
+)
+SORT_PROJECTS_CHUNK_NAMES = (
+    ("jsxRuntimeExports", "cn", "DropdownMenuSeparator", "DropdownMenuItem", "LuCheck"),
+    ("lppSortItem",),
+)
+PIN_PROJECTS_CHUNK_NAMES = (
+    ("jsxRuntimeExports", "ContextMenuItem", "LuPin", "LuPinOff"),
+    ("lppPinItem",),
+)
+# Upstream's sort helpers lppUse calls (module-scope declarations of the layout
+# chunk) and their exact stock source, byte-identical in 1.37.0 and 1.38.0. The
+# order relies on these signatures, the newest-first comparator and
+# sortDashboardSidebarProjects returning the project list (not a copy) under
+# Manual order, so a reshaped helper refuses the family before any write.
+PROJECT_ORDER_HELPERS = (
+    (
+        "toTime",
+        b'''function toTime(value) {
+  if (value == null) return Number.NaN;
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === "number") return value;
+  return new Date(value).getTime();
+}
+''',
+    ),
+    (
+        "newest",
+        b'''function newest(times) {
+  const known = times.filter((time) => !Number.isNaN(time));
+  return known.length > 0 ? Math.max(...known) : Number.NaN;
+}
+''',
+    ),
+    ("makeStableComparator", PINNED_SORT_HELPERS[0]),
+    (
+        "getChildTimestamp",
+        b'''function getChildTimestamp(child, mode) {
+  if (child.type === "workspace") {
+    return getWorkspaceTimestamp(child.workspace, mode);
+  }
+  const {
+    section
+  } = child;
+  if (mode === "created") return toTime(section.createdAt);
+  const activity = newest(section.workspaces.map(getWorkspaceActivityTime));
+  return Number.isNaN(activity) ? toTime(section.createdAt) : activity;
+}
+''',
+    ),
+    ("getWorkspaceTimestamp", PINNED_SORT_HELPERS[1]),
+    ("haveSameItems", PINNED_SORT_HELPERS[2]),
+    (
+        "sortDashboardSidebarProjects",
+        b'''function sortDashboardSidebarProjects(projects, mode) {
+  if (mode === "manual") return projects;
+  return projects.map((project) => {
+    const children = sortDashboardSidebarProjectChildren(project.children, mode);
+    return children === project.children ? project : {
+      ...project,
+      children
+    };
+  });
+}
+''',
+    ),
+)
+
+
+def _plan_project_order(data, sort_projects: bool, pin_projects: bool) -> list[tuple[int, bytes, bytes, str]]:
+    """Validate the layout chunk, the family regions and swaps of the selected flags; return the writes still needed."""
+    # The hook region's release shape, so the name check masks its real length.
+    hook = next(
+        (shape for shape in PROJECT_ORDER_HOOK_VARIANTS if _region_fits(data, shape, ())), PROJECT_ORDER_REGIONS[0]
+    )
+    parts = [((hook, *PROJECT_ORDER_REGIONS[1:]), PROJECT_ORDER_CHUNK_NAMES, PROJECT_ORDER_SWAPS)]
+    unselected = []
+    for selected, part in (
+        (sort_projects, (SORT_PROJECTS_REGIONS, SORT_PROJECTS_CHUNK_NAMES, SORT_PROJECTS_SWAPS)),
+        (pin_projects, (PIN_PROJECTS_REGIONS, PIN_PROJECTS_CHUNK_NAMES, PIN_PROJECTS_SWAPS)),
+    ):
+        (parts if selected else unselected).append(part)
+    others = (
+        tuple(region for part_regions, _names, _swaps in unselected for region in part_regions),
+        tuple(patched for _regions, _names, part_swaps in unselected for _name, _stock, patched, _label in part_swaps),
+    )
+    regions = tuple(region for part_regions, _names, _swaps in parts for region in part_regions)
+    swaps = [swap for _regions, _names, part_swaps in parts for swap in part_swaps]
+    imported = tuple(name for _regions, (names, _added), _swaps in parts for name in names)
+    added = tuple(name for _regions, (_imported, names), _swaps in parts for name in names)
+    _require_family_chunks(
+        data, ((regions, imported, added),), "project order", [pair for _name, *pair, _label in swaps], others
+    )
+    found = _region_chunk(data, regions, "project order")
+    if found is not None:
+        path, _start, chunk = found
+        _require_chunk_names(path, chunk, (), [name for name, _source in PROJECT_ORDER_HELPERS], "project order")
+        for name, source in PROJECT_ORDER_HELPERS:
+            if (b"\n" + chunk).count(b"\n" + source) != 1:
+                raise RuntimeError(
+                    f"project order: upstream {name} changed shape in {path}; re-derive the order (patches/REBASE.md)"
+                )
+    replacements = _plan_region_rewrite(data, PROJECT_ORDER_REGIONS[0], PROJECT_ORDER_HOOK_VARIANTS)
+    for region in regions[1:]:
+        replacements.extend(_plan_region_rewrite(data, region))
+    for name, stock, patched, label in swaps:
+        # Two exact scans: a regex alternation on these whitespace-led anchors
+        # takes seconds per GB (_single_variant).
+        matches = sorted((offset, variant) for variant in (stock, patched) for offset in _find_all(data, variant))
+        offset, old = _exactly_one(name, matches)
+        if old == stock:
+            replacements.append((offset, stock, patched, label))
+    return replacements
+
+
 # Electron fuse wire: sentinel, version byte, length byte, one char per fuse.
 # Fuse index 4 is EnableEmbeddedAsarIntegrityValidation ('1' enabled, '0'
 # disabled, 'r' removed). When enabled, Electron checks every file block against
@@ -3095,6 +3495,8 @@ def plan_replacements(
     automations_header: bool = False,
     sidebar_device_filter: bool = False,
     pinned_activity_sort: bool = False,
+    sort_projects: bool = False,
+    pin_projects: bool = False,
 ) -> list[tuple[int, bytes, bytes, str]]:
     """Validate the complete bundle first, then return equal-length writes."""
     if not 4 <= size <= 9:
@@ -3363,6 +3765,9 @@ def plan_replacements(
 
     if pinned_activity_sort:
         replacements.extend(_plan_pinned_activity_sort(data))
+
+    if sort_projects or pin_projects:
+        replacements.extend(_plan_project_order(data, sort_projects, pin_projects))
 
     replacements = _fold_into_regions(replacements)
 
@@ -3726,6 +4131,17 @@ def main(argv=None):
         action="store_true",
         help="PINNED sidebar rows follow the Workspaces sort menu (Last active / Date created); Manual order keeps pin order",
     )
+    parser.add_argument(
+        "--sort-projects",
+        action="store_true",
+        help="Workspaces sort menu gets a 'Sort projects too' checkbox (off by default): the projects follow Last active / "
+        "Date created as well",
+    )
+    parser.add_argument(
+        "--pin-projects",
+        action="store_true",
+        help="project header context menu gets Pin project / Unpin project: pinned projects stay on top in pin order",
+    )
     parser.add_argument("--revert", action="store_true")
     parser.add_argument("--asar", type=Path, default=DEFAULT_ASAR)
     parser.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
@@ -3759,6 +4175,8 @@ def main(argv=None):
             automations_header=args.automations_header,
             sidebar_device_filter=args.sidebar_device_filter,
             pinned_activity_sort=args.pinned_activity_sort,
+            sort_projects=args.sort_projects,
+            pin_projects=args.pin_projects,
             acknowledge_invalid_signature=args.ack_invalid_apple_signature,
         )
     except (OSError, RuntimeError, ValueError) as exc:

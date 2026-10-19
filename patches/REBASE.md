@@ -202,6 +202,58 @@ fixtures are `tests/fixtures/superset-1.37.0-pinned-sort-r1.js` (stock and
   (`test_room_region_holds_no_other_family`); it was found by ranking top-level
   functions of the layout chunk by free bytes in both releases at once.
 
+### Projects follow the sort mode and pin on top (`PROJECT_ORDER_*`, `SORT_PROJECTS_*`, `PIN_PROJECTS_*`)
+
+Four room regions and three anchor swaps in the sidebar `layout-*.js` chunk.
+`--sort-projects` and `--pin-projects` each select the core (`PROJECT_ORDER_REGIONS`:
+the order hook in `DashboardLayout`, the store before `usePaymentFailedCard`;
+`PROJECT_ORDER_SWAPS`) plus their own menu item region and swap. The fixtures
+are cut from the installed 1.38.0 bundle: `superset-1.38.0-project-order-r1.js`
+(hook), `-r2.js` (store), `superset-1.38.0-sort-projects-r1.js`,
+`superset-1.38.0-pin-projects-r1.js` (each with `.patched.js`),
+`superset-1.38.0-project-order-data.js` (stock and `.patched.js`, equal to
+`PROJECT_ORDER_DATA` / `PROJECT_ORDER_DATA_SORTED`) and
+`superset-1.38.0-project-order-anchors.json` (the two menu swaps). The store,
+checkbox and menu item regions are byte-identical in 1.37.0;
+`DashboardLayout` still branches on the v2 cloud flag there, so the hook
+region has a 1.37 sibling shape (`PROJECT_ORDER_HOOK_VARIANTS`, fixture
+`superset-1.37.0-project-order-r1.js`, same anchors, edits and comments).
+
+- Names: `PROJECT_ORDER_CHUNK_NAMES`, `SORT_PROJECTS_CHUNK_NAMES`,
+  `PIN_PROJECTS_CHUNK_NAMES` (imports the injected JS reads; added `lpp*`
+  names, checked only for the selected parts, while the unselected parts'
+  regions (only at their exact patched digest) and swapped bytes are masked so
+  adding the second flag later is not a collision; any other bytes there stay
+  name-checked). `PROJECT_ORDER_HELPERS` pins the exact stock source of the
+  seven upstream sort helpers `lppUse` calls (`toTime` … 
+  `sortDashboardSidebarProjects`, equal to the bytes in
+  `superset-1.37.0-sidebar-sort.js`); `lppUse` relies on
+  `sortDashboardSidebarProjects` returning the list itself under Manual order
+  and on the newest-first comparator. If upstream reshapes one, re-derive the
+  order from the new helpers and re-run the node test, never inline a copy.
+  If upstream starts sorting projects itself, retire `--sort-projects`.
+- Swaps: `PROJECT_ORDER_DATA` is `DashboardSidebar`'s `sortedGroups` line
+  through `isProjectDragDisabled` (region 3 in every shape); the swap rebinds
+  `sortedGroups` and `lppDrag` on the first line, pads it, and ORs `lppDrag`
+  into the drag guard. `SORT_PROJECTS_MENU` is the tail of the sort menu
+  after the `iqSA4j` hint's `/** i18n */` (region 2); `PIN_PROJECTS_MENU` is
+  the Import worktrees (`LhpIB7`) item's tail plus the next item's indent
+  (chip bits region). None holds a no-op comment, so the status filter's
+  comment strip keeps them; each is a `shared` pair of its status region
+  shape. If a rebase moves one into another status region, move the pair with
+  it (`test_status_regions_keep_the_swapped_bytes_on_every_release`). A
+  changed shape fails as `lacks a swap anchor`: regenerate both constants and
+  the fixtures from the new bytes.
+- Rooms: none holds an anchor or region of another family on either release
+  (`test_room_regions_hold_no_other_family`). The checkbox region ends where
+  status filter region `DashboardSidebarBulkDeleteFailures` starts, and the
+  store region where the palette's 1.38 room starts; the pin region's end is
+  the prefix `function SidebarDropZone` because 1.37 names it
+  `SidebarDropZone$1`. Spare bytes: hook 20 (1.37: 52), store 102, checkbox
+  135, menu item 69. A JS change that no longer fits needs another room found
+  the same way as the PINNED one (rank top-level functions of the layout
+  chunk by free bytes in both releases at once).
+
 The sound family (`SOUND_MAIN_*`, `SOUND_RENDERER_*`) is an ordinary anchor
 pair. It rebases with the procedure above, and its node harness tests have to
 reproduce upstream's behaviour on the stock excerpt first.

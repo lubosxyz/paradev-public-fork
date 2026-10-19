@@ -354,7 +354,8 @@ class CompositionTest(unittest.TestCase):
         "device filter": dict(sidebar_device_filter=True),
     }
 
-    def stock(self, release):
+    def stock(self, release, extra=()):
+        """`extra`: (region, stock) pairs of another family, placed and chained like the rest."""
         if release == "1.38":
             status = icon_tests.SupersetSidebarStatusFilter138PatchTest("test_each_release_selects_its_own_layout")
             regions = status.regions()
@@ -369,7 +370,7 @@ class CompositionTest(unittest.TestCase):
             device, cloud = MODULE.SIDEBAR_DEVICE_REGIONS_1_37, device_tests.CLOUD
             palette = list(zip(palette_tests.REGIONS, palette_tests.STOCK, strict=True))
             hotkeys = palette_tests.HOTKEYS
-        regions += list(zip(device, device_tests.DF_STOCK, strict=True)) + palette + [(REGION, STOCK)]
+        regions += list(zip(device, device_tests.DF_STOCK, strict=True)) + palette + [(REGION, STOCK), *extra]
         by_start = {region.start: (region, stock) for region, stock in regions}
         followers = {region.end for region, _stock in regions if region.end in by_start}
         chains = []
