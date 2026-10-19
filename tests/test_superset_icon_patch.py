@@ -771,6 +771,7 @@ class SupersetUiPatchTest(unittest.TestCase):
             status_filter_hotkeys=False,
             automations_header=False,
             sidebar_device_filter=False,
+            pinned_activity_sort=False,
             acknowledge_invalid_signature=False,
         )
 
@@ -2980,7 +2981,10 @@ class SupersetHideSidebarFooter138PatchTest(SupersetHideSidebarFooterPatchTest):
     def test_anchor_is_the_real_footer_row_and_hides_only_the_expanded_sidebar(self):
         region3 = (FIXTURES / "superset-1.38.0-status-filter-r3.js").read_bytes()
         self.assertEqual(region3.count(MODULE.SIDEBAR_FOOTER), 1)
-        self.assertEqual(self.REGIONS[2].shared, ((MODULE.SIDEBAR_FOOTER, MODULE.SIDEBAR_FOOTER_HIDDEN),))
+        self.assertEqual(
+            self.REGIONS[2].shared,
+            ((MODULE.SIDEBAR_FOOTER, MODULE.SIDEBAR_FOOTER_HIDDEN), (MODULE.PINNED_SORT_DATA, MODULE.PINNED_SORT_DATA_SORTED)),
+        )
 
 
 class SupersetSoundOnlyWhenWaitingPatchTest(unittest.TestCase):

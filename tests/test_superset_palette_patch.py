@@ -629,7 +629,9 @@ class InstalledPaletteTest(unittest.TestCase):
                 self.skipTest(f"installed bundle carries a generation this checkout cannot plan: {exc}")
             both = MODULE.plan_replacements(data, **options, command_palette_cmd_k=True, command_palette_workspace_search=True)
         extra = sorted(w[3] for w in both if w not in approved)
-        self.assertTrue(set(extra) <= set(SEARCH_LABELS + SWAP_LABELS), extra)
+        # The installed release may be 1.37 or 1.38; 1.38 merges some regions under joint labels.
+        labels = SEARCH_LABELS + [region.label for region in REGIONS_138] + SWAP_LABELS
+        self.assertTrue(set(extra) <= set(labels), extra)
 
     # Value: protects=the palette icon is as large as the icon of the sidebar project row in the installed bundle, and both classes exist in its CSS (a class the stylesheet lacks would render at the thumbnail's own 24 px base or not at all); fails_when=upstream renames the sidebar class, --size changes the approved size, or the injected classes are not generated into index-*.css; why_new=LUBOS-2414 sizes the icon after the sidebar; seam=installed bundle
     def test_installed_sidebar_icon_size_matches_the_palette_icon(self):

@@ -353,7 +353,7 @@ since v5, the section header, Collapse all and the chip hotkey target):
 |---|---|---|---|---|
 | 1 | `SortableWorkspaceItem` → `DashboardSidebarProjectContextMenu` | 22,553 B | 1,449 B + 3 `//` lines | row, PINNED and folder guards and filter collapse overrides, `ssfRange` call, `SsfStatusChips` |
 | 2 | `DashboardSidebarProjectSection` → `GettingStartedChecklist` | 19,272 B | 1,438 B + 2 `//` lines + the header's search input | project and SESSIONS guards and filter collapse overrides, search labels, `SsfStatusChip`, `ssfSubscribe` |
-| 3 | `DashboardSidebar` → `const SEED_FLAG_KEY` | 12,134 B | 588 B | `ssfF` (the sidebar data Collapse all and the chip hotkeys read), the search row and the chip row |
+| 3 | `DashboardSidebar` → `const SEED_FLAG_KEY` | 12,134 B | 588 B | `ssfF` (the sidebar data Collapse all and the chip hotkeys read), the search row and the chip row; it also carries the `--pinned-activity-sort` data line as a `shared` pair |
 | 4 | `DashboardSidebarCloudContextMenu` → `DashboardSidebarCloudPortsButton` | 8,643 B | 1,446 B | `ssfMatches` / `ssfRange` / `ssfLabel`, `ssfUseCounts` |
 | 5 | `DashboardSidebarWorkspaceContextMenu` → `useDashboardSidebarWorkspaceItemActions` | 9,227 B | 1,350 B | `SsfSearch` (it mounts both fold buttons), `ssfOpen` |
 | 6 | `DashboardSidebarProjectContextMenu` → `const DashboardSidebarProjectRow` | 3,767 B | 600 B | `SSF_CHIPS` / `ssfBits`, `ssfShut` / `ssfFlip` |
@@ -877,6 +877,65 @@ composition with `--sidebar-status-filter` and `--pinned-icon-only` in either
 order on both releases, the installed bundle) and
 `tests/device_automations.test.mjs` (the real sidebar pipeline per device, the
 dropdown, the project filter, FeatureHeader without `extra`).
+
+### PINNED follows the sort mode (opt-in, desktop-v1.37.0–v1.38.0)
+
+`--pinned-activity-sort` (LUBOS-2717) makes the **PINNED** section follow the
+sort mode picked in the Workspaces sort menu (`sidebarProjectSortMode`)
+instead of always showing pin order. Opt-in and sticky like the flags above.
+
+- **Last active** (`active`): newest workspace activity first
+  (`lastActivityAt`, falling back to `updatedAt`), so a pinned workspace an
+  agent just touched moves to the top.
+- **Date created** (`created`): newest `createdAt` first.
+- Ties sort by name, then id; rows without a usable time sort last. The order
+  is upstream's own comparator (`makeStableComparator` +
+  `getWorkspaceTimestamp`, as `sortDashboardSidebarProjectChildren` sorts
+  project children), not a copy (node test parity).
+- **Manual order** (`manual`): stock pin order, drag reorder works.
+- Under Last active or Date created upstream already blocks the pinned drag
+  (`isChildDragDisabled = sortMode !== "manual" || isFilterActive`); the patch
+  changes only the order.
+
+The sort runs in `DashboardSidebar` right after `useDashboardSidebarData()`,
+so the drag items, the workspace shortcuts, the `--sidebar-status-filter`
+chips and `--sidebar-device-filter` (which narrows the rows earlier) all read
+one order. An already sorted list keeps its identity, so the drag items and
+shortcuts do not churn.
+
+Two writes in the sidebar `layout-*.js` chunk: the room region
+`GitHubRepositoryPicker` → `deriveProjectNameFromUrl` (3,947 B, room only: its
+no-op comments make room for `pasUseSorted`, 15 B spare) and the data line
+swap (371 B, `pinnedWorkspaces: pasRows` and `const pinnedWorkspaces =
+pasUseSorted(pasRows)`). The data line lies inside status filter region 3 on
+every supported release shape, which declares it a `shared` pair, so with
+`--sidebar-status-filter` it is folded into that region's rewrite and the two
+flags compose in either order. From stock, the full command below writes the
+data line inside the region 3 rewrite (one write more than the approved set:
+the room region); on a bundle that already carries the approved set the plan
+is exactly the two family writes (room region and data line). The plan also
+pins the exact stock source of the three upstream helpers the sort calls, so
+an upstream release that reshapes one of them refuses the family before any
+write instead of sorting PINNED by name.
+
+Apply on top of the approved set:
+
+```bash
+python3 patch-asar.py --size 6 --hide-tray --custom-project-icons \
+  --keep-icon-on-hover --compact-sidebar --pinned-icon-only \
+  --sidebar-status-filter --sound-only-when-waiting --hide-nav-buttons \
+  --hide-sidebar-footer --pinned-activity-sort --ack-invalid-apple-signature
+python3 patch-asar.py --revert   # undoes exactly this step
+```
+
+Tests: `tests/test_superset_pinned_sort_patch.py` (pinned region, the swap in
+every region 3 shape, fail-closed bundles, names and reshaped upstream
+helpers, apply / re-run / revert,
+half-applied completion, composition with every sidebar, palette and device
+family in either order on 1.37 and 1.38, the installed bundle) and
+`tests/pinned_sort.test.mjs` (each mode's order incl. ties and missing times,
+parity with upstream, the swapped data line, the drag guard of the stock
+PINNED section).
 
 `project-icons/komfi-ops.svg` is an intentional palette exception: its
 slate-900 (`#0f172a`) background and slate-200 (`#e2e8f0`) gear stroke retain

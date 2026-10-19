@@ -11,5 +11,14 @@
     "sound_only_when_waiting": true,
     "hide_nav_buttons": true,
     "hide_sidebar_footer": true
-  }
+  },
+  "opt_in_comment": "Optional flags outside the approved set: applied by hand on top of it (patches/README.md section 1) until Lubos confirms them visually; documentation only, no consumer reads this list.",
+  "opt_in_flags": [
+    "command_palette_cmd_k",
+    "command_palette_workspace_search",
+    "status_filter_hotkeys",
+    "automations_header",
+    "sidebar_device_filter",
+    "pinned_activity_sort"
+  ]
 }

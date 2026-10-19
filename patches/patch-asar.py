@@ -6,7 +6,8 @@ project-owned icon URLs, project icons retained on hover, icon-only pinned
 workspace rows, sidebar status filter chips, notification sound only while an agent
 waits, no menu-bar tray icon, the command palette on Cmd+K and project and
 workspace search in the palette, with a new workspace per project, the Automations
-page header (one list, project filter) and a sidebar device filter. Every replacement has exactly the
+page header (one list, project filter), a sidebar device filter and PINNED rows that follow the
+sidebar sort mode. Every replacement has exactly the
 same byte length as its source. That preserves ASAR offsets, but any app.asar
 mutation still invalidates Apple's resource seal and therefore requires an
 explicit production acknowledgement.
@@ -904,6 +905,30 @@ STATUS_FILTER_SIDEBAR_JS = (
 )
 
 
+# --pinned-activity-sort: the one anchor it swaps outside its own region
+# (PINNED_SORT_SWAPS). It is the sidebar data and state destructuring at the
+# top of DashboardSidebar, so it lies inside status filter region 3 (every
+# release shape), which declares it as a shared pair. The stock pins are
+# renamed and DashboardSidebar's `pinnedWorkspaces` becomes the sorted list, so
+# PINNED, its drag items, the workspace shortcuts and the status filter all read
+# one order. Both destructurings are folded onto one line each for room.
+PINNED_SORT_DATA = (
+    b"  const {\n    groups,\n    hiddenProjects,\n    pinnedWorkspaces,\n    sessionWorkspaces,\n"
+    b"    sessionChildren,\n    githubStatus,\n    refreshWorkspacePullRequest,\n    toggleProjectCollapsed\n"
+    b"  } = useDashboardSidebarData();\n"
+    b"  const {\n    deleteSection,\n    reorderProjects,\n    renameSection,\n    setProjectHidden,\n"
+    b"    toggleSectionCollapsed\n  } = useDashboardSidebarState();\n"
+)
+# Padded before its final newline, so the statement after it keeps its own line.
+PINNED_SORT_DATA_SORTED = _pad_variant(
+    PINNED_SORT_DATA[:-1],
+    b"  const { groups, hiddenProjects, pinnedWorkspaces: pasRows, sessionWorkspaces, sessionChildren, githubStatus, "
+    b"refreshWorkspacePullRequest, toggleProjectCollapsed } = useDashboardSidebarData();\n"
+    b"  const pinnedWorkspaces = pasUseSorted(pasRows), { deleteSection, reorderProjects, renameSection, "
+    b"setProjectHidden, toggleSectionCollapsed } = useDashboardSidebarState();",
+) + b"\n"
+
+
 STATUS_FILTER_REGIONS = (
     # SortableWorkspaceItem .. DashboardSidebarPinnedSection .. folder section
     # .. isBulkSelectable: PINNED rows, PINNED section, folders (all trees).
@@ -1071,8 +1096,9 @@ STATUS_FILTER_REGIONS = (
     # DashboardSidebar: the sticky SsfSearch row and below it the chip row go
     # between DashboardSidebarHeader (the --compact-sidebar grid) and the
     # scrolling OverflowFadeContainer, below DashboardSidebarWorkspaceStatusProvider.
-    # Expanded sidebar only. The region also holds the --hide-sidebar-footer row,
-    # named in `shared`; the 1.37 shape is in STATUS_FILTER_REGION_VARIANTS.
+    # Expanded sidebar only. The region also holds the --hide-sidebar-footer row
+    # and the --pinned-activity-sort data line, named in `shared`; the 1.37 shape
+    # is in STATUS_FILTER_REGION_VARIANTS.
     RegionRewrite(
         label="status filter: sticky chip row",
         start=b"function DashboardSidebar({\n",
@@ -1095,7 +1121,7 @@ STATUS_FILTER_REGIONS = (
             "51557750a5b6afcd93bc3e1e47ee619d4bfaf0081231d5e6b4ec98033b6f4a0e",
             "02d79a1591ab5d35bcb4cc44bc2d4dda4d07c2a7899a2a349e10832d49add0e1",
         ),
-        shared=((SIDEBAR_FOOTER, SIDEBAR_FOOTER_HIDDEN),),
+        shared=((SIDEBAR_FOOTER, SIDEBAR_FOOTER_HIDDEN), (PINNED_SORT_DATA, PINNED_SORT_DATA_SORTED)),
     ),
     # DashboardSidebarCloudContextMenu: no edit of its own, only room (1,446 B
     # of no-op comments) for matching, the Shift-range cut, the chip label and
@@ -1320,7 +1346,7 @@ STATUS_FILTER_REGION_VARIANTS = (
             "e77b3309f341457b692581f147766ce6c3ed0a993d804ed199e8e969025af73a",
             "ef72d748a66c83d089b69c9768126930ebdb72c538d2f42935de55f5ba8a0e87",
         ),
-        shared=((SIDEBAR_FOOTER, SIDEBAR_FOOTER_HIDDEN),),
+        shared=((SIDEBAR_FOOTER, SIDEBAR_FOOTER_HIDDEN), (PINNED_SORT_DATA, PINNED_SORT_DATA_SORTED)),
     ),
 )
 
@@ -2870,6 +2896,102 @@ def _plan_sidebar_device_filter(data) -> list[tuple[int, bytes, bytes, str]]:
     return replacements
 
 
+# --pinned-activity-sort (desktop-v1.37.0-v1.38.0; the region and the swap are
+# byte-identical in both). Upstream orders PINNED by pin time whatever the
+# Workspaces sort menu says (partitionSidebarWorkspacesByPinned). With the flag
+# the PINNED rows follow the same mode as the project children: Last active
+# (lastActivityAt, else updatedAt) or Date created (createdAt), newest first,
+# ties by name and then id, rows without a usable time last. The comparator is
+# upstream's own (makeStableComparator + getWorkspaceTimestamp, the workspace
+# comparator of sortDashboardSidebarProjectChildren), read from the same
+# preference DashboardSidebar reads. Manual order returns the pinned list
+# untouched (stock order, drag reorder works). Under a sort mode upstream
+# already blocks the PINNED drag: SortableWorkspaceItem disables its sortable
+# with the context's isChildDragDisabled (sortMode !== "manual"), and the blocked
+# drag notice offers Manual order. The sort runs in DashboardSidebar after the
+# data hook (PINNED_SORT_DATA), so a --sidebar-device-filter selection narrows
+# the rows first. The helper lives in one room region (no-op comments only)
+# that no other flag touches.
+PINNED_SORT_MARK = b"// patch-asar.py --pinned-activity-sort\n"
+PINNED_SORT_JS = b'''function pasUseSorted(rows) {
+  const mode = useV2UserPreferences().preferences.sidebarProjectSortMode;
+  return reactExports.useMemo(() => {
+    if (mode === "manual") return rows;
+    const sorted = [...rows].sort(makeStableComparator((workspace) => getWorkspaceTimestamp(workspace, mode), (workspace) => workspace.name, (workspace) => workspace.id));
+    return haveSameItems(sorted, rows) ? rows : sorted;
+  }, [rows, mode]);
+}
+'''
+PINNED_SORT_REGIONS = (
+    RegionRewrite(
+        label="pinned activity sort: room for the sort",
+        start=b"function GitHubRepositoryPicker({\n",
+        end=b"function deriveProjectNameFromUrl(url) {\n",
+        length=3947,
+        stock_sha256="5adebcfa38e3c9296e5ffabc1d44c9f96aa874ff5d4f7cc5b5e5458e11111c45",
+        patched_sha256="8320528b8c8301921f73384e14653079fabfa3f8beef1ec676ce989361af601d",
+        edits=(_insert_after(b"      ] }) })\n    ] })\n  ] });\n}\n", PINNED_SORT_MARK + PINNED_SORT_JS),),
+    ),
+)
+PINNED_SORT_SWAPS = (
+    ("pinned activity sort data", PINNED_SORT_DATA, PINNED_SORT_DATA_SORTED, "pinned activity sort: sorted pinned list"),
+)
+PINNED_SORT_CHUNK_NAMES = (
+    ("reactExports", "useV2UserPreferences"),
+    ("pasUseSorted", "pasRows"),
+)
+# Upstream's sort helpers the injected JS calls; module-scope declarations of the layout chunk.
+PINNED_SORT_DEFINED_NAMES = ("makeStableComparator", "getWorkspaceTimestamp", "haveSameItems")
+# Their exact stock source (byte-identical in 1.37.0 and 1.38.0). The call in
+# PINNED_SORT_JS relies on these signatures and on the newest-first order, so a
+# reshaped helper (swapped parameters, reversed diff) refuses the family instead
+# of silently sorting PINNED by name.
+PINNED_SORT_HELPERS = (
+    b'''function makeStableComparator(byTimestamp, byName, byId) {
+  return (left, right) => {
+    const diff = rankTime(byTimestamp(right)) - rankTime(byTimestamp(left));
+    if (!Number.isNaN(diff) && diff !== 0) return diff;
+    const names = byName(left).localeCompare(byName(right));
+    if (names !== 0) return names;
+    return byId(left).localeCompare(byId(right));
+  };
+}
+''',
+    b'''function getWorkspaceTimestamp(workspace, mode) {
+  return mode === "created" ? toTime(workspace.createdAt) : getWorkspaceActivityTime(workspace);
+}
+''',
+    b'''function haveSameItems(left, right) {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
+}
+''',
+)
+
+
+def _plan_pinned_activity_sort(data) -> list[tuple[int, bytes, bytes, str]]:
+    """Validate the layout chunk, the room region and the data swap; return the writes still needed."""
+    swaps = [pair for _name, *pair, _label in PINNED_SORT_SWAPS]
+    _require_family_chunks(data, ((PINNED_SORT_REGIONS, *PINNED_SORT_CHUNK_NAMES),), "pinned activity sort", swaps)
+    found = _region_chunk(data, PINNED_SORT_REGIONS, "pinned activity sort")
+    if found is not None:
+        path, _start, chunk = found
+        _require_chunk_names(path, chunk, (), PINNED_SORT_DEFINED_NAMES, "pinned activity sort")
+        for name, source in zip(PINNED_SORT_DEFINED_NAMES, PINNED_SORT_HELPERS):
+            if (b"\n" + chunk).count(b"\n" + source) != 1:
+                raise RuntimeError(
+                    f"pinned activity sort: upstream {name} changed shape in {path}; "
+                    "re-derive the call (patches/REBASE.md)"
+                )
+    replacements = []
+    for region in PINNED_SORT_REGIONS:
+        replacements.extend(_plan_region_rewrite(data, region))
+    for name, stock, sorted_, label in PINNED_SORT_SWAPS:
+        offset, old = _single_variant(data, name, [stock, sorted_])
+        if old == stock:
+            replacements.append((offset, stock, sorted_, label))
+    return replacements
+
+
 # Electron fuse wire: sentinel, version byte, length byte, one char per fuse.
 # Fuse index 4 is EnableEmbeddedAsarIntegrityValidation ('1' enabled, '0'
 # disabled, 'r' removed). When enabled, Electron checks every file block against
@@ -2972,6 +3094,7 @@ def plan_replacements(
     status_filter_hotkeys: bool = False,
     automations_header: bool = False,
     sidebar_device_filter: bool = False,
+    pinned_activity_sort: bool = False,
 ) -> list[tuple[int, bytes, bytes, str]]:
     """Validate the complete bundle first, then return equal-length writes."""
     if not 4 <= size <= 9:
@@ -3237,6 +3360,9 @@ def plan_replacements(
 
     if sidebar_device_filter:
         replacements.extend(_plan_sidebar_device_filter(data))
+
+    if pinned_activity_sort:
+        replacements.extend(_plan_pinned_activity_sort(data))
 
     replacements = _fold_into_regions(replacements)
 
@@ -3595,6 +3721,11 @@ def main(argv=None):
         action="store_true",
         help="device dropdown next to the sidebar back / forward arrows: show only the workspaces of one host",
     )
+    parser.add_argument(
+        "--pinned-activity-sort",
+        action="store_true",
+        help="PINNED sidebar rows follow the Workspaces sort menu (Last active / Date created); Manual order keeps pin order",
+    )
     parser.add_argument("--revert", action="store_true")
     parser.add_argument("--asar", type=Path, default=DEFAULT_ASAR)
     parser.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
@@ -3627,6 +3758,7 @@ def main(argv=None):
             status_filter_hotkeys=args.status_filter_hotkeys,
             automations_header=args.automations_header,
             sidebar_device_filter=args.sidebar_device_filter,
+            pinned_activity_sort=args.pinned_activity_sort,
             acknowledge_invalid_signature=args.ack_invalid_apple_signature,
         )
     except (OSError, RuntimeError, ValueError) as exc:

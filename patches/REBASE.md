@@ -169,6 +169,39 @@ region is byte-identical in 1.37.0, so one set covers both releases.
   status filter region 12 (`shared` pair); if a rebase moves it into another
   status region, move the pair with it.
 
+### PINNED follows the sort mode (`PINNED_SORT_REGIONS`, `PINNED_SORT_SWAPS`)
+
+One room region and one anchor swap in the sidebar `layout-*.js` chunk. The
+fixtures are `tests/fixtures/superset-1.37.0-pinned-sort-r1.js` (stock and
+`.patched.js`), `superset-1.37.0-pinned-sort-data.js` (stock and
+`.patched.js`, equal to `PINNED_SORT_DATA` / `PINNED_SORT_DATA_SORTED`) and
+`superset-1.37.0-sidebar-sort.js` (upstream's sort helpers, `toTime` …
+`SortableProjectWrapper`, for the node test); all are byte-identical in 1.38.0.
+
+- Names: `PINNED_SORT_CHUNK_NAMES` (imports `reactExports`,
+  `useV2UserPreferences`; added `pasUseSorted`, `pasRows`) and
+  `PINNED_SORT_DEFINED_NAMES` (`makeStableComparator`,
+  `getWorkspaceTimestamp`, `haveSameItems`, top-level functions of the chunk).
+  `PINNED_SORT_HELPERS` pins their exact stock source (equal to the bytes in
+  `superset-1.37.0-sidebar-sort.js`), so a helper that keeps its name but
+  changes its parameters or order refuses the family before any write.
+  The helper calls upstream's comparator; if upstream renames or reshapes it,
+  re-derive the call from `sortDashboardSidebarProjectChildren` and re-run the
+  node parity test, never inline a copy.
+- Data line: `PINNED_SORT_DATA` is `DashboardSidebar`'s two destructurings
+  (`useDashboardSidebarData()` and `useDashboardSidebarState()`); the swap
+  folds each onto one line for room and pads before the final newline. A new,
+  renamed or reordered binding fails as `lacks a swap anchor`: regenerate both
+  constants from the new bytes and keep every stock binding.
+- The data line lies inside status filter region 3 in every shape
+  (`STATUS_FILTER_REGIONS[2]`, `STATUS_FILTER_REGION_VARIANTS[0]`, the 1.38
+  `_rebased` copy) as a `shared` pair; if a rebase moves it into another status
+  region, move the pair with it (`test_status_region_3_keeps_the_sorted_line_on_every_release`).
+- Room: `GitHubRepositoryPicker` → `deriveProjectNameFromUrl` holds no anchor
+  or region of another family on either release
+  (`test_room_region_holds_no_other_family`); it was found by ranking top-level
+  functions of the layout chunk by free bytes in both releases at once.
+
 The sound family (`SOUND_MAIN_*`, `SOUND_RENDERER_*`) is an ordinary anchor
 pair. It rebases with the procedure above, and its node harness tests have to
 reproduce upstream's behaviour on the stock excerpt first.
