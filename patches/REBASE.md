@@ -368,3 +368,83 @@ resolves to no region, or to the same name in another chunk.
   region 5 (0 B left). The pre-groups v5 digests of those regions moved to
   `legacy_sha256` (fixtures `*.v5-patched.js`), so the live 1.38 host, which
   ran v5 without the button, needed `--revert` before the re-apply.
+
+## Worked example: 1.38.0 → 1.39.0 (2026-10-19, LUBOS-2797)
+
+M1 auto-updated to stock 1.39.0, and the dry run failed closed on
+`upstream workspace indentation anchor, found 2`. Upstream added a new sidebar
+behind `useNewDashboardSidebarEnabled` (the cloud-workspaces feature flag plus
+a local choice): inline cloud rows, cloud-repo stand-in projects, a Show
+(All / Local / Cloud) host filter in the sort menu and a hover-card safe
+triangle. Mapping the damage with every flag on the stock 1.39 bundle:
+
+- Base set, size, tray, icons, hover, sound, nav buttons, footer, Cmd+K and
+  the automations header: OK, byte-identical.
+- Workspace row families (verify-only indentation, `h-8` row, both
+  `--pinned-icon-only` anchors): MULTI. 1.39 keeps 1.38's row as
+  `DashboardSidebarLegacyExpandedWorkspaceRow` next to a new
+  `DashboardSidebarExpandedWorkspaceRow`, and `DashboardSidebarWorkspaceItem`
+  renders one of them per the flag. Neither row can be dropped, so these
+  families now match exactly once **inside each row component**
+  (`WORKSPACE_ROW_COMPONENTS`, `_row_variants`) and are patched in both;
+  legacy-row labels end with ` (legacy row)`. A third row component, a
+  missing row, or an anchor occurring twice in one row fails closed. Only a
+  bundle with no trace of the split (neither `LegacyExpandedWorkspaceRow` nor
+  `useNewDashboardSidebarEnabled`, `WORKSPACE_ROW_SPLIT_MARKERS`: 1.38 and
+  older) keeps the single global match; a missing exact declaration alone
+  never selects it. Fixture: `superset-1.39.0-workspace-rows.js`.
+- Status filter: regions 1-6, 12 and 13 are re-pinned (`STATUS_FILTER_REGIONS_1_39`),
+  7-11 are byte-identical. Region 2 no longer deletes the "Read as on" comment
+  line (upstream reworded it; it has room without it). Region 4's helpers go
+  before `triangleSign`, which replaced `MAX_BADGE_COUNT`. Region 3 feeds the
+  search row, the chips and `ssfF` with the lists the sidebar renders
+  (`displayedPinnedWorkspaces`, `displayedSessionWorkspaces`,
+  `hostFilteredGroups`), so chip counts, Collapse all and the chip hotkeys
+  follow upstream's host filter; under All (always, without the new sidebar)
+  they are the 1.38 lists. Padding of regions 1-6, 12, 13: 31, 120, 35, 36,
+  75, 71, 237 and 206 B. The v5 legacy digests are not carried over (no
+  earlier generation ever ran on 1.39).
+- Palette search: regions 1 and 3 are byte-identical, region 2 is re-pinned
+  (141 B left). `DashboardSidebarPortsChip` left region 4's room and the old
+  end anchor `PR_STATE_LABEL` now lies past the new row (which holds row
+  anchors), so region 4 ends at `DashboardSidebarWorkspaceLeadIndicator`,
+  takes its two helpers before `useDashboardSidebarWorkspaceRunningAgents`
+  and deletes two `biome-ignore` `//` lines for room (230 B left). The hotkey
+  registry chunk is byte-identical to 1.38.
+- Sidebar device filter: regions 2-4 and both swaps are byte-identical;
+  regions 1 and 5 are re-pinned. The data hook also builds the new sidebar's
+  inline cloud rows (`cloudRowById`), which carry their own id as `hostId`;
+  `sdfUseRows(rows, cloud)` reads them as Cloud, so the dropdown lists no
+  device per cloud workspace. The groups line reads `decoratedGroups`.
+- PINNED sort: the region is byte-identical; the data line takes
+  `useDashboardSidebarData({ inlineCloudWorkspaces })` and is re-cut
+  (`PINNED_SORT_DATA_1_39`). `PINNED_SORT_RELEASES` holds one swap tuple per
+  release; `_swap_release` picks the single release whose stock or sorted
+  shape the bundle holds and refuses `swap anchors of several releases`.
+- Sort / pin projects: the hook and checkbox regions are byte-identical. The
+  store's room run lost `usePaymentFailedCard` to a run of its own
+  (`usePaymentFailedCard` .. `ONE_HOUR_MS`, 162 B left), the menu item region
+  is re-pinned (85 B left). The data swap now also carries the host filter
+  lines between `sortedGroups` and the drag guard, so `lppUse`'s order reaches
+  the host-filtered lists. The sort menu continues after the hint with the
+  Show group; "Sort projects too" stays right after the hint, above it. The
+  project context menu wraps Rename .. Import worktrees in a `hasCheckout`
+  fragment that cloud-repo projects skip; Pin / Unpin project stays after
+  Import worktrees inside it, so cloud-repo projects cannot be pinned (they
+  have no checkout to open either). `PROJECT_ORDER_LAYOUTS` has a
+  `1.37-1.38` and a `1.39` layout; planning refuses a room of an unselected
+  part that does not fit the selected layout, and any swap shape of the
+  other layout next to the selected one, whichever flags run (1.38's patched
+  pin menu line is the tail of 1.39's, so a match inside an own shape counts
+  as that shape).
+- No upstream adoption: none of the families' behaviour shipped upstream, so
+  nothing is retired. 1.37 / 1.38 stay supported (M5 runs patched 1.38 and
+  `~/.superset` keeps 1.38 backups).
+- Fixtures are cut from the real stock 1.39.0 bundle
+  (`tests/fixtures/superset-1.39.0-*`; byte-identical regions reuse the 1.38
+  fixtures). The 1.39 test classes inherit the 1.38 ones;
+  `tests/palette_search_1_39.test.mjs` runs the palette suite on 1.39.
+- Proof on a copy of the stock 1.39.0 bundle (`3320635a…`): every flag
+  applies with 85 writes to `291e2da7…`, a re-plan is 0, both orders
+  (approved set first, opt-ins first) reach the same SHA-256, and `--revert`
+  restores the stock SHA-256.

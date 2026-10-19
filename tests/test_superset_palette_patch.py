@@ -588,6 +588,103 @@ class PaletteSearch138Test(unittest.TestCase):
         node_check(self, bytes(swapped))
 
 
+
+# desktop-v1.39.0 (LUBOS-2797): region 1 is byte-identical to 1.37 and region 3 to 1.38; region 2 and
+# region 4 (the 1.38 end anchor would now span the other families' new row code) are cut from the real
+# 1.39.0 layout-DOij_wUN.js. The hotkey registry is byte-identical to 1.38.
+REGIONS_139 = MODULE.PALETTE_SEARCH_REGIONS_1_39
+STOCK_139 = [STOCK[0], (FIXTURES / "superset-1.39.0-palette-r2.js").read_bytes(), STOCK_138[2], (FIXTURES / "superset-1.39.0-palette-r4.js").read_bytes()]
+PATCHED_139 = [
+    PATCHED[0], (FIXTURES / "superset-1.39.0-palette-r2.patched.js").read_bytes(), PATCHED_138[2],
+    (FIXTURES / "superset-1.39.0-palette-r4.patched.js").read_bytes(),
+]
+
+
+def layout_chunk_139(regions=None, names=LAYOUT_NAMES):
+    regions = STOCK_139[1:] if regions is None else regions
+    return names + b"".join(r + spec.end + tail for spec, r, tail in zip(REGIONS_139[1:], regions, TAILS_138, strict=True))
+
+
+def bundle_139(layout=None):
+    return bundle_138(layout=layout_chunk_139() if layout is None else layout)
+
+
+class PaletteSearch139Test(unittest.TestCase):
+    """The 1.39.0 layout: the same injected JS, region 4 rebased onto a new end anchor (LUBOS-2797)."""
+
+    # Value: protects=the 1.39 rewrites are exactly the reviewed fixtures, keep their length, re-run to nothing and parse, and reuse only regions that are byte-identical; fails_when=an edit, the injected JS or a 1.39 digest changes without its fixture, or a rebased region inherits a digest that never ran on 1.39; why_new=LUBOS-2797; seam=real 1.39.0 bytes
+    def test_real_regions_are_pinned_idempotent_and_parseable(self):
+        self.assertIs(REGIONS_139[0], REGIONS[0])
+        self.assertIs(REGIONS_139[2], REGIONS_138[2])
+        for region, stock, patched in zip(REGIONS_139, STOCK_139, PATCHED_139, strict=True):
+            with self.subTest(region=region.label):
+                self.assertEqual(len(stock), region.length)
+                self.assertEqual(hashlib.sha256(stock).hexdigest(), region.stock_sha256)
+                self.assertEqual(hashlib.sha256(patched).hexdigest(), region.patched_sha256)
+                self.assertEqual(MODULE._plan_region_rewrite(stock + region.end, region), [(0, stock, patched, region.label)])
+                self.assertEqual(MODULE._plan_region_rewrite(patched + region.end, region), [])
+                self.assertEqual((region.legacy_sha256, region.upgrades), ((), ()))
+                node_check(self, patched)
+
+    # Value: protects=1.39 carries every helper exactly once, region 2 keeps the 1.38 results edits, and region 4 only loses its two biome-ignore comment lines besides gaining the key and create helpers; fails_when=a helper is dropped or doubled, or the rebased region 4 rewrites upstream code; why_new=LUBOS-2797; seam=real 1.39.0 bytes
+    def test_every_helper_lands_once_and_region_4_only_loses_comments(self):
+        patched = b"".join(PATCHED_139)
+        for js in (
+            MODULE.PALETTE_SEARCH_HELPERS_JS, MODULE.PALETTE_NEW_WORKSPACE_FRAME_JS, MODULE.PALETTE_NEW_WORKSPACE_PLUS_JS,
+            MODULE.PALETTE_NEW_WORKSPACE_KEY_JS, MODULE.PALETTE_NEW_WORKSPACE_CREATE_JS,
+        ):
+            self.assertEqual(patched.count(js), 1)
+        for name in MODULE.PALETTE_SEARCH_NEW_NAMES:
+            self.assertEqual(patched.count(b"function %s(" % name.encode()) + patched.count(b"const %s = " % name.encode()), 1, name)
+            self.assertNotIn(name.encode(), b"".join(STOCK_139), name)
+        self.assertEqual(REGIONS_139[1].edits, REGIONS_138[1].edits)
+        deleted, inserted = REGIONS_139[3].edits
+        self.assertEqual(deleted[1], b"")
+        self.assertTrue(all(line.lstrip().startswith(b"// biome-ignore ") for line in deleted[0].splitlines()))
+        body = STOCK_139[3].replace(deleted[0], b"")
+        for comment in MODULE.JS_NOOP_COMMENTS:
+            body = body.replace(comment, b"")
+        self.assertEqual(PATCHED_139[3].rstrip(b" "), body.replace(*inserted))
+
+    # Value: protects=the 1.39 bundle applies all four writes plus the Cmd+K swap, re-runs to nothing and reverts byte-identically, and each release picks its own layout; fails_when=the 1.39 layout is not selected or revert does not restore; why_new=LUBOS-2797; seam=temp ASAR
+    def test_apply_rerun_and_revert(self):
+        original = bundle_139()
+        self.assertEqual(MODULE._select_layout(original, MODULE.PALETTE_SEARCH_LAYOUTS, "command palette")[0], "1.39")
+        self.assertEqual(MODULE._select_layout(bundle_138(), MODULE.PALETTE_SEARCH_LAYOUTS, "command palette")[0], "1.38")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target, backups = root / "app.asar", root / "backups"
+            target.write_bytes(original)
+            options = dict(size=6, hide_tray=False, custom_project_icons=False, keep_icon_on_hover=False,
+                           command_palette_cmd_k=True, command_palette_workspace_search=True)
+            _backup, changes = MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options)
+            self.assertEqual(sorted(changes), sorted([r.label for r in REGIONS_139] + SWAP_LABELS))
+            patched = target.read_bytes()
+            self.assertEqual(len(patched), len(original))
+            for region, new in zip(REGIONS_139, PATCHED_139):
+                self.assertEqual(patched.count(new), 1, region.label)
+            self.assertEqual(MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options), (None, []))
+            MODULE.revert(target, backups)
+            self.assertEqual(target.read_bytes(), original)
+
+    # Value: protects=a bundle mixing 1.38 and 1.39 palette regions, or half-patched 1.39 regions, fails closed before a write; fails_when=layout selection falls back per region or a partial 1.39 state is accepted; why_new=REBASE.md mixed-release rule; seam=none
+    def test_mixed_release_or_generation_fails_closed(self):
+        mixed = bundle_139(layout=layout_chunk_139([STOCK_138[1], *STOCK_139[2:]]))
+        with self.assertRaisesRegex(RuntimeError, "command palette"):
+            patch(mixed)
+        half = bundle_139(layout=layout_chunk_139([PATCHED_139[1], *STOCK_139[2:]]))
+        with self.assertRaisesRegex(RuntimeError, "mix generations"):
+            patch(half)
+        self.assertEqual(patch(half, search=False)[1], SWAP_LABELS)
+
+    # Value: protects=the 1.39 chunk is held to the same names; fails_when=the 1.39 layout skips the chunk name check; why_new=LUBOS-2797; seam=none
+    def test_names_are_checked_on_the_1_39_chunk(self):
+        broken = LAYOUT_NAMES.replace(b"a as useIsV2CloudEnabled", b"a as useIsV2CloudEnabledX")
+        with self.assertRaisesRegex(RuntimeError, "useIsV2CloudEnabled is not available"):
+            patch(bundle_139(layout=layout_chunk_139(names=broken)))
+        with self.assertRaisesRegex(RuntimeError, "already uses sspScore"):
+            patch(bundle_139(layout=layout_chunk_139(names=LAYOUT_NAMES + b"function sspScore() {}\n")))
+
 @live_host_only("anchors, names and chunk syntax are checked against the Superset.app bundle installed on this host")
 class InstalledPaletteTest(unittest.TestCase):
     """The installed release still has the pinned stock bytes, and the patched chunks parse."""
@@ -629,19 +726,26 @@ class InstalledPaletteTest(unittest.TestCase):
                 self.skipTest(f"installed bundle carries a generation this checkout cannot plan: {exc}")
             both = MODULE.plan_replacements(data, **options, command_palette_cmd_k=True, command_palette_workspace_search=True)
         extra = sorted(w[3] for w in both if w not in approved)
-        # The installed release may be 1.37 or 1.38; 1.38 merges some regions under joint labels.
-        labels = SEARCH_LABELS + [region.label for region in REGIONS_138] + SWAP_LABELS
+        # The installed release may be 1.37, 1.38 or 1.39; 1.38 and 1.39 merge some regions under joint labels.
+        labels = SEARCH_LABELS + [region.label for region in REGIONS_138 + REGIONS_139] + SWAP_LABELS
         self.assertTrue(set(extra) <= set(labels), extra)
 
     # Value: protects=the palette icon is as large as the icon of the sidebar project row in the installed bundle, and both classes exist in its CSS (a class the stylesheet lacks would render at the thumbnail's own 24 px base or not at all); fails_when=upstream renames the sidebar class, --size changes the approved size, or the injected classes are not generated into index-*.css; why_new=LUBOS-2414 sizes the icon after the sidebar; seam=installed bundle
     def test_installed_sidebar_icon_size_matches_the_palette_icon(self):
         import mmap
 
-        with MODULE.DEFAULT_ASAR.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+        row = rb'ProjectThumbnail, \{ projectName, iconUrl, color: projectColor, className: "(size-\d+) group-hover:!block" \}'
+        with MODULE.DEFAULT_ASAR.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_COPY) as data:
             entries = MODULE._asar_entries(data)
-            layout = next(bytes(data[start : start + size]) for path, start, size in entries if re.search(r"/layout-[^/]+\.js$", path) and b"function DashboardSidebarProjectSection" in data[start : start + size])
+            chunk = next((start, size) for path, start, size in entries if re.search(r"/layout-[^/]+\.js$", path) and b"function DashboardSidebarProjectSection" in data[start : start + size])
+            if not re.search(row, data[chunk[0] : chunk[0] + chunk[1]]):
+                # A stock install: the row gets its size from the approved set, planned on a private copy.
+                options = json.loads(APPROVED_FLAGS.read_text())["patch_options"]
+                for offset, old, new, _label in MODULE.plan_replacements(data, **options):
+                    data[offset : offset + len(old)] = new
+            layout = bytes(data[chunk[0] : chunk[0] + chunk[1]])
             css = b"".join(bytes(data[start : start + size]) for path, start, size in entries if re.search(r"/index-[^/]+\.css$", path))
-        sidebar = re.search(rb'ProjectThumbnail, \{ projectName, iconUrl, color: projectColor, className: "(size-\d+) group-hover:!block" \}', layout)
+        sidebar = re.search(row, layout)
         self.assertIsNotNone(sidebar, "sidebar project row thumbnail not found")
         palette = re.search(rb'color: p\.color, className: "(size-\d+) -my-2" \}', PATCHED[1])
         self.assertEqual(palette.group(1), sidebar.group(1))

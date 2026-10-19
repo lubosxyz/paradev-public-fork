@@ -1,5 +1,5 @@
 // Behaviour of --automations-header and --sidebar-device-filter on the real desktop-v1.38.0 bytes
-// (byte-identical in v1.37.0): the patched region fixtures (written by patch-asar.py rewrite_region
+// (byte-identical in v1.37.0; the 1.39.0 cloud row mapping has its own test): the patched region fixtures (written by patch-asar.py rewrite_region
 // and pinned by tests/test_superset_device_automations_patch.py) are evaluated with stubbed React.
 // Elements are plain {type, props, key} objects, so a test reads the rendered tree directly.
 import assert from "node:assert/strict";
@@ -59,6 +59,10 @@ const text = (node) =>
 // ---------------------------------------------------------------------------------------------
 
 const DEVICE_REGIONS = [1, 2, 3, 4, 5].map((n) => read(`superset-1.38.0-device-filter-r${n}.patched.js`));
+// desktop-v1.39.0 (LUBOS-2797): regions 1 and 5 re-pinned, 2-4 byte-identical to 1.38.0.
+const DEVICE_REGIONS_1_39 = [
+  read("superset-1.39.0-device-filter-r1.patched.js"), ...DEVICE_REGIONS.slice(1, 4), read("superset-1.39.0-device-filter-r5.patched.js"),
+];
 const DEVICE_NAMES = [
   "sdfUseRows", "sdfUseList", "sdfGroups", "sdfKids", "sdfUseHost", "sdfSet", "sdfUseDevices", "sdfUseCloud",
   "SdfDevices", "SdfDeviceItems", "partitionSidebarWorkspacesByPinned", "buildDashboardSidebarPinnedWorkspaces",
@@ -69,7 +73,7 @@ const M5 = "m5-machine-id";
 const ROSTER = [{ machineId: LOCAL, name: "M1 MacBook Air" }, { machineId: M5, name: "M5" }];
 const CLOUD_HOST_ID = "cloud";
 
-function device({ stored = null, cloud = [] } = {}) {
+function device({ stored = null, cloud = [], regions = DEVICE_REGIONS } = {}) {
   const storage = new Map(stored ? [["sdf-sidebar-device", stored]] : []);
   const localStorage = {
     getItem: (key) => storage.get(key) ?? null,
@@ -91,7 +95,7 @@ function device({ stored = null, cloud = [] } = {}) {
     getProjectFolderTagIndex: () => new Map(),
     resolveWorkspaceSectionId: ({ localSectionId }) => localSectionId ?? null,
   };
-  return { ...load(DEVICE_REGIONS, mocks, DEVICE_NAMES), storage };
+  return { ...load(regions, mocks, DEVICE_NAMES), storage };
 }
 
 const row = (id, hostId, projectId, extra = {}) => ({ id, name: id, hostId, projectId, tabOrder: 0, tags: [], sectionId: null, pinnedAt: null, ...extra });
@@ -217,6 +221,24 @@ test("the cloud section shows under All devices and Cloud, and hides under a hos
   assert.equal(api.sdfUseCloud(undefined, "org"), false);
   api.sdfSet(M5);
   assert.equal(api.sdfUseCloud(undefined, "org"), true);
+});
+
+test("1.39: the new sidebar's inline cloud rows (hostId = their own id) read as Cloud, not as one device each", () => {
+  const api = device({ regions: DEVICE_REGIONS_1_39, cloud: [{ id: "c1" }] });
+  const inline = row("c1", "c1", "fork");
+  const rows = [...ROWS, inline];
+  const cloudRowById = new Map([["c1", inline]]);
+  assert.equal(api.sdfUseRows(rows, cloudRowById), rows);
+  assert.deepEqual(api.sdfUseDevices(null).map(([id]) => id), [LOCAL, M5, CLOUD_HOST_ID]);
+  api.sdfSet(CLOUD_HOST_ID);
+  assert.deepEqual(api.sdfUseRows(rows, cloudRowById).map((w) => w.id), ["c1"]);
+  api.sdfSet(M5);
+  assert.deepEqual(api.sdfUseRows(rows, cloudRowById).map((w) => w.id), ["fork-m5", "ops-m5", "pinned-m5", "session-m5"]);
+  // Without the new sidebar the map is empty and every row keeps its host, as on 1.38.
+  const legacy = device({ regions: DEVICE_REGIONS_1_39 });
+  legacy.sdfSet(LOCAL);
+  assert.deepEqual(legacy.sdfUseRows(ROWS, new Map()).map((w) => w.id), ["fork-local", "pinned-local", "session-local"]);
+  assert.deepEqual(legacy.sdfUseDevices(LOCAL).map(([id]) => id), [LOCAL, M5]);
 });
 
 // ---------------------------------------------------------------------------------------------

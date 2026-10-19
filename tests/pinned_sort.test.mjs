@@ -1,4 +1,5 @@
-// Behaviour of --pinned-activity-sort on the real desktop-v1.37.0 bytes (byte-identical in v1.38.0):
+// Behaviour of --pinned-activity-sort on the real desktop-v1.37.0 bytes (byte-identical in v1.38.0
+// and v1.39.0, whose re-cut data line has its own test):
 // the patched room region (pasUseSorted, written by patch-asar.py rewrite_region and pinned by
 // tests/test_superset_pinned_sort_patch.py) runs on upstream's own sort helpers
 // (superset-1.37.0-sidebar-sort.js), the DashboardSidebar data line runs stock and swapped, and the
@@ -113,20 +114,24 @@ test("an agent touching a pinned workspace moves it to the top under Last active
 
 const DATA = read("superset-1.37.0-pinned-sort-data.js");
 const DATA_SORTED = read("superset-1.37.0-pinned-sort-data.patched.js");
+// desktop-v1.39.0 (LUBOS-2797): the same bindings, the data hook takes { inlineCloudWorkspaces }.
+const DATA_139 = read("superset-1.39.0-pinned-sort-data.js");
+const DATA_SORTED_139 = read("superset-1.39.0-pinned-sort-data.patched.js");
 const BOUND = [
   "groups", "hiddenProjects", "pinnedWorkspaces", "sessionWorkspaces", "sessionChildren", "githubStatus",
   "refreshWorkspacePullRequest", "toggleProjectCollapsed", "deleteSection", "reorderProjects", "renameSection",
   "setProjectHidden", "toggleSectionCollapsed",
 ];
 
-function sidebarHead(source, mode) {
+function sidebarHead(source, mode, calls = []) {
   const data = Object.fromEntries(BOUND.slice(0, 8).map((name) => [name, `data:${name}`]));
   data.pinnedWorkspaces = PINNED;
   const state = Object.fromEntries(BOUND.slice(8).map((name) => [name, `state:${name}`]));
   const mocks = {
     reactExports,
     useV2UserPreferences: () => ({ preferences: { sidebarProjectSortMode: mode } }),
-    useDashboardSidebarData: () => data,
+    inlineCloudWorkspaces: "inline",
+    useDashboardSidebarData: (...args) => (calls.push(args), data),
     useDashboardSidebarState: () => state,
   };
   const head = `function DashboardSidebarHead() {\n${source}  return { ${BOUND.join(", ")} };\n}`;
@@ -143,6 +148,21 @@ test("the swapped data line binds every stock name; only pinnedWorkspaces become
     assert.deepEqual(ids(swapped.pinnedWorkspaces), ids(sorter(mode).pasUseSorted(PINNED)), mode);
   }
   assert.equal(sidebarHead(DATA_SORTED, "manual").pinnedWorkspaces, PINNED);
+});
+
+test("1.39: the swapped data line still passes { inlineCloudWorkspaces } and binds every stock name", () => {
+  assert.equal(DATA_SORTED_139.length, DATA_139.length);
+  for (const mode of ["active", "created", "manual"]) {
+    const stockCalls = [];
+    const swappedCalls = [];
+    const stock = sidebarHead(DATA_139, mode, stockCalls);
+    const swapped = sidebarHead(DATA_SORTED_139, mode, swappedCalls);
+    assert.deepEqual(swappedCalls, stockCalls);
+    assert.deepEqual(stockCalls, [[{ inlineCloudWorkspaces: "inline" }]]);
+    for (const name of BOUND.filter((name) => name !== "pinnedWorkspaces")) assert.equal(swapped[name], stock[name], name);
+    assert.equal(stock.pinnedWorkspaces, PINNED);
+    assert.deepEqual(ids(swapped.pinnedWorkspaces), ids(sorter(mode).pasUseSorted(PINNED)), mode);
+  }
 });
 
 // ---------------------------------------------------------------------------------------------

@@ -9,12 +9,16 @@ import { test } from "node:test";
 const FIXTURES = new URL("./fixtures/", import.meta.url);
 const read = (name) => readFileSync(new URL(name, FIXTURES), "utf8");
 // palette_search_1_38.test.mjs re-runs every test on the desktop-v1.38.0 layout (LUBOS-2525): the same
-// injected JS in region 2 and the two room regions that replace the deleted v1 sidebar regions 3-7.
+// injected JS in region 2 and the two room regions that replace the deleted v1 sidebar regions 3-7;
+// palette_search_1_39.test.mjs on desktop-v1.39.0 (LUBOS-2797), whose region 3 is byte-identical to 1.38.0.
 const RELEASE = globalThis.SSP_PALETTE_RELEASE ?? "1.37.0";
 const LAYOUT_FIXTURES = {
   "1.37.0": ["r2.v5-", "r3.", "r4.", "r5.", "r6.", "r7."].map((region) => `superset-1.37.0-palette-${region}patched.js`),
   "1.38.0": ["r2.", "r3.", "r4."].map((region) => `superset-1.38.0-palette-${region}patched.js`),
+  "1.39.0": ["1.39.0-palette-r2.", "1.38.0-palette-r3.", "1.39.0-palette-r4."].map((region) => `superset-${region}patched.js`),
 }[RELEASE];
+// The hotkey registry is byte-identical in 1.38.0 and 1.39.0.
+const HOTKEYS_RELEASE = RELEASE === "1.39.0" ? "1.38.0" : RELEASE;
 
 // Any value: callable, constructible and indexable, so module-scope code of a region that the
 // test does not exercise (icons, stores, providers) loads without its real imports.
@@ -554,8 +558,8 @@ function registry(fixture) {
 }
 
 test("--command-palette-cmd-k swaps only the two mac defaults", () => {
-  const stock = registry(`superset-${RELEASE}-hotkeys-registry.js`);
-  const patched = registry(`superset-${RELEASE}-hotkeys-registry.patched.js`);
+  const stock = registry(`superset-${HOTKEYS_RELEASE}-hotkeys-registry.js`);
+  const patched = registry(`superset-${HOTKEYS_RELEASE}-hotkeys-registry.patched.js`);
   assert.equal(stock.OPEN_COMMAND_PALETTE.key.mac.chord, "meta+shift+k");
   assert.equal(stock.CLEAR_TERMINAL.key.mac.chord, "meta+k");
   assert.equal(patched.OPEN_COMMAND_PALETTE.key.mac.chord, "meta+k");

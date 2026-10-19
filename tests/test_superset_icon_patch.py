@@ -1469,6 +1469,101 @@ class SupersetPinnedIconOnlyPatchTest(unittest.TestCase):
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+def with_row_pair(bundle: bytes) -> bytes:
+    """Give a synthetic bundle whose regions name the 1.39 new sidebar the real 1.39 row pair.
+
+    Such a bundle resolves row anchors per row component (_row_variants), so its single
+    synthetic indentation and row height anchors give way to the real two rows.
+    """
+    if not any(marker in bundle for marker in MODULE.WORKSPACE_ROW_SPLIT_MARKERS):
+        return bundle
+    if MODULE.WORKSPACE_ROW_COMPONENTS[1][0] in bundle:
+        return bundle
+    for name in ("UPSTREAM_INDENT_ASSERTION", "WORKSPACE_ROW_COMPACT"):
+        bundle = bundle.replace(b"|" + getattr(MODULE, name), b"", 1)
+    return bundle + b"|\n" + SupersetWorkspaceRows139Test.ROWS.read_bytes() + b"const DashboardSidebarAfterRows = 1;\n"
+
+
+class SupersetWorkspaceRows139Test(unittest.TestCase):
+    """desktop-v1.39.0 renders a workspace through one of two row components (LUBOS-2797).
+
+    DashboardSidebarExpandedWorkspaceRow (the new sidebar) and DashboardSidebarLegacyExpandedWorkspaceRow
+    each hold one indentation assertion, row height and pinned prefix / icon; both rows are patched.
+    """
+
+    WORKSPACE_NEW_SHORTCUT = SupersetUiPatchTest.WORKSPACE_NEW_SHORTCUT
+    # Exact stock bytes of desktop-v1.39.0 layout-DOij_wUN.js from the new row to the end of the legacy row.
+    ROWS = FIXTURES / "superset-1.39.0-workspace-rows.js"
+    ROW_ANCHORS = ("UPSTREAM_INDENT_ASSERTION", "WORKSPACE_ROW_COMPACT", "PINNED_PREFIX_STOCK", "PINNED_ICON_STOCK")
+
+    def stock_bundle(self, rows=None):
+        """The shared synthetic bundle with its single row anchors replaced by the real 1.39 row pair."""
+        base = SupersetUiPatchTest.stock_bundle(self)
+        for name in ("UPSTREAM_INDENT_ASSERTION", "WORKSPACE_ROW_COMPACT"):
+            base = base.replace(b"|" + getattr(MODULE, name), b"", 1)
+        rows = self.ROWS.read_bytes() if rows is None else rows
+        return base + b"|\n" + rows + b"const DashboardSidebarAfterRows = 1;\n"
+
+    def patch(self, data, pinned_icon_only=True):
+        return MODULE.patch_bytes(
+            data, size=6, hide_tray=True, custom_project_icons=True, keep_icon_on_hover=True,
+            compact_sidebar=True, pinned_icon_only=pinned_icon_only,
+        )
+
+    # Value: protects=the fixture is the real 1.39 row pair: each row family occurs once per row component; fails_when=the fixture is re-cut without one of the rows; why_new=LUBOS-2797; seam=real 1.39.0 bytes
+    def test_fixture_holds_one_of_each_anchor_per_row(self):
+        rows = self.ROWS.read_bytes()
+        for component, _suffix in MODULE.WORKSPACE_ROW_COMPONENTS:
+            self.assertEqual(rows.count(component.lstrip(b"\n")), 1)
+        for name in self.ROW_ANCHORS:
+            self.assertEqual(rows.count(getattr(MODULE, name)), 2, name)
+
+    # Value: protects=compact rows and pinned icon-only reach both 1.39 rows, with a "(legacy row)" label for the second, apply length-preserving and re-run to nothing; fails_when=the legacy row is left stock (the user sees the old look whenever upstream renders it) or the two rows are reported as an ambiguous anchor; why_new=LUBOS-2797 (1.39 found 2 indentation anchors and failed closed); seam=real 1.39.0 bytes
+    def test_both_rows_are_patched_and_idempotent(self):
+        original = self.stock_bundle()
+        patched, changes = self.patch(original)
+        self.assertEqual(len(patched), len(original))
+        for label in ("sidebar: roomier workspace rows (h-8)", "pinned: project icon size-5", "pinned: hide project name prefix"):
+            self.assertIn(label, changes)
+            self.assertIn(label + " (legacy row)", changes)
+        self.assertEqual(patched.count(MODULE.WORKSPACE_ROW_ROOMY), 2)
+        self.assertEqual(patched.count(MODULE.PINNED_PREFIX_HIDDEN), 2)
+        self.assertEqual(patched.count(MODULE.PINNED_ICON_LARGE), 2)
+        for name in ("WORKSPACE_ROW_COMPACT", "PINNED_PREFIX_STOCK", "PINNED_ICON_STOCK"):
+            self.assertNotIn(getattr(MODULE, name), patched, name)
+        self.assertEqual(self.patch(patched), (patched, []))
+        unpinned, changes = self.patch(original, pinned_icon_only=False)
+        self.assertEqual(unpinned.count(MODULE.PINNED_PREFIX_STOCK), 2)
+        self.assertFalse([change for change in changes if change.startswith("pinned:")])
+
+    # Value: protects=a row family missing from one row, a third match outside both rows, a doubled row component, or a 1.39-style bundle whose legacy row declaration changed or vanished fails closed before a write; fails_when=row scoping falls back to "any two matches", patches a row anchor that belongs to neither component, or reads a missing exact legacy declaration as a 1.38 bundle; why_new=LUBOS-2797 (Codex round 1); seam=real 1.39.0 bytes
+    def test_row_scoping_fails_closed(self):
+        rows = self.ROWS.read_bytes()
+        legacy = rows.index(MODULE.WORKSPACE_ROW_COMPONENTS[1][0].lstrip(b"\n"))
+        missing = rows[:legacy] + rows[legacy:].replace(MODULE.PINNED_PREFIX_STOCK, b"x" * len(MODULE.PINNED_PREFIX_STOCK))
+        with self.assertRaisesRegex(RuntimeError, r"pinned project prefix \(legacy row\) anchor, found 0"):
+            self.patch(self.stock_bundle(missing))
+        with self.assertRaisesRegex(RuntimeError, "anchor per workspace row, found 3"):
+            self.patch(self.stock_bundle() + b"|" + MODULE.PINNED_PREFIX_STOCK)
+        doubled = rows + b"const DashboardSidebarAfterRows = 1;\n" + rows[legacy:]
+        with self.assertRaisesRegex(RuntimeError, r"exactly one \(legacy row\) workspace row component, found 2"):
+            self.patch(self.stock_bundle(doubled))
+        declaration = MODULE.WORKSPACE_ROW_COMPONENTS[1][0].lstrip(b"\n")
+        respaced = rows[legacy:].replace(declaration, declaration.replace(b" = ", b"  = ", 1))
+        for name in self.ROW_ANCHORS:
+            respaced = respaced.replace(getattr(MODULE, name), b"x" * len(getattr(MODULE, name)))
+        # The real 1.39 sidebar data line; it stays when only the legacy row is cut out.
+        caller = b"|\n  const inlineCloudWorkspaces = useNewDashboardSidebarEnabled();\n"
+        for label, bundle in (
+            ("respaced legacy row", self.stock_bundle(rows[:legacy] + respaced)),
+            ("legacy row cut out", self.stock_bundle(rows[:legacy]) + caller),
+        ):
+            with self.subTest(label), self.assertRaisesRegex(
+                RuntimeError, r"exactly one \(legacy row\) workspace row component, found 0"
+            ):
+                self.patch(bundle)
+
+
 def run_node(test, source: str, suffix: str = ".mjs"):
     """Run one generated node script and fail the test with its stderr on a non-zero exit."""
     import shutil
@@ -1521,6 +1616,12 @@ class SupersetSidebarStatusFilterPatchTest(unittest.TestCase):
     REGIONS = MODULE.STATUS_FILTER_REGIONS
     PALETTE_REGIONS = MODULE.PALETTE_SEARCH_REGIONS
     PALETTE_FIXTURES = [f"superset-1.37.0-palette-r{n}.js" for n in range(1, 8)]
+    # The project groups the chip row counts, and the PROJECTS header's sort menu, as the release renders them.
+    CHIP_GROUPS = b"groups: orderedGroups"
+    SORT_MENU = b"jsx(DashboardSidebarProjectsSortMenu, { sortMode, onSortModeChange })"
+    # The sidebar data Collapse all and the chip hotkeys read, and its PINNED and SESSIONS lists.
+    SIDEBAR_JS = MODULE.STATUS_FILTER_SIDEBAR_JS
+    SIDEBAR_LISTS = (b"pinnedWorkspaces", b"sessionWorkspaces")
 
     def regions(self):
         """Pair each region constant with its real stock bytes."""
@@ -1544,7 +1645,7 @@ class SupersetSidebarStatusFilterPatchTest(unittest.TestCase):
                 region, stock = by_start[region.end]
                 chain += stock
             chains.append(chain + region.end)
-        return b"|".join([SupersetUiPatchTest.stock_bundle(self)] + chains)
+        return with_row_pair(b"|".join([SupersetUiPatchTest.stock_bundle(self)] + chains))
 
     def patch(self, data, enabled=True):
         """Apply the approved set with the status filter toggled."""
@@ -2489,17 +2590,17 @@ assert.equal(element.props.children[0].props.onExpandedChange(false), undefined)
         self.assertLess(search, row)
         self.assertLess(row, scroller)
         self.assertIn(b"query: projectFilterQuery, onQueryChange: setProjectFilterQuery", patched[search:row])
-        self.assertIn(b"groups: orderedGroups", patched[row:scroller])
+        self.assertIn(self.CHIP_GROUPS, patched[row:scroller])
         # Collapse all and the chip hotkeys get the sidebar data as one array, built once before the render.
         self.assertIn(b"groups, ssfF })", patched[search:row])
-        self.assertIn(b"groups: orderedGroups, ssfF })", patched[row:scroller])
-        built = patched.index(MODULE.STATUS_FILTER_SIDEBAR_JS)
+        self.assertIn(self.CHIP_GROUPS + b", ssfF })", patched[row:scroller])
+        built = patched.index(self.SIDEBAR_JS)
         self.assertLess(built, patched.index(b"  return jsxRuntimeExports.jsxs(DashboardSidebarSelectionProvider, "))
         for name in (
             b"displayedGroups", b"workspacesListCollapsed", b"toggleProjectCollapsed", b"toggleSectionCollapsed",
-            b"sessionChildren", b"pinnedWorkspaces", b"sessionWorkspaces", b"statusWorkspaces",
+            b"sessionChildren", *self.SIDEBAR_LISTS, b"statusWorkspaces",
         ):
-            self.assertIn(name, MODULE.STATUS_FILTER_SIDEBAR_JS)
+            self.assertIn(name, self.SIDEBAR_JS)
             self.assertRegex(patched[:built], rb"(const |\n    )" + name + rb"\b", "declared before ssfF")
 
     # Value: protects=no status filter region overlaps a command palette region in the same chunk, so both families apply in one run; fails_when=a room region is picked inside a palette region (v5 first put region 13 in DestroyConfirmPane, inside the palette's ThemeFrame region) and the live run fails with "overlapping replacements"; why_new=LUBOS-2519 Collapse all added room regions 11-14; seam=real stock region fixtures
@@ -2521,7 +2622,7 @@ assert.equal(element.props.children[0].props.onExpandedChange(false), undefined)
         header = patched[patched.index(b"function DashboardSidebarWorkspacesHeader({") :]
         self.assertNotIn(b"jsx(DashboardSidebarProjectsFilterInput", header)
         self.assertNotIn(b"labelHidden", header)
-        self.assertIn(b"jsx(DashboardSidebarProjectsSortMenu, { sortMode, onSortModeChange })", header)
+        self.assertIn(self.SORT_MENU, header)
         self.assertIn(b'const filterLabel = "Search the sidebar";', patched)
         self.assertIn(b'placeholder: "Search\\u2026",', patched)
 
@@ -2835,6 +2936,70 @@ class SupersetSidebarStatusFilter138PatchTest(SupersetSidebarStatusFilterPatchTe
             MODULE._select_layout(data, layouts, "status filter")
 
 
+def _fixture_1_39(kind: str, n: int, suffix: str = ".js") -> Path:
+    """The 1.39.0 cut of region n, or the 1.38 one (or earlier) it is byte-identical to."""
+    path = FIXTURES / f"superset-1.39.0-{kind}-r{n}{suffix}"
+    return path if path.exists() else _fixture_1_38(kind, n, suffix)
+
+
+class SupersetSidebarStatusFilter139PatchTest(SupersetSidebarStatusFilter138PatchTest):
+    """The same filter on the desktop-v1.39.0 layout (LUBOS-2797): every inherited test runs on the 1.39 regions.
+
+    Regions 1-6, 12 and 13 are cut from desktop-v1.39.0 layout-DOij_wUN.js; regions 7-11 are
+    byte-identical to the 1.38 ones. Region 3 reads upstream's new host-filtered lists.
+    """
+
+    REGIONS = MODULE.STATUS_FILTER_REGIONS_1_39
+    PALETTE_REGIONS = MODULE.PALETTE_SEARCH_REGIONS_1_39
+    PALETTE_FIXTURES = ["superset-1.37.0-palette-r1.js", "superset-1.39.0-palette-r2.js", "superset-1.38.0-palette-r3.js", "superset-1.39.0-palette-r4.js"]
+    REGION_FIXTURES = [_fixture_1_39("status-filter", n) for n in range(1, 14)]
+    PATCHED_FIXTURES = [_fixture_1_39("status-filter", n, ".patched.js") for n in range(1, 14)]
+    # 1.39 counts the groups upstream's Local / Cloud filter leaves, and its sort menu also takes that filter.
+    CHIP_GROUPS = b"groups: hostFilteredGroups"
+    SORT_MENU = b"jsx(DashboardSidebarProjectsSortMenu, { sortMode, onSortModeChange, hostFilter, onHostFilterChange })"
+    SIDEBAR_JS = MODULE.STATUS_FILTER_SIDEBAR_JS_1_39
+    SIDEBAR_LISTS = (b"displayedPinnedWorkspaces", b"displayedSessionWorkspaces")
+
+    # Value: protects=the 1.39 regions are pinned on the real 1.39 bytes and reuse only the 1.38 regions that are byte-identical there; fails_when=a 1.39 fixture is missing, a reused 1.38 region drifted, or a 1.39 region inherits a legacy / upgrade digest that never ran on 1.39; why_new=LUBOS-2797 release layout; seam=real 1.39.0 bytes
+    def test_layout_reuses_identical_regions_and_has_no_earlier_generations(self):
+        self.assertEqual([r.label for r in self.REGIONS], [r.label for r in MODULE.STATUS_FILTER_REGIONS_1_38])
+        self.assertEqual(b"".join(r.edits[0][1] for r in self.REGIONS[11:]).count(MODULE.STATUS_FILTER_FIRST_JS), 1)
+        rebased = {1, 2, 3, 4, 5, 6, 12, 13}
+        for n, (region, old) in enumerate(zip(self.REGIONS, MODULE.STATUS_FILTER_REGIONS_1_38, strict=True), 1):
+            with self.subTest(region=n):
+                self.assertEqual(region is old, n not in rebased)
+                self.assertEqual(self.REGION_FIXTURES[n - 1].name.startswith("superset-1.39.0-"), n in rebased)
+                if n in rebased:
+                    self.assertEqual((region.legacy_sha256, region.upgrades), ((), ()))
+
+    # Value: protects=region 3 counts and searches the lists upstream's Local / Cloud filter leaves on screen, and the chips count the host-filtered project groups; fails_when=the 1.39 sidebar data edit reads the unfiltered pinned / session lists, so chips count rows the sidebar hides; why_new=LUBOS-2797 (1.39 adds the host filter); seam=real 1.39.0 region 3
+    def test_filter_reads_the_host_filtered_lists(self):
+        patched = self.PATCHED_FIXTURES[2].read_bytes()
+        for line in (
+            b"pinnedWorkspaces: displayedPinnedWorkspaces, sessionWorkspaces: displayedSessionWorkspaces, groups, ssfF",
+            b"pinnedWorkspaces: displayedPinnedWorkspaces, sessionWorkspaces: displayedSessionWorkspaces, groups: hostFilteredGroups, ssfF",
+        ):
+            self.assertEqual(patched.count(line), 1, line)
+        self.assertIn(MODULE.STATUS_FILTER_SIDEBAR_JS_1_39, patched)
+
+    # Value: protects=each release is planned with its own layout; fails_when=the 1.39 bundle is planned with 1.38 regions or the other way round; why_new=LUBOS-2797; seam=none
+    def test_each_release_selects_its_own_layout(self):
+        self.assertEqual(MODULE.status_filter_layout(self.stock_bundle())[0], "1.39")
+        earlier = SupersetSidebarStatusFilter138PatchTest("test_status_filter_is_idempotent").stock_bundle()
+        self.assertEqual(MODULE.status_filter_layout(earlier)[0], "1.38")
+        patched, _changes = self.patch(self.stock_bundle())
+        self.assertEqual(MODULE.status_filter_layout(patched)[0], "1.39")
+
+    # Value: protects=a bundle mixing 1.38 and 1.39 region bytes fails closed instead of patching half of each; fails_when=layout selection falls back per region; why_new=REBASE.md mixed-release rule; seam=none
+    def test_mixed_release_bundle_fails_closed(self):
+        stock_138 = SupersetSidebarStatusFilter138PatchTest.REGION_FIXTURES[2].read_bytes()
+        stock_139 = self.REGION_FIXTURES[2].read_bytes()
+        mixed = self.stock_bundle().replace(stock_139, stock_138)
+        self.assertNotEqual(mixed, self.stock_bundle())
+        with self.assertRaisesRegex(RuntimeError, "status filter"):
+            self.patch(mixed)
+
+
 class SupersetHideNavButtonsPatchTest(unittest.TestCase):
     """--hide-nav-buttons hides New Workspace, Search and Workspaces in the compact grid."""
 
@@ -2988,6 +3153,26 @@ class SupersetHideSidebarFooter138PatchTest(SupersetHideSidebarFooterPatchTest):
             (
                 (MODULE.SIDEBAR_FOOTER, MODULE.SIDEBAR_FOOTER_HIDDEN), (MODULE.PINNED_SORT_DATA, MODULE.PINNED_SORT_DATA_SORTED),
                 (MODULE.PROJECT_ORDER_DATA, MODULE.PROJECT_ORDER_DATA_SORTED),
+            ),
+        )
+
+
+class SupersetHideSidebarFooter139PatchTest(SupersetHideSidebarFooterPatchTest):
+    """--hide-sidebar-footer composed with the 1.39.0 status filter regions (LUBOS-2797)."""
+
+    REGIONS = SupersetSidebarStatusFilter139PatchTest.REGIONS
+    REGION_FIXTURES = SupersetSidebarStatusFilter139PatchTest.REGION_FIXTURES
+
+    # Value: protects=the 1.39 footer row is still the one shared write inside status filter region 3, next to the 1.39 sort swaps; fails_when=1.39 moves the row out of region 3 or the region loses a shared pair; why_new=LUBOS-2797; seam=real 1.39.0 region 3
+    def test_anchor_is_the_real_footer_row_and_hides_only_the_expanded_sidebar(self):
+        region3 = (FIXTURES / "superset-1.39.0-status-filter-r3.js").read_bytes()
+        self.assertEqual(region3.count(MODULE.SIDEBAR_FOOTER), 1)
+        self.assertEqual(
+            self.REGIONS[2].shared,
+            (
+                (MODULE.SIDEBAR_FOOTER, MODULE.SIDEBAR_FOOTER_HIDDEN),
+                (MODULE.PINNED_SORT_DATA_1_39, MODULE.PINNED_SORT_DATA_SORTED_1_39),
+                (MODULE.PROJECT_ORDER_DATA_1_39, MODULE.PROJECT_ORDER_DATA_SORTED_1_39),
             ),
         )
 
@@ -3717,6 +3902,13 @@ class SupersetStatusFilterCollapse138Test(SupersetStatusFilterCollapseTest):
     HOTKEYS_REGION = _fixture_1_38("status-filter", 9, ".patched.js")
 
 
+class SupersetStatusFilterCollapse139Test(SupersetStatusFilterCollapseTest):
+    """The v5 collapse behaviour on the desktop-v1.39.0 regions (LUBOS-2797)."""
+
+    PATCHED = [_fixture_1_39("status-filter", n, ".patched.js") for n in (1, 2, 4, 5, 6, 7, 8, 10, 11, 12, 13)]
+    HOTKEYS_REGION = _fixture_1_39("status-filter", 9, ".patched.js")
+
+
 class SupersetStatusFilterGenerationsTest(unittest.TestCase):
     """Older filter generations and the 1.37 sticky-row variant stay recognised end to end."""
 
@@ -3758,7 +3950,8 @@ class SupersetStatusFilterGenerationsTest(unittest.TestCase):
     # Value: protects=a host on v5 before Collapse groups (live on 1.37 since LUBOS-2519 and on 1.38 since LUBOS-2525's first apply) gets the --revert hint in both release layouts for the four regions Collapse groups changes, and the other regions stay patched no-ops; fails_when=a pre-groups v5 digest drops out of legacy_sha256 so the live 1.38 bundle fails as "neither stock nor patched", or the change leaks into another region; why_new=LUBOS-2525 scope add (Collapse groups); seam=real v5 fixtures
     def test_v5_before_collapse_groups_asks_for_revert(self):
         changed = {5: "1.36.0", 9: "1.37.0", 10: "1.37.0", 11: "1.37.0"}
-        for layout, regions, variants in MODULE.STATUS_FILTER_LAYOUTS:
+        # Collapse groups shipped before 1.39: no 1.39 host can hold the pre-groups bytes.
+        for layout, regions, variants in MODULE.STATUS_FILTER_LAYOUTS[:2]:
             for n, region in enumerate(regions, 1):
                 if n not in changed:
                     continue
@@ -4050,6 +4243,20 @@ class SupersetStatusFilterNames138Test(SupersetStatusFilterNamesTest):
 
     REGIONS = SupersetSidebarStatusFilter138PatchTest.REGIONS
     REGION_FIXTURES = SupersetSidebarStatusFilter138PatchTest.REGION_FIXTURES
+
+
+class SupersetStatusFilterHotkeys139PatchTest(SupersetStatusFilterHotkeys138PatchTest):
+    """--status-filter-hotkeys on the 1.39.0 regions (LUBOS-2797); the registry is byte-identical to 1.38."""
+
+    REGIONS = SupersetSidebarStatusFilter139PatchTest.REGIONS
+    REGION_FIXTURES = SupersetSidebarStatusFilter139PatchTest.REGION_FIXTURES
+
+
+class SupersetStatusFilterNames139Test(SupersetStatusFilterNamesTest):
+    """The name check on a 1.39.0 chunk (LUBOS-2797)."""
+
+    REGIONS = SupersetSidebarStatusFilter139PatchTest.REGIONS
+    REGION_FIXTURES = SupersetSidebarStatusFilter139PatchTest.REGION_FIXTURES
 
 
 class SupersetAsarIntegrityFuseTest(unittest.TestCase):

@@ -117,6 +117,49 @@ PROJECT_ROW_ROOMY = PROJECT_ROW_COMPACT.replace(b"h-7", b"h-8")
 WORKSPACE_ROW_COMPACT = b'"group relative flex h-7 w-full items-center pr-2"'
 WORKSPACE_ROW_ROOMY = WORKSPACE_ROW_COMPACT.replace(b"h-7", b"h-8")
 
+# 1.39 ships two expanded workspace rows: a new DashboardSidebarExpandedWorkspaceRow
+# and 1.38's row, renamed DashboardSidebarLegacyExpandedWorkspaceRow.
+# DashboardSidebarWorkspaceItem picks one per render from the new-sidebar flag
+# (useNewDashboardSidebarEnabled: the cloud-workspaces feature flag plus a local
+# choice), so each row anchor (the verify-only indentation, the row height and
+# both pinned-row anchors) occurs once in each row. From 1.39 such a family
+# matches exactly once inside each row component and nowhere else, so whichever
+# row the flag picks is patched. Only a bundle with no trace of the split (none
+# of WORKSPACE_ROW_SPLIT_MARKERS, as in 1.38 and older) keeps the single global
+# match; a 1.39-style bundle whose row declarations changed fails closed.
+WORKSPACE_ROW_COMPONENTS = (
+    (b"\nconst DashboardSidebarExpandedWorkspaceRow = reactExports.forwardRef((", ""),
+    (b"\nconst DashboardSidebarLegacyExpandedWorkspaceRow = reactExports.forwardRef((", " (legacy row)"),
+)
+WORKSPACE_ROW_SPLIT_MARKERS = (b"LegacyExpandedWorkspaceRow", b"useNewDashboardSidebarEnabled")
+_TOP_LEVEL_LINE = re.compile(rb"\n[A-Za-z_$]")
+
+
+def _row_variants(data, name: str, variants: list[bytes]) -> list[tuple[int, bytes, str]]:
+    """Return (offset, bytes, label suffix) of one row anchor family: one match per workspace row component."""
+    matches = _variant_matches(data, variants)
+    if not any(_find_all(data, marker) for marker in WORKSPACE_ROW_SPLIT_MARKERS):
+        return [(*_exactly_one(name, matches), "")]
+    found = []
+    for component, suffix in WORKSPACE_ROW_COMPONENTS:
+        starts = _find_all(data, component)
+        if len(starts) != 1:
+            raise RuntimeError(
+                f"expected exactly one{suffix or ' new'} workspace row component, found {len(starts)}; "
+                "bundle structure may have changed"
+            )
+        start = starts[0] + 1
+        stop = _TOP_LEVEL_LINE.search(data, start + len(component))
+        stop = stop.start() if stop else len(data)
+        inside = [match for match in matches if start <= match[0] < stop]
+        found.append((*_exactly_one(f"{name}{suffix or ' (new row)'}", inside), suffix))
+    if len(matches) != len(found):
+        raise RuntimeError(
+            f"expected exactly one {name} anchor per workspace row, found {len(matches)}; "
+            "bundle structure may have changed"
+        )
+    return found
+
 _SHORTCUT_CLASS = (
     "invisible inline-flex h-5 min-w-5 shrink-0 items-center justify-center "
     "rounded border border-foreground/10 bg-fill-selected px-1 font-sans "
@@ -476,9 +519,9 @@ def _plan_pinned_icon_only(data) -> list[tuple[int, bytes, bytes, str]]:
             "pinned: project icon size-5",
         ),
     ):
-        offset, old = _single_variant(data, name, [source, target])
-        if old != target:
-            replacements.append((offset, old, target, label))
+        for offset, old, row in _row_variants(data, name, [source, target]):
+            if old != target:
+                replacements.append((offset, old, target, label + row))
     return replacements
 
 
@@ -967,6 +1010,65 @@ SORT_PROJECTS_MENU_ITEM = _pad_variant(
 PIN_PROJECTS_MENU = b'\n        {\n          id: "LhpIB7"\n        } })\n      ] }),\n      '
 PIN_PROJECTS_MENU_ITEM = _pad_variant(
     PIN_PROJECTS_MENU, b'{id:"LhpIB7"}})]}),jsxRuntimeExports.jsx(lppPinItem,{projectId}),'
+)
+
+# The 1.39 shapes of the four swaps above (REBASE.md, 1.38 -> 1.39). Each swap
+# matches exactly one of its release shapes; the swapped bytes are the same
+# code, re-cut on the new lines.
+# The data hook takes `{ inlineCloudWorkspaces }` (the new-sidebar flag).
+PINNED_SORT_DATA_1_39 = (
+    b"  const {\n    groups,\n    hiddenProjects,\n    pinnedWorkspaces,\n    sessionWorkspaces,\n"
+    b"    sessionChildren,\n    githubStatus,\n    refreshWorkspacePullRequest,\n    toggleProjectCollapsed\n"
+    b"  } = useDashboardSidebarData({\n    inlineCloudWorkspaces\n  });\n"
+    b"  const {\n    deleteSection,\n    reorderProjects,\n    renameSection,\n    setProjectHidden,\n"
+    b"    toggleSectionCollapsed\n  } = useDashboardSidebarState();\n"
+)
+PINNED_SORT_DATA_SORTED_1_39 = _pad_variant(
+    PINNED_SORT_DATA_1_39[:-1],
+    b"  const { groups, hiddenProjects, pinnedWorkspaces: pasRows, sessionWorkspaces, sessionChildren, githubStatus, "
+    b"refreshWorkspacePullRequest, toggleProjectCollapsed } = useDashboardSidebarData({ inlineCloudWorkspaces });\n"
+    b"  const pinnedWorkspaces = pasUseSorted(pasRows), { deleteSection, reorderProjects, renameSection, "
+    b"setProjectHidden, toggleSectionCollapsed } = useDashboardSidebarState();",
+) + b"\n"
+# Upstream's host filter (local / cloud, new sidebar only) derives its lists
+# from sortedGroups and the PINNED / SESSIONS rows between the first line and
+# the drag guard, so lppUse's order reaches them as well.
+PROJECT_ORDER_DATA_1_39 = (
+    b'  const sortedGroups = reactExports.useMemo(() => sortMode === "manual" ? orderedGroups : '
+    b"sortDashboardSidebarProjects(orderedGroups, sortMode), [sortMode, orderedGroups]);\n"
+    b"  const hostFilteredGroups = reactExports.useMemo(() => filterDashboardSidebarProjectsByHost(sortedGroups, "
+    b"hostFilter), [sortedGroups, hostFilter]);\n"
+    b'  const displayedPinnedWorkspaces = reactExports.useMemo(() => hostFilter === "all" ? pinnedWorkspaces : '
+    b"pinnedWorkspaces.filter((workspace) => matchesHostFilter(workspace, hostFilter)), [pinnedWorkspaces, hostFilter]);\n"
+    b'  const displayedSessionWorkspaces = reactExports.useMemo(() => hostFilter === "all" ? sessionWorkspaces : '
+    b"sessionWorkspaces.filter((workspace) => matchesHostFilter(workspace, hostFilter)), [sessionWorkspaces, hostFilter]);\n"
+    b"  const displayedGroups = reactExports.useMemo(() => filterDashboardSidebarProjects(hostFilteredGroups, "
+    b"projectFilterQuery), [hostFilteredGroups, projectFilterQuery]);\n"
+    b"  const displayedProjectIds = reactExports.useMemo(() => displayedGroups.map((project) => project.id), [displayedGroups]);\n"
+    b"  const trimmedFilterQuery = projectFilterQuery.trim();\n"
+    b'  const isFilterActive = trimmedFilterQuery !== "" || hostFilter !== "all";\n'
+    b"  const isProjectDragDisabled = isFilterActive;\n"
+)
+_PROJECT_ORDER_REST_1_39 = PROJECT_ORDER_DATA_1_39.split(b"\n", 1)[1].replace(
+    b"  const isProjectDragDisabled = isFilterActive;\n", b"  const isProjectDragDisabled = isFilterActive || lppDrag;\n"
+)
+PROJECT_ORDER_DATA_SORTED_1_39 = _pad_variant(
+    PROJECT_ORDER_DATA_1_39[: len(PROJECT_ORDER_DATA_1_39) - len(_PROJECT_ORDER_REST_1_39) - 1],
+    b"  const [sortedGroups, lppDrag] = lppUse(orderedGroups, sortMode);",
+) + b"\n" + _PROJECT_ORDER_REST_1_39
+# The sort menu continues after the hint with the host filter's Show group (new
+# sidebar only), so the checkbox goes right after the hint, ending the sort
+# section as on 1.38; the anchor ends with the next item's indent.
+SORT_PROJECTS_MENU_1_39 = b'\n        {\n          id: "iqSA4j"\n        }\n      ) }),\n      '
+SORT_PROJECTS_MENU_ITEM_1_39 = _pad_variant(
+    SORT_PROJECTS_MENU_1_39, b'{ id: "iqSA4j" }) }), jsxRuntimeExports.jsx(lppSortItem, {}),'
+)
+# The checkout items (Rename .. Import worktrees and their separator) sit in a
+# fragment a cloud-repo project skips; Pin project stays right after Import
+# worktrees, inside it.
+PIN_PROJECTS_MENU_1_39 = b'\n          {\n            id: "LhpIB7"\n          } })\n        ] }),\n        '
+PIN_PROJECTS_MENU_ITEM_1_39 = _pad_variant(
+    PIN_PROJECTS_MENU_1_39, b'{id:"LhpIB7"}})]}),jsxRuntimeExports.jsx(lppPinItem,{projectId}),'
 )
 
 
@@ -1475,10 +1577,69 @@ STATUS_FILTER_REGIONS_1_38 = (
         edits=(_insert_before(b"function LinkTaskCommand({\n", STATUS_FILTER_FOLD_ON_JS + STATUS_FILTER_CLEAR_JS),),
     ),
 )
+# 1.39 keeps every 1.38 anchor and edit except two. Regions 1-6, 12 and 13 grew
+# with upstream's new sidebar (cloud-repo projects, the local / cloud host
+# filter, a hover-card safe triangle) and are re-pinned on the 1.39 bytes;
+# regions 7-11 are byte-identical. Region 2 no longer deletes the "Read as on"
+# comment line (upstream reworded it; the region has room without it). Region
+# 4's helpers go before triangleSign, which took the place of MAX_BADGE_COUNT
+# right after DashboardSidebarCloudContextMenu. Region 3 feeds the search row,
+# the chip row and ssfF with the lists the sidebar renders
+# (displayedPinnedWorkspaces, displayedSessionWorkspaces, hostFilteredGroups),
+# so chips, Collapse all and the chip hotkeys follow upstream's host filter;
+# with its default (All, and always outside the new sidebar) they are the lists
+# 1.38 passed. The swaps of other flags are the 1.39 shapes (`shared`).
+# Fixtures: tests/fixtures/superset-1.39.0-status-filter-r*.js.
+STATUS_FILTER_SIDEBAR_JS_1_39 = (
+    b"  const ssfF = [displayedGroups, workspacesListCollapsed, toggleProjectCollapsed, toggleSectionCollapsed, "
+    b"sessionChildren, displayedPinnedWorkspaces, displayedSessionWorkspaces, statusWorkspaces];\n"
+)
+STATUS_FILTER_REGIONS_1_39 = (
+    _rebased(STATUS_FILTER_REGIONS_1_38[0], 22581, "9be0a13275fb2d08ab45739a3d57e84eec12fa8b1d7904bfc5f77a5e61335b50", "7efb0bb82930fb0f5afa7263c9499c0d80555175c5b081263d828d51bb2b8430"),
+    _rebased(
+        STATUS_FILTER_REGIONS_1_38[1], 20862, "7e39c6a855990fa02d2ecee144ad6e2deff98da929e94d3b63df343f71f48398", "67d5b3643b80da3daae29d9dcf858085c722f02514a3c88ff07dc8f1178521eb",
+        edits=tuple(
+            edit for edit in STATUS_FILTER_REGIONS_1_38[1].edits
+            if edit[0] != b'        // Read as "on" whenever the list is not in drag order.\n'
+        ),
+        shared=((SORT_PROJECTS_MENU_1_39, SORT_PROJECTS_MENU_ITEM_1_39),),
+    ),
+    _rebased(
+        STATUS_FILTER_REGIONS_1_38[2], 15510, "a90ec0281a79ae1137a804b237d8bdc66da269f98057b6a234772fce54adcc8a", "9bf578bb48c1192652366991ba90d88ac7a36cfbbabde683c814fa157e2ccca2",
+        edits=(
+            _insert_before(b"  const handleReorderProjects = reactExports.useCallback((reordered) => {\n", STATUS_FILTER_SIDEBAR_JS_1_39),
+            _insert_after(
+                b"        jsxRuntimeExports.jsx(DashboardSidebarHeader, { isCollapsed }),\n",
+                b"        !isCollapsed && jsxRuntimeExports.jsx(SsfSearch, { query: projectFilterQuery, "
+                b"onQueryChange: setProjectFilterQuery, pinnedWorkspaces: displayedPinnedWorkspaces, "
+                b"sessionWorkspaces: displayedSessionWorkspaces, groups, ssfF }),\n"
+                b"        !isCollapsed && jsxRuntimeExports.jsx(SsfStatusChips, { pinnedWorkspaces: displayedPinnedWorkspaces, "
+                b"sessionWorkspaces: displayedSessionWorkspaces, groups: hostFilteredGroups, ssfF }),\n",
+            ),
+        ),
+        shared=(
+            (SIDEBAR_FOOTER, SIDEBAR_FOOTER_HIDDEN), (PINNED_SORT_DATA_1_39, PINNED_SORT_DATA_SORTED_1_39),
+            (PROJECT_ORDER_DATA_1_39, PROJECT_ORDER_DATA_SORTED_1_39),
+        ),
+    ),
+    _rebased(
+        STATUS_FILTER_REGIONS_1_38[3], 11623, "97334818834443c5520adfe7df3165208d682f1aca55e0f8762ce8425725b536", "da5fad3c2547c7dc7905c11ff6ea257ce0b544d5042bdecf53e7f00b0c7b2ae8",
+        edits=(_insert_before(b"function triangleSign(p1, p2, p3) {\n", STATUS_FILTER_MATCH_JS + STATUS_FILTER_COUNTS_JS),),
+    ),
+    _rebased(STATUS_FILTER_REGIONS_1_38[4], 10123, "be70990ba2a8029342502f76e61359d451a3d3b6bf004256e80edbd4296f65bc", "e3f58786c1d835ce2c4ce78476651261fff0e83a2b1d6f8bf0b27d25442ce3da"),
+    _rebased(
+        STATUS_FILTER_REGIONS_1_38[5], 4027, "17fad1812c358e2fb14396ae306384f28db3f5b44860b954c2b0bd8063733be4", "f7d26dab7eb4cfbfac4d17eb9e04c779849c95127e7b9da09dd9378546d4800f",
+        shared=((PIN_PROJECTS_MENU_1_39, PIN_PROJECTS_MENU_ITEM_1_39),),
+    ),
+    *STATUS_FILTER_REGIONS_1_38[6:11],
+    _rebased(STATUS_FILTER_REGIONS_1_38[11], 37432, "af2cdb80ba13cff5c470f920ccf22e077b489bf7e4abc453d1770a3adf584600", "08b88c1eca058d52d4efda1b08b41594c8a0583e9c5a4ba9c9184df61fd6e618"),
+    _rebased(STATUS_FILTER_REGIONS_1_38[12], 10757, "3cb459027c5653e6e522fab1b313f422fe3547aa8d917352afcb1f961995d070", "d967c8f5440f8dff28891c29b6599153a02ad4360b958a5aa6b0229cb840c5a7"),
+)
 # (name, regions, sibling variants): every supported release layout of the filter.
 STATUS_FILTER_LAYOUTS = (
     ("1.36-1.37", STATUS_FILTER_REGIONS, STATUS_FILTER_REGION_VARIANTS),
     ("1.38", STATUS_FILTER_REGIONS_1_38, ()),
+    ("1.39", STATUS_FILTER_REGIONS_1_39, ()),
 )
 
 # Names the injected filter JS reads from upstream code outside the pinned
@@ -2391,6 +2552,44 @@ PALETTE_SEARCH_CHUNKS_1_38 = (
     (PALETTE_SEARCH_REGIONS_1_38[:1], *PALETTE_SEARCH_CHUNKS[0][1:]),
     (PALETTE_SEARCH_REGIONS_1_38[1:], *PALETTE_SEARCH_CHUNKS[1][1:]),
 )
+# 1.39: regions 1 and 3 are byte-identical; region 2 is re-pinned with the same
+# edits. DashboardSidebarPortsChip (region 4's insertion point) moved out of
+# the room, and the old end anchor PR_STATE_LABEL now lies past the new
+# DashboardSidebarExpandedWorkspaceRow, which holds the row anchors of
+# --compact-sidebar and --pinned-icon-only. Region 4 therefore ends at
+# DashboardSidebarWorkspaceLeadIndicator, takes its two helpers before
+# useDashboardSidebarWorkspaceRunningAgents and frees two biome-ignore `//`
+# lines for room. No palette generation ever ran on 1.39 either.
+PALETTE_SEARCH_REGIONS_1_39 = (
+    PALETTE_SEARCH_REGIONS_1_38[0],
+    _rebased(PALETTE_SEARCH_REGIONS_1_38[1], 61315, "3e30201e7bb2ecdb84f89912d0febf2ff83f6a1a25921d0458692cb7678ac288", "751df6b5f464d7ad177bc00f0ff554f76c990e3c165c1bb2c843b13bda314fa0"),
+    PALETTE_SEARCH_REGIONS_1_38[2],
+    RegionRewrite(
+        label=PALETTE_SEARCH_REGIONS_1_38[3].label,
+        start=PALETTE_SEARCH_REGIONS_1_38[3].start,
+        end=b"function DashboardSidebarWorkspaceLeadIndicator({\n",
+        length=11500,
+        stock_sha256="895f6f0b7fb71c787cd492f5617ae26fb0085ad78de24e4f3cd475da743df4ee",
+        patched_sha256="083704d80fd1aece45f14f87df55f9d30147ac7c5b788bb0a3bf4890c8d3a0c6",
+        edits=(
+            (
+                b"    // biome-ignore lint/a11y/noStaticElementInteractions: clicks on the strip's empty area mirror "
+                b"the row click; chips are real buttons\n"
+                b"    // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard activation lives on the workspace row "
+                b"button; the strip click is a pointer convenience\n",
+                b"",
+            ),
+            _insert_before(
+                b"function useDashboardSidebarWorkspaceRunningAgents(workspaceId) {\n",
+                PALETTE_NEW_WORKSPACE_KEY_JS + PALETTE_NEW_WORKSPACE_CREATE_JS,
+            ),
+        ),
+    ),
+)
+PALETTE_SEARCH_CHUNKS_1_39 = (
+    (PALETTE_SEARCH_REGIONS_1_39[:1], *PALETTE_SEARCH_CHUNKS[0][1:]),
+    (PALETTE_SEARCH_REGIONS_1_39[1:], *PALETTE_SEARCH_CHUNKS[1][1:]),
+)
 # (name, regions, variants, chunks, generations): every supported release layout.
 PALETTE_SEARCH_LAYOUTS = (
     ("1.37", PALETTE_SEARCH_REGIONS, (), PALETTE_SEARCH_CHUNKS, PALETTE_SEARCH_GENERATIONS),
@@ -2399,6 +2598,13 @@ PALETTE_SEARCH_LAYOUTS = (
         {
             "stock": tuple(region.stock_sha256 for region in PALETTE_SEARCH_REGIONS_1_38),
             "generation 6": tuple(region.patched_sha256 for region in PALETTE_SEARCH_REGIONS_1_38),
+        },
+    ),
+    (
+        "1.39", PALETTE_SEARCH_REGIONS_1_39, (), PALETTE_SEARCH_CHUNKS_1_39,
+        {
+            "stock": tuple(region.stock_sha256 for region in PALETTE_SEARCH_REGIONS_1_39),
+            "generation 6": tuple(region.patched_sha256 for region in PALETTE_SEARCH_REGIONS_1_39),
         },
     ),
 )
@@ -2439,8 +2645,8 @@ def _plan_command_palette_workspace_search(data) -> list[tuple[int, bytes, bytes
     return replacements
 
 
-# --automations-header (desktop-v1.37.0-v1.38.0; the regions are byte-identical
-# in both). Upstream splits /automations into Mine / Team tabs and keeps All runs
+# --automations-header (desktop-v1.37.0-v1.39.0; the regions are byte-identical
+# in all three). Upstream splits /automations into Mine / Team tabs and keeps All runs
 # and the search in that tab row. The page now lists every automation the
 # organization returns (Mine and Team merged) and the header row carries, between
 # the title and New automation: a project filter (All projects plus every project
@@ -2666,8 +2872,8 @@ def _plan_automations_header(data) -> list[tuple[int, bytes, bytes, str]]:
     return replacements
 
 
-# --sidebar-device-filter (desktop-v1.37.0-v1.38.0; every region is
-# byte-identical in both). A compact device dropdown in the expanded sidebar's
+# --sidebar-device-filter (desktop-v1.37.0-v1.39.0; the regions of 1.37 and
+# 1.38 are byte-identical, 1.39 re-pins two, see SIDEBAR_DEVICE_REGIONS_1_39). A compact device dropdown in the expanded sidebar's
 # title-bar row, right of the back / forward arrows (it renders with the ports
 # button through the PortsDropdown mount, SIDEBAR_DEVICE_MOUNT; a layers icon,
 # or the selected device's name, so it fits the default sidebar): All devices
@@ -2921,8 +3127,52 @@ SIDEBAR_DEVICE_REGIONS_1_37 = (
     replace(SIDEBAR_DEVICE_REGIONS[2], end=b"async function invalidateWorkspaceQueries(utils) {\n"),
     *SIDEBAR_DEVICE_REGIONS[3:],
 )
+# 1.39: the data hook also builds the new sidebar's inline cloud rows
+# (cloudRowById); they enter the same source rows with the cloud workspace's
+# own id as hostId. sdfUseRows reads such a row as Cloud (CLOUD_HOST_ID), so
+# the dropdown lists no device per cloud workspace and Cloud keeps exactly the
+# cloud rows. Without the new sidebar the map is empty and every row keeps its
+# hostId, as on 1.38. The groups line reads the cloud-decorated groups
+# (decoratedGroups). Regions 2-4 are byte-identical; 1 and 5 are re-pinned.
+SIDEBAR_DEVICE_ROWS_JS_1_39 = b'''function sdfUseRows(rows, cloud) {
+  const host = sdfUseHost();
+  const hostOf = (row) => cloud.has(row.id) ? CLOUD_HOST_ID : row.hostId;
+  const ids = [...new Set(rows.map(hostOf))].sort().join("\\n");
+  reactExports.useEffect(() => {
+    sdfIds = ids ? ids.split("\\n") : [];
+    sdfEmit();
+  }, [ids]);
+  return reactExports.useMemo(() => host === null ? rows : rows.filter((row) => hostOf(row) === host), [rows, host, cloud]);
+}
+'''
+SIDEBAR_DEVICE_REGIONS_1_39 = (
+    _rebased(
+        SIDEBAR_DEVICE_REGIONS[0], 70026, "2c9f03d609964241cab764bde0c05d80e424609f24a4061478a2e32f4a8853ec", "dabe137aa60feacb761d3351c4c3674e82b5393e82a10fd47a77962b6ae19053",
+        edits=(
+            *SIDEBAR_DEVICE_REGIONS[0].edits[:6],
+            (
+                b"  const visibleSidebarWorkspaces = sidebarWorkspaces;\n",
+                b"  const visibleSidebarWorkspaces = sdfUseRows(sidebarWorkspaces, cloudRowById);\n",
+            ),
+            (
+                b"  const groups = useStableDashboardSidebarProjects(decoratedGroups);\n",
+                b"  const groups = sdfUseList(useStableDashboardSidebarProjects(decoratedGroups), sdfGroups);\n",
+            ),
+            SIDEBAR_DEVICE_REGIONS[0].edits[8],
+            _insert_before(
+                b"const GETTING_STARTED_STEPS = [{\n", SIDEBAR_DEVICE_MARK + SIDEBAR_DEVICE_ROWS_JS_1_39 + SIDEBAR_DEVICE_MENU_JS,
+            ),
+        ),
+    ),
+    *SIDEBAR_DEVICE_REGIONS[1:4],
+    _rebased(SIDEBAR_DEVICE_REGIONS[4], 10957, "a2cdabd718da51056d6b4ca6c7e916846b565130757966ff5804a775062dbccd", "9fa4db0f6e89f5efe6c3e672058140f2215c15af834858038e732d1e72526361"),
+)
 # (name, regions, variants): every supported release layout of the device filter.
-SIDEBAR_DEVICE_LAYOUTS = (("1.37", SIDEBAR_DEVICE_REGIONS_1_37, ()), ("1.38", SIDEBAR_DEVICE_REGIONS, ()))
+SIDEBAR_DEVICE_LAYOUTS = (
+    ("1.37", SIDEBAR_DEVICE_REGIONS_1_37, ()),
+    ("1.38", SIDEBAR_DEVICE_REGIONS, ()),
+    ("1.39", SIDEBAR_DEVICE_REGIONS_1_39, ()),
+)
 # (name, stock, filtered, label) of the two anchor swaps outside the regions.
 SIDEBAR_DEVICE_SWAPS = (
     ("sidebar device filter mount", SIDEBAR_DEVICE_MOUNT, SIDEBAR_DEVICE_MOUNT_FILTER, "sidebar device filter: title-bar dropdown"),
@@ -2959,8 +3209,8 @@ def _plan_sidebar_device_filter(data) -> list[tuple[int, bytes, bytes, str]]:
     return replacements
 
 
-# --pinned-activity-sort (desktop-v1.37.0-v1.38.0; the region and the swap are
-# byte-identical in both). Upstream orders PINNED by pin time whatever the
+# --pinned-activity-sort (desktop-v1.37.0-v1.39.0; the region is byte-identical
+# in all three, the swap is byte-identical in 1.37 and 1.38). Upstream orders PINNED by pin time whatever the
 # Workspaces sort menu says (partitionSidebarWorkspacesByPinned). With the flag
 # the PINNED rows follow the same mode as the project children: Last active
 # (lastActivityAt, else updatedAt) or Date created (createdAt), newest first,
@@ -2999,13 +3249,19 @@ PINNED_SORT_REGIONS = (
 PINNED_SORT_SWAPS = (
     ("pinned activity sort data", PINNED_SORT_DATA, PINNED_SORT_DATA_SORTED, "pinned activity sort: sorted pinned list"),
 )
+# 1.39 re-cuts the data line (PINNED_SORT_DATA_1_39); the region is byte-identical.
+PINNED_SORT_SWAPS_1_39 = (
+    ("pinned activity sort data", PINNED_SORT_DATA_1_39, PINNED_SORT_DATA_SORTED_1_39, PINNED_SORT_SWAPS[0][3]),
+)
+# Every supported release shape of the swaps; a bundle matches exactly one.
+PINNED_SORT_RELEASES = (PINNED_SORT_SWAPS, PINNED_SORT_SWAPS_1_39)
 PINNED_SORT_CHUNK_NAMES = (
     ("reactExports", "useV2UserPreferences"),
     ("pasUseSorted", "pasRows"),
 )
 # Upstream's sort helpers the injected JS calls; module-scope declarations of the layout chunk.
 PINNED_SORT_DEFINED_NAMES = ("makeStableComparator", "getWorkspaceTimestamp", "haveSameItems")
-# Their exact stock source (byte-identical in 1.37.0 and 1.38.0). The call in
+# Their exact stock source (byte-identical in 1.37.0, 1.38.0 and 1.39.0). The call in
 # PINNED_SORT_JS relies on these signatures and on the newest-first order, so a
 # reshaped helper (swapped parameters, reversed diff) refuses the family instead
 # of silently sorting PINNED by name.
@@ -3033,7 +3289,8 @@ PINNED_SORT_HELPERS = (
 
 def _plan_pinned_activity_sort(data) -> list[tuple[int, bytes, bytes, str]]:
     """Validate the layout chunk, the room region and the data swap; return the writes still needed."""
-    swaps = [pair for _name, *pair, _label in PINNED_SORT_SWAPS]
+    release = _swap_release(data, PINNED_SORT_RELEASES)
+    swaps = [pair for _name, *pair, _label in release]
     _require_family_chunks(data, ((PINNED_SORT_REGIONS, *PINNED_SORT_CHUNK_NAMES),), "pinned activity sort", swaps)
     found = _region_chunk(data, PINNED_SORT_REGIONS, "pinned activity sort")
     if found is not None:
@@ -3048,14 +3305,31 @@ def _plan_pinned_activity_sort(data) -> list[tuple[int, bytes, bytes, str]]:
     replacements = []
     for region in PINNED_SORT_REGIONS:
         replacements.extend(_plan_region_rewrite(data, region))
-    for name, stock, sorted_, label in PINNED_SORT_SWAPS:
+    for name, stock, sorted_, label in release:
         offset, old = _single_variant(data, name, [stock, sorted_])
         if old == stock:
             replacements.append((offset, stock, sorted_, label))
     return replacements
 
 
-# --sort-projects and --pin-projects (desktop-v1.37.0-v1.38.0), usable alone or
+def _swap_release(data, releases):
+    """Return the swaps of the one release whose stock or patched shapes the bundle holds.
+
+    Shapes of two releases in one bundle fail closed here; a bundle without any
+    shape gets the first release, whose swap check then names the missing anchor.
+    """
+    found = sorted({
+        index for index, swaps in enumerate(releases) for _name, *shapes, _label in swaps
+        for shape in shapes if _find_all(data, shape)
+    })
+    if len(found) > 1:
+        raise RuntimeError(
+            f"{releases[0][0][0]}: swap anchors of several releases; bundle structure may have changed"
+        )
+    return releases[found[0] if found else 0]
+
+
+# --sort-projects and --pin-projects (desktop-v1.37.0-v1.39.0), usable alone or
 # together. Upstream keeps the project order manual whatever the Workspaces sort
 # menu says (sortDashboardSidebarProjects sorts only inside each project).
 #   --sort-projects: a "Sort projects too" checkbox closes the sort menu. On,
@@ -3274,6 +3548,51 @@ SORT_PROJECTS_SWAPS = (
 PIN_PROJECTS_SWAPS = (
     ("pin projects menu", PIN_PROJECTS_MENU, PIN_PROJECTS_MENU_ITEM, "pin projects: project menu item"),
 )
+# 1.39: the hook and the checkbox regions are byte-identical. The store's room
+# run (useWorkspaceNamingFailedToast .. PreUpdateConfirmPopover) lost
+# usePaymentFailedCard to a run of its own, usePaymentFailedCard ..
+# ONE_HOUR_MS (ReleaseNotesDialog), which keeps the same five-line comment and
+# takes the store before formatReleaseDate. The menu item region is re-pinned
+# with the same edits. The three swaps are the 1.39 shapes.
+# The sort menu grows a Show group (All / Local / Cloud host filter) after the
+# hint; the checkbox stays right after the hint, so it now sits above that
+# group. The project context menu wraps the checkout items in a hasCheckout
+# fragment (cloud-repo stand-in projects have none); Pin / Unpin project joins
+# them after Import worktrees, so cloud-repo projects cannot be pinned.
+PROJECT_ORDER_REGIONS_1_39 = (
+    PROJECT_ORDER_REGIONS[0],
+    RegionRewrite(
+        label=PROJECT_ORDER_REGIONS[1].label,
+        start=b"function usePaymentFailedCard({\n",
+        end=b"const ONE_HOUR_MS = 60 * 60 * 1e3;\n",
+        length=8612,
+        stock_sha256="cbecc490953589cb393d4ddebc7ebc50684a4bc7f4c0ad3112ee18d3f7bf1d98",
+        patched_sha256="9f9a01b556181d4d873d48d6b467180fdbaf07bcec4a22b66f90982fa62e6258",
+        edits=(
+            PROJECT_ORDER_REGIONS[1].edits[0],
+            _insert_before(b"function formatReleaseDate(date, {\n", PROJECT_ORDER_MARK + PROJECT_ORDER_STORE_JS),
+        ),
+    ),
+)
+PIN_PROJECTS_REGIONS_1_39 = (_rebased(PIN_PROJECTS_REGIONS[0], 10244, "95af2fa15a9eefb35cda72309e21fa458e38981f1144e466d132b0257f3dc89d", "7616731ff7f78c678ba341c632b1e314d3f53acf8ef783d1659211638c59976c"),)
+PROJECT_ORDER_SWAPS_1_39 = (("project order data", PROJECT_ORDER_DATA_1_39, PROJECT_ORDER_DATA_SORTED_1_39, PROJECT_ORDER_SWAPS[0][3]),)
+SORT_PROJECTS_SWAPS_1_39 = (("sort projects menu", SORT_PROJECTS_MENU_1_39, SORT_PROJECTS_MENU_ITEM_1_39, SORT_PROJECTS_SWAPS[0][3]),)
+PIN_PROJECTS_SWAPS_1_39 = (("pin projects menu", PIN_PROJECTS_MENU_1_39, PIN_PROJECTS_MENU_ITEM_1_39, PIN_PROJECTS_SWAPS[0][3]),)
+# (name, (core, sort, pin) regions, hook variants, (core, sort, pin) swaps): every
+# supported release layout. _select_layout picks it by the regions; the swaps
+# have to be that release's shapes, so a mixed bundle fails closed.
+PROJECT_ORDER_LAYOUTS = (
+    (
+        "1.37-1.38", (*PROJECT_ORDER_REGIONS, *SORT_PROJECTS_REGIONS, *PIN_PROJECTS_REGIONS), PROJECT_ORDER_HOOK_VARIANTS,
+        (PROJECT_ORDER_REGIONS, SORT_PROJECTS_REGIONS, PIN_PROJECTS_REGIONS),
+        (PROJECT_ORDER_SWAPS, SORT_PROJECTS_SWAPS, PIN_PROJECTS_SWAPS),
+    ),
+    (
+        "1.39", (*PROJECT_ORDER_REGIONS_1_39, *SORT_PROJECTS_REGIONS, *PIN_PROJECTS_REGIONS_1_39), (),
+        (PROJECT_ORDER_REGIONS_1_39, SORT_PROJECTS_REGIONS, PIN_PROJECTS_REGIONS_1_39),
+        (PROJECT_ORDER_SWAPS_1_39, SORT_PROJECTS_SWAPS_1_39, PIN_PROJECTS_SWAPS_1_39),
+    ),
+)
 # (imported names, added names) of each part, checked on the layout chunk.
 PROJECT_ORDER_CHUNK_NAMES = (
     ("reactExports",),
@@ -3288,7 +3607,7 @@ PIN_PROJECTS_CHUNK_NAMES = (
     ("lppPinItem",),
 )
 # Upstream's sort helpers lppUse calls (module-scope declarations of the layout
-# chunk) and their exact stock source, byte-identical in 1.37.0 and 1.38.0. The
+# chunk) and their exact stock source, byte-identical in 1.37.0, 1.38.0 and 1.39.0. The
 # order relies on these signatures, the newest-first comparator and
 # sortDashboardSidebarProjects returning the project list (not a copy) under
 # Manual order, so a reshaped helper refuses the family before any write.
@@ -3348,21 +3667,47 @@ PROJECT_ORDER_HELPERS = (
 
 def _plan_project_order(data, sort_projects: bool, pin_projects: bool) -> list[tuple[int, bytes, bytes, str]]:
     """Validate the layout chunk, the family regions and swaps of the selected flags; return the writes still needed."""
+    layout = _select_layout(data, PROJECT_ORDER_LAYOUTS, "project order")
+    _name, _regions, hook_variants, (core, sort, pin), (core_swaps, sort_swaps, pin_swaps) = layout
+    # Every swap shape of the other releases, whichever flags are selected: a
+    # bundle holding one of them next to this release's layout is mixed. A match
+    # inside one of this release's shapes is that shape (1.38's patched pin menu
+    # line is the tail of 1.39's).
+    own = [
+        (offset, offset + len(shape)) for part in layout[4] for _swap, *shapes, _label in part
+        for shape in shapes for offset in _find_all(data, shape)
+    ]
+    foreign = sorted({
+        swap for other in PROJECT_ORDER_LAYOUTS if other is not layout for part in other[4]
+        for swap, *shapes, _label in part for shape in shapes for offset in _find_all(data, shape)
+        if not any(start <= offset and offset + len(shape) <= stop for start, stop in own)
+    })
+    if foreign:
+        raise RuntimeError(
+            f"project order: {', '.join(foreign)} anchor of another release next to the {layout[0]} layout; "
+            "bundle structure may have changed"
+        )
     # The hook region's release shape, so the name check masks its real length.
-    hook = next(
-        (shape for shape in PROJECT_ORDER_HOOK_VARIANTS if _region_fits(data, shape, ())), PROJECT_ORDER_REGIONS[0]
-    )
-    parts = [((hook, *PROJECT_ORDER_REGIONS[1:]), PROJECT_ORDER_CHUNK_NAMES, PROJECT_ORDER_SWAPS)]
+    hook = next((shape for shape in hook_variants if _region_fits(data, shape, ())), core[0])
+    parts = [((hook, *core[1:]), PROJECT_ORDER_CHUNK_NAMES, core_swaps)]
     unselected = []
     for selected, part in (
-        (sort_projects, (SORT_PROJECTS_REGIONS, SORT_PROJECTS_CHUNK_NAMES, SORT_PROJECTS_SWAPS)),
-        (pin_projects, (PIN_PROJECTS_REGIONS, PIN_PROJECTS_CHUNK_NAMES, PIN_PROJECTS_SWAPS)),
+        (sort_projects, (sort, SORT_PROJECTS_CHUNK_NAMES, sort_swaps)),
+        (pin_projects, (pin, PIN_PROJECTS_CHUNK_NAMES, pin_swaps)),
     ):
         (parts if selected else unselected).append(part)
     others = (
         tuple(region for part_regions, _names, _swaps in unselected for region in part_regions),
         tuple(patched for _regions, _names, part_swaps in unselected for _name, _stock, patched, _label in part_swaps),
     )
+    # The unselected parts' regions as well: _select_layout returns the best-fitting
+    # layout when none fits whole, so a room of another release there is mixed.
+    misfit = [region.label for region in others[0] if not _region_fits(data, region, ())]
+    if misfit:
+        raise RuntimeError(
+            f"project order: {', '.join(misfit)} does not fit the {layout[0]} layout; "
+            "bundle structure may have changed"
+        )
     regions = tuple(region for part_regions, _names, _swaps in parts for region in part_regions)
     swaps = [swap for _regions, _names, part_swaps in parts for swap in part_swaps]
     imported = tuple(name for _regions, (names, _added), _swaps in parts for name in names)
@@ -3379,7 +3724,7 @@ def _plan_project_order(data, sort_projects: bool, pin_projects: bool) -> list[t
                 raise RuntimeError(
                     f"project order: upstream {name} changed shape in {path}; re-derive the order (patches/REBASE.md)"
                 )
-    replacements = _plan_region_rewrite(data, PROJECT_ORDER_REGIONS[0], PROJECT_ORDER_HOOK_VARIANTS)
+    replacements = _plan_region_rewrite(data, core[0], hook_variants)
     for region in regions[1:]:
         replacements.extend(_plan_region_rewrite(data, region))
     for name, stock, patched, label in swaps:
@@ -3563,7 +3908,7 @@ def plan_replacements(
         # Verify-only: the retired indent patch's region must still look the
         # way upstream shipped it in 1.25.1 or 1.26.0+; any other shape needs
         # a review.
-        _indent_offset, indent_variant = _single_variant(
+        indent_variants = _row_variants(
             data,
             "upstream workspace indentation",
             [UPSTREAM_INDENT_ASSERTION, UPSTREAM_INDENT_ASSERTION_1_25_1],
@@ -3572,6 +3917,7 @@ def plan_replacements(
             SIDEBAR_RELEASE_CURRENT
             if indent_variant == UPSTREAM_INDENT_ASSERTION
             else SIDEBAR_RELEASE_LEGACY
+            for _offset, indent_variant, _row in indent_variants
         }
         header_generations = set()
         offset, old = _single_variant(
@@ -3670,9 +4016,13 @@ def plan_replacements(
                 (offset, old, badge_target, "sidebar: automation failure badge overlay")
             )
         for name, source, target, label in sidebar_variants:
-            offset, old = _single_variant(data, name, [source, target])
-            if old != target:
-                replacements.append((offset, old, target, label))
+            if source == WORKSPACE_ROW_COMPACT:
+                found = _row_variants(data, name, [source, target])
+            else:
+                found = [(*_single_variant(data, name, [source, target]), "")]
+            for offset, old, row in found:
+                if old != target:
+                    replacements.append((offset, old, target, label + row))
         for current, legacy in zip(
             TOP_NAV_LABEL_VARIANTS, TOP_NAV_LABEL_VARIANTS_1_25_1, strict=True
         ):

@@ -43,12 +43,18 @@ PATCHED = (FIXTURES / "superset-1.37.0-pinned-sort-r1.patched.js").read_bytes()
 # The data line as the real chunk holds it, kept as a fixture so anchor drift fails here.
 DATA = (FIXTURES / "superset-1.37.0-pinned-sort-data.js").read_bytes()
 DATA_SORTED = (FIXTURES / "superset-1.37.0-pinned-sort-data.patched.js").read_bytes()
+# desktop-v1.39.0 (LUBOS-2797): the room region is byte-identical, the data line gains inlineCloudWorkspaces
+# (cut from the real 1.39.0 layout-DOij_wUN.js).
+DATA_139 = (FIXTURES / "superset-1.39.0-pinned-sort-data.js").read_bytes()
+DATA_SORTED_139 = (FIXTURES / "superset-1.39.0-pinned-sort-data.patched.js").read_bytes()
 LABELS = [REGION.label] + [label for *_rest, label in MODULE.PINNED_SORT_SWAPS]
-# Every shape of status filter region 3 that a supported release can present, with its real stock bytes.
+# Every shape of status filter region 3 that a supported release can present, with its real stock bytes
+# and the data line that release holds.
 REGION_3 = (
-    (MODULE.STATUS_FILTER_REGIONS[2], "superset-1.36.0-status-filter-r3.js"),
-    (MODULE.STATUS_FILTER_REGION_VARIANTS[0], "superset-1.37.0-status-filter-r3.js"),
-    (MODULE.STATUS_FILTER_REGIONS_1_38[2], "superset-1.38.0-status-filter-r3.js"),
+    (MODULE.STATUS_FILTER_REGIONS[2], "superset-1.36.0-status-filter-r3.js", DATA, DATA_SORTED),
+    (MODULE.STATUS_FILTER_REGION_VARIANTS[0], "superset-1.37.0-status-filter-r3.js", DATA, DATA_SORTED),
+    (MODULE.STATUS_FILTER_REGIONS_1_38[2], "superset-1.38.0-status-filter-r3.js", DATA, DATA_SORTED),
+    (MODULE.STATUS_FILTER_REGIONS_1_39[2], "superset-1.39.0-status-filter-r3.js", DATA_139, DATA_SORTED_139),
 )
 
 LAYOUT_NAMES = device_tests.imports(MODULE.PINNED_SORT_CHUNK_NAMES[0]) + b"".join(MODULE.PINNED_SORT_HELPERS)
@@ -140,13 +146,27 @@ class SwapTest(unittest.TestCase):
             self.assertIn(name, DATA_SORTED)
         node_check(self, DATA_SORTED)
 
+    # Value: protects=the 1.39 swap is the module constant, length-preserving, keeps every binding and only rebinds pinnedWorkspaces, and the two releases' swap labels match; fails_when=the 1.39 anchor drifts from the real bytes or the swap drops a binding; why_new=LUBOS-2797; seam=real 1.39.0 bytes
+    def test_1_39_swap_is_exact_and_length_preserving(self):
+        self.assertEqual(MODULE.PINNED_SORT_DATA_1_39, DATA_139)
+        self.assertEqual(MODULE.PINNED_SORT_DATA_SORTED_1_39, DATA_SORTED_139)
+        self.assertEqual(len(DATA_139), len(DATA_SORTED_139))
+        self.assertIn(b"useDashboardSidebarData({ inlineCloudWorkspaces })", DATA_SORTED_139)
+        self.assertIn(b"  const pinnedWorkspaces = pasUseSorted(pasRows), {", DATA_SORTED_139)
+        names = [line.strip(b" ,") for line in DATA_139.splitlines() if line.startswith(b"    ")]
+        self.assertEqual(len(names), 14)
+        for name in names:
+            self.assertIn(name, DATA_SORTED_139)
+        self.assertEqual([label for *_rest, label in MODULE.PINNED_SORT_SWAPS_1_39], LABELS[1:])
+        node_check(self, DATA_SORTED_139)
+
     # Value: protects=every supported shape of status filter region 3 holds the data line once and declares it shared, so the filter's rewrite keeps the sorted line and a sorted line still reads as the stock region; fails_when=the pair is missing on one release shape (the second run then reads "neither stock nor patched" or the filter rewrite restores the stock line); why_new=new family; seam=real 1.36.0, 1.37.0 and 1.38.0 region 3
     def test_status_region_3_keeps_the_sorted_line_on_every_release(self):
-        for region, fixture in REGION_3:
+        for region, fixture, DATA, DATA_SORTED in REGION_3:  # noqa: N806  (the release's data line)
             with self.subTest(fixture=fixture):
                 stock = (FIXTURES / fixture).read_bytes()
                 self.assertEqual(stock.count(DATA), 1)
-                self.assertIn((MODULE.PINNED_SORT_DATA, MODULE.PINNED_SORT_DATA_SORTED), region.shared)
+                self.assertIn((DATA, DATA_SORTED), region.shared)
                 self.assertIn((MODULE.SIDEBAR_FOOTER, MODULE.SIDEBAR_FOOTER_HIDDEN), region.shared)
                 for anchor, _replacement in region.edits:
                     self.assertNotIn(anchor, DATA)
@@ -216,6 +236,26 @@ class BundleTest(unittest.TestCase):
                 half, changes = patch(bundle(layout))
                 self.assertEqual(changes, [label])
                 self.assertEqual(half, full)
+
+    # Value: protects=the 1.39 data line is swapped with the same region, re-runs to nothing and reverts; a chunk holding the data lines of two releases fails closed; fails_when=the 1.39 swap is not wired or the release is picked by list order; why_new=LUBOS-2797; seam=temp ASAR
+    def test_1_39_apply_rerun_revert_and_mixed_release(self):
+        original = bundle(layout_chunk(data=DATA_139))
+        with tempfile.TemporaryDirectory() as tmp:
+            target, backups = Path(tmp) / "app.asar", Path(tmp) / "backups"
+            target.write_bytes(original)
+            options = dict(size=6, hide_tray=False, custom_project_icons=False, keep_icon_on_hover=False, pinned_activity_sort=True)
+            _backup, changes = MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options)
+            self.assertEqual(sorted(changes), sorted(LABELS))
+            self.assertEqual(target.read_bytes(), original.replace(STOCK, PATCHED).replace(DATA_139, DATA_SORTED_139))
+            self.assertEqual(MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options), (None, []))
+            MODULE.revert(target, backups)
+            self.assertEqual(target.read_bytes(), original)
+        both = layout_chunk(data=DATA_139) + b"function Again() {\n" + DATA + b"}\n"
+        with self.assertRaisesRegex(RuntimeError, "swap anchors of several releases"):
+            patch(bundle(both))
+        reshaped = DATA_139.replace(b"inlineCloudWorkspaces\n", b"inlineCloudWorkspaces, x\n")
+        with self.assertRaisesRegex(RuntimeError, "lacks a swap anchor"):
+            patch(bundle(layout_chunk(data=reshaped)))
 
     # Value: protects=a bundle without the layout chunk (another app, a reshaped release) is refused before a write; fails_when=a missing region is skipped silently; why_new=new family; seam=none
     def test_foreign_bundle_fails_closed(self):
@@ -356,7 +396,14 @@ class CompositionTest(unittest.TestCase):
 
     def stock(self, release, extra=()):
         """`extra`: (region, stock) pairs of another family, placed and chained like the rest."""
-        if release == "1.38":
+        device_stock = device_tests.DF_STOCK
+        if release == "1.39":
+            status = icon_tests.SupersetSidebarStatusFilter139PatchTest("test_each_release_selects_its_own_layout")
+            regions = status.regions()
+            device, device_stock, cloud = MODULE.SIDEBAR_DEVICE_REGIONS_1_39, device_tests.DF_STOCK_139, b""
+            palette = list(zip(palette_tests.REGIONS_139, palette_tests.STOCK_139, strict=True))
+            hotkeys = palette_tests.HOTKEYS_138
+        elif release == "1.38":
             status = icon_tests.SupersetSidebarStatusFilter138PatchTest("test_each_release_selects_its_own_layout")
             regions = status.regions()
             device, cloud = MODULE.SIDEBAR_DEVICE_REGIONS, b""
@@ -370,7 +417,7 @@ class CompositionTest(unittest.TestCase):
             device, cloud = MODULE.SIDEBAR_DEVICE_REGIONS_1_37, device_tests.CLOUD
             palette = list(zip(palette_tests.REGIONS, palette_tests.STOCK, strict=True))
             hotkeys = palette_tests.HOTKEYS
-        regions += list(zip(device, device_tests.DF_STOCK, strict=True)) + palette + [(REGION, STOCK), *extra]
+        regions += list(zip(device, device_stock, strict=True)) + palette + [(REGION, STOCK), *extra]
         by_start = {region.start: (region, stock) for region, stock in regions}
         followers = {region.end for region, _stock in regions if region.end in by_start}
         chains = []
@@ -383,7 +430,9 @@ class CompositionTest(unittest.TestCase):
                 chain += stock
             chains.append(chain + region.end)
         base = icon_tests.SupersetHideNavButtonsPatchTest("test_three_buttons_are_hidden_and_the_rest_stay").stock_bundle()
-        return b"|".join([base, *chains, device_tests.MOUNT + cloud, self.PINNED.STOCK_THUMBNAIL, self.PINNED.STOCK_PREFIX, hotkeys])
+        # 1.39 regions name the new sidebar: with_row_pair brings the real row pair, pinned anchors included.
+        pinned = [] if release == "1.39" else [self.PINNED.STOCK_THUMBNAIL, self.PINNED.STOCK_PREFIX]
+        return icon_tests.with_row_pair(b"|".join([base, *chains, device_tests.MOUNT + cloud, *pinned, hotkeys]))
 
     def patch(self, data, *families, sort=True):
         flags = dict(self.BASE_FLAGS, pinned_activity_sort=sort)
@@ -393,9 +442,10 @@ class CompositionTest(unittest.TestCase):
 
     # Value: protects=the sort composes with each named family in either order: the same bytes whichever runs first, both orders equal the joint run, a later run of either is a no-op, and neither undoes the other; fails_when=the data line inside status region 3 is not a declared shared pair (the filter then restores the stock line or refuses the sorted region), the room region overlaps another family, or a family's plan depends on the other's state; why_new=contract composition rule; seam=real 1.36-1.38 status, device and palette regions, real hotkey registries
     def test_each_family_in_either_order_yields_the_same_bytes(self):
-        for release in ("1.37", "1.38"):
+        for release in ("1.37", "1.38", "1.39"):
             stock = self.stock(release)
-            self.assertEqual(stock.count(DATA), 1)
+            DATA_SORTED = DATA_SORTED_139 if release == "1.39" else globals()["DATA_SORTED"]  # noqa: N806
+            self.assertEqual(stock.count(DATA_139 if release == "1.39" else DATA), 1)
             for family in self.FAMILIES:
                 with self.subTest(release=release, family=family):
                     together, changes = self.patch(stock, family)
@@ -413,9 +463,10 @@ class CompositionTest(unittest.TestCase):
     # Value: protects=the full production set (every named family at once) plus the sort gives the same bytes in both orders and re-runs to nothing; with the status filter the data line is folded into the region 3 rewrite (one write); fails_when=two families' writes overlap or the fold is lost; why_new=contract composition rule; seam=real fixtures as above
     def test_all_families_at_once_in_either_order(self):
         everything = list(self.FAMILIES)
-        for release in ("1.37", "1.38"):
+        for release in ("1.37", "1.38", "1.39"):
             with self.subTest(release=release):
                 stock = self.stock(release)
+                DATA_SORTED = DATA_SORTED_139 if release == "1.39" else globals()["DATA_SORTED"]  # noqa: N806
                 together, changes = self.patch(stock, *everything)
                 self.assertIn(REGION.label, changes)
                 self.assertNotIn(LABELS[1], changes)  # folded into "status filter: sticky chip row"

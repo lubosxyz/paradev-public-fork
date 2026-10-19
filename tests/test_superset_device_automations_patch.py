@@ -41,6 +41,14 @@ DF_REGIONS = MODULE.SIDEBAR_DEVICE_REGIONS
 DF_REGIONS_137 = MODULE.SIDEBAR_DEVICE_REGIONS_1_37
 DF_STOCK = [(FIXTURES / f"superset-1.38.0-device-filter-r{n}.js").read_bytes() for n in range(1, 6)]
 DF_PATCHED = [(FIXTURES / f"superset-1.38.0-device-filter-r{n}.patched.js").read_bytes() for n in range(1, 6)]
+# desktop-v1.39.0 (LUBOS-2797): the automations regions and device regions 2-4 are byte-identical; device
+# regions 1 and 5 are cut from the real 1.39.0 layout-DOij_wUN.js.
+DF_REGIONS_139 = MODULE.SIDEBAR_DEVICE_REGIONS_1_39
+DF_STOCK_139 = [(FIXTURES / "superset-1.39.0-device-filter-r1.js").read_bytes(), *DF_STOCK[1:4], (FIXTURES / "superset-1.39.0-device-filter-r5.js").read_bytes()]
+DF_PATCHED_139 = [
+    (FIXTURES / "superset-1.39.0-device-filter-r1.patched.js").read_bytes(), *DF_PATCHED[1:4],
+    (FIXTURES / "superset-1.39.0-device-filter-r5.patched.js").read_bytes(),
+]
 AH_LABELS = [region.label for region in AH_REGIONS]
 DF_SWAP_LABELS = [label for *_rest, label in MODULE.SIDEBAR_DEVICE_SWAPS]
 DF_LABELS = [region.label for region in DF_REGIONS] + DF_SWAP_LABELS
@@ -137,6 +145,19 @@ class RegionTest(unittest.TestCase):
                 self.assertEqual(old.end == new.end, n != 3)
         self.assertEqual(DF_REGIONS_137[2].end, b"async function invalidateWorkspaceQueries(utils) {\n")
 
+    # Value: protects=the 1.39 device regions are exactly the reviewed fixtures, keep their length, re-run to nothing and parse, and reuse only the byte-identical 1.38 regions; fails_when=a 1.39 digest, edit or the injected JS changes without its fixture, or a re-pinned region keeps a 1.38 legacy digest; why_new=LUBOS-2797; seam=real 1.39.0 bytes
+    def test_1_39_regions_are_pinned_idempotent_and_parseable(self):
+        for n, (region, old, stock, patched) in enumerate(zip(DF_REGIONS_139, DF_REGIONS, DF_STOCK_139, DF_PATCHED_139, strict=True), 1):
+            with self.subTest(region=region.label):
+                self.assertEqual(region is old, n in (2, 3, 4))
+                self.assertEqual((region.legacy_sha256, region.upgrades), ((), ()))
+                self.assertEqual(len(stock), region.length)
+                self.assertEqual(hashlib.sha256(stock).hexdigest(), region.stock_sha256)
+                self.assertEqual(hashlib.sha256(patched).hexdigest(), region.patched_sha256)
+                self.assertEqual(MODULE._plan_region_rewrite(stock + region.end, region), [(0, stock, patched, region.label)])
+                self.assertEqual(MODULE._plan_region_rewrite(patched + region.end, region), [])
+                node_check(self, patched)
+
 
 class AutomationsHeaderEditsTest(unittest.TestCase):
     """--automations-header: one list, the header row carries the filter, All runs and the search."""
@@ -220,6 +241,27 @@ class DeviceFilterEditsTest(unittest.TestCase):
                     if replacement == b"":
                         # Only whole `//` comment lines are deleted for room.
                         self.assertTrue(all(line.lstrip().startswith(b"// ") for line in anchor.splitlines()))
+                    body = body.replace(anchor, replacement)
+                self.assertEqual(new.rstrip(b" "), body)
+
+    # Value: protects=on 1.39 the rows are filtered with the new sidebar's cloud row map and the groups line reads the cloud-decorated groups, every other edit is the 1.38 one, and the room regions change nothing but their comments; fails_when=the 1.39 data edits drift to the 1.38 lines (the inline cloud rows would list as one device each) or a 1.39 region rewrites upstream code; why_new=LUBOS-2797; seam=real 1.39.0 layout
+    def test_1_39_sidebar_data_is_filtered_with_the_cloud_rows(self):
+        data = DF_PATCHED_139[0]
+        self.assertIn(b"  const visibleSidebarWorkspaces = sdfUseRows(sidebarWorkspaces, cloudRowById);\n", data)
+        self.assertIn(b"  const groups = sdfUseList(useStableDashboardSidebarProjects(decoratedGroups), sdfGroups);\n", data)
+        self.assertIn(b"    sessionChildren: sdfUseList(sessions.children, sdfKids),\n", data)
+        self.assertEqual(data.count(MODULE.SIDEBAR_DEVICE_ROWS_JS_1_39), 1)
+        self.assertNotIn(MODULE.SIDEBAR_DEVICE_ROWS_JS, data)
+        stock = DF_STOCK_139[0]
+        self.assertLess(stock.index(b"  const cloudRowById = "), stock.index(b"  const visibleSidebarWorkspaces = sidebarWorkspaces;\n"))
+        for region, stock, new in zip(DF_REGIONS_139, DF_STOCK_139, DF_PATCHED_139, strict=True):
+            with self.subTest(region=region.label):
+                self.assertEqual(new.count(MODULE.SIDEBAR_DEVICE_MARK), 1)
+                body = without_comments(stock)
+                for anchor, replacement in region.edits:
+                    if replacement == b"":
+                        self.assertTrue(all(line.lstrip().startswith(b"// ") for line in anchor.splitlines()))
+                    self.assertEqual(body.count(anchor), 1, anchor[:60])
                     body = body.replace(anchor, replacement)
                 self.assertEqual(new.rstrip(b" "), body)
 
@@ -336,6 +378,20 @@ class BundleTest(unittest.TestCase):
         patched, changes = patch(data_137, header=False)
         self.assertEqual(sorted(changes), sorted(DF_LABELS))
         self.assertEqual(patch(patched, header=False)[1], [])
+        data_139 = bundle(layout=layout_chunk(layout=DF_REGIONS_139, regions=DF_STOCK_139))
+        self.assertEqual(MODULE._select_layout(data_139, MODULE.SIDEBAR_DEVICE_LAYOUTS, "sidebar device filter")[0], "1.39")
+        patched, changes = patch(data_139)
+        self.assertEqual(sorted(changes), sorted(AH_LABELS + DF_LABELS))
+        self.assertEqual(patch(patched)[1], [])
+
+    # Value: protects=a bundle mixing 1.38 and 1.39 device regions fails closed before a write; fails_when=layout selection falls back per region; why_new=REBASE.md mixed-release rule (LUBOS-2797); seam=none
+    def test_mixed_release_fails_closed(self):
+        for stale in (0, 4):
+            regions = [DF_STOCK[n] if n == stale else stock for n, stock in enumerate(DF_STOCK_139)]
+            with self.subTest(stale_1_38_region=stale + 1):
+                mixed = bundle(layout=layout_chunk(layout=DF_REGIONS_139, regions=regions))
+                with self.assertRaisesRegex(RuntimeError, "sidebar device filter"):
+                    patch(mixed, header=False)
 
     def test_cli_forwards_both_flags(self):
         with mock.patch.object(MODULE, "patch_file", return_value=(None, [])) as patch_file:
@@ -366,13 +422,16 @@ class CompositionTest(unittest.TestCase):
         Three status regions end where a device region starts (status 2 -> device 1, 7 -> 3, 9 -> 2), so
         each region is followed by the one its end anchor opens, as in the real chunk (no anchor twice).
         """
-        if release == "1.38":
+        if release == "1.39":
+            status = icon_tests.SupersetSidebarStatusFilter139PatchTest("test_each_release_selects_its_own_layout")
+            device, device_stock, cloud = DF_REGIONS_139, DF_STOCK_139, b""
+        elif release == "1.38":
             status = icon_tests.SupersetSidebarStatusFilter138PatchTest("test_each_release_selects_its_own_layout")
-            device, cloud = DF_REGIONS, b""
+            device, device_stock, cloud = DF_REGIONS, DF_STOCK, b""
         else:
             status = icon_tests.SupersetSidebarStatusFilterPatchTest("test_status_filter_is_idempotent")
-            device, cloud = DF_REGIONS_137, CLOUD
-        regions = status.regions() + list(zip(device, DF_STOCK, strict=True))
+            device, device_stock, cloud = DF_REGIONS_137, DF_STOCK, CLOUD
+        regions = status.regions() + list(zip(device, device_stock, strict=True))
         by_start = {region.start: (region, stock) for region, stock in regions}
         followers = {region.end for region, _stock in regions if region.end in by_start}
         chains = []
@@ -385,7 +444,9 @@ class CompositionTest(unittest.TestCase):
                 chain += stock
             chains.append(chain + region.end)
         base = icon_tests.SupersetUiPatchTest.stock_bundle(status)
-        return b"|".join([base, *chains, MOUNT + cloud, self.PINNED.STOCK_THUMBNAIL, self.PINNED.STOCK_PREFIX])
+        # 1.39 regions name the new sidebar: with_row_pair brings the real row pair, pinned anchors included.
+        pinned = [] if release == "1.39" else [self.PINNED.STOCK_THUMBNAIL, self.PINNED.STOCK_PREFIX]
+        return icon_tests.with_row_pair(b"|".join([base, *chains, MOUNT + cloud, *pinned]))
 
     def patch(self, data, device=True, others=True):
         return MODULE.patch_bytes(
@@ -395,15 +456,15 @@ class CompositionTest(unittest.TestCase):
 
     # Value: protects=the device filter composes with the status filter and pinned-icon-only in any order: the same bytes whatever order, every later run is a no-op, and neither family undoes the other; fails_when=the cloud guard inside status region 12 is not a declared shared pair (the second run then reads "neither stock nor patched" or the region rewrite restores the stock guard), or a family's planning depends on the other's state; why_new=contract composition rule; seam=real 1.36-1.38 status regions and the real device regions
     def test_any_order_yields_the_same_bytes(self):
-        for release in ("1.37", "1.38"):
+        for release in ("1.37", "1.38", "1.39"):
             with self.subTest(release=release):
                 stock = self.stock(release)
-                if release == "1.38":
+                if release != "1.37":
                     self.assertEqual(stock.count(CLOUD), 1)
-                    self.assertIn(CLOUD, (FIXTURES / "superset-1.38.0-status-filter-r12.js").read_bytes())
+                    self.assertIn(CLOUD, (FIXTURES / f"superset-{release}.0-status-filter-r12.js").read_bytes())
                 together, changes = self.patch(stock)
-                # On 1.38 the guard swap is folded into the status region 12 rewrite (one write, its label).
-                folded = {"sidebar device filter: cloud section"} if release == "1.38" else set()
+                # Since 1.38 the guard swap is folded into the status region 12 rewrite (one write, its label).
+                folded = {"sidebar device filter: cloud section"} if release != "1.37" else set()
                 self.assertEqual(set(DF_LABELS) - set(changes), folded)
                 self.assertTrue(set(DF_LABELS) <= set(self.patch(stock, others=False)[1]))
                 others_first, _ = self.patch(self.patch(stock, device=False)[0])
@@ -420,15 +481,17 @@ class CompositionTest(unittest.TestCase):
 
     # Value: protects=the shared pair is canonicalised both ways in status region 12: a filtered guard reads as the stock region and survives the rewrite; fails_when=the shared pair is dropped from STATUS_FILTER_REGIONS_1_38; why_new=new family; seam=real 1.38.0 status region 12
     def test_status_region_12_keeps_the_filtered_guard(self):
-        region = MODULE.STATUS_FILTER_REGIONS_1_38[11]
-        stock = (FIXTURES / "superset-1.38.0-status-filter-r12.js").read_bytes()
-        self.assertEqual(region.shared, ((MODULE.SIDEBAR_DEVICE_CLOUD, MODULE.SIDEBAR_DEVICE_CLOUD_FILTER),))
-        filtered = stock.replace(MODULE.SIDEBAR_DEVICE_CLOUD, MODULE.SIDEBAR_DEVICE_CLOUD_FILTER)
-        [(_, _, from_filtered, _)] = MODULE._plan_region_rewrite(filtered + region.end, region)
-        [(_, _, from_stock, _)] = MODULE._plan_region_rewrite(stock + region.end, region)
-        self.assertEqual(from_filtered, from_stock.replace(MODULE.SIDEBAR_DEVICE_CLOUD, MODULE.SIDEBAR_DEVICE_CLOUD_FILTER))
-        self.assertEqual(MODULE._plan_region_rewrite(from_filtered + region.end, region), [])
-        node_check(self, from_filtered)
+        for release, regions in (("1.38", MODULE.STATUS_FILTER_REGIONS_1_38), ("1.39", MODULE.STATUS_FILTER_REGIONS_1_39)):
+            with self.subTest(release=release):
+                region = regions[11]
+                stock = (FIXTURES / f"superset-{release}.0-status-filter-r12.js").read_bytes()
+                self.assertEqual(region.shared, ((MODULE.SIDEBAR_DEVICE_CLOUD, MODULE.SIDEBAR_DEVICE_CLOUD_FILTER),))
+                filtered = stock.replace(MODULE.SIDEBAR_DEVICE_CLOUD, MODULE.SIDEBAR_DEVICE_CLOUD_FILTER)
+                [(_, _, from_filtered, _)] = MODULE._plan_region_rewrite(filtered + region.end, region)
+                [(_, _, from_stock, _)] = MODULE._plan_region_rewrite(stock + region.end, region)
+                self.assertEqual(from_filtered, from_stock.replace(MODULE.SIDEBAR_DEVICE_CLOUD, MODULE.SIDEBAR_DEVICE_CLOUD_FILTER))
+                self.assertEqual(MODULE._plan_region_rewrite(from_filtered + region.end, region), [])
+                node_check(self, from_filtered)
 
 
 @live_host_only("anchors, names and chunk syntax are checked against the Superset.app bundle installed on this host")
@@ -473,9 +536,21 @@ class InstalledTest(unittest.TestCase):
             except RuntimeError as exc:
                 self.skipTest(f"installed bundle carries a generation this checkout cannot plan: {exc}")
             both = MODULE.plan_replacements(data, **options, automations_header=True, sidebar_device_filter=True)
-        extra = sorted(w[3] for w in both if w not in others)
+        # On a bundle whose status filter regions are not yet written (a stock install), the device
+        # swap inside a status region is folded into that region's write: same offset, old bytes and
+        # label, new bytes. Only a region that declares a device swap as a shared pair may change so.
+        device_pairs = {(stock, filtered) for _name, stock, filtered, _label in MODULE.SIDEBAR_DEVICE_SWAPS}
+        hosts = {
+            region.label for _name, regions, variants in MODULE.STATUS_FILTER_LAYOUTS for region in (*regions, *variants)
+            if device_pairs & set(region.shared)
+        }
+        keys = {(w[0], w[1], w[3]) for w in others}
+        changed = [w for w in both if w not in others]
+        folded = {(w[0], w[1], w[3]) for w in changed} & keys
+        extra = sorted(w[3] for w in changed if (w[0], w[1], w[3]) not in folded)
         self.assertTrue(set(extra) <= set(AH_LABELS + DF_LABELS), extra)
-        self.assertTrue(set(others) <= set(both))
+        self.assertTrue({label for *_key, label in folded} <= hosts, sorted(label for *_key, label in folded))
+        self.assertTrue({w for w in others if (w[0], w[1], w[3]) not in folded} <= set(both))
 
     # Value: protects=every utility class the injected JS uses is generated in the installed index-*.css (a missing one would silently not style); fails_when=the JS uses a class the stylesheet lacks or upstream drops one; why_new=new families; seam=installed bundle
     def test_installed_css_has_every_injected_class(self):

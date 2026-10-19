@@ -68,6 +68,30 @@ ANCHORS = {key: tuple(value.encode() for value in pair) for key, pair in json.lo
 MENU, MENU_ITEM = ANCHORS["sort"]
 CONTEXT, CONTEXT_ITEM = ANCHORS["pin"]
 SWAPS = (*MODULE.PROJECT_ORDER_SWAPS, *MODULE.SORT_PROJECTS_SWAPS, *MODULE.PIN_PROJECTS_SWAPS)
+# desktop-v1.39.0 (LUBOS-2797): the hook and sort rooms are byte-identical; the 1.38 store room shrank, so
+# the store moves to a new room (usePaymentFailedCard .. ONE_HOUR_MS), and the pin room is re-pinned, both
+# cut from the real 1.39.0 layout-DOij_wUN.js. The order line gains the host filter, the sort menu item
+# sits before the new Show group and the project menu item one level deeper (inside the checkout fragment).
+_HOOK_139, STORE_139 = MODULE.PROJECT_ORDER_REGIONS_1_39
+[PIN_139] = MODULE.PIN_PROJECTS_REGIONS_1_39
+ROOMS_139 = {
+    "hook": ROOMS["hook"],
+    "store": (STORE_139, fixture("superset-1.39.0-project-order-r2.js"), fixture("superset-1.39.0-project-order-r2.patched.js")),
+    "sort": ROOMS["sort"],
+    "pin": (PIN_139, fixture("superset-1.39.0-pin-projects-r1.js"), fixture("superset-1.39.0-pin-projects-r1.patched.js")),
+}
+DATA_139 = fixture("superset-1.39.0-project-order-data.js")
+DATA_SORTED_139 = fixture("superset-1.39.0-project-order-data.patched.js")
+ANCHORS_139 = {key: tuple(value.encode() for value in pair) for key, pair in json.loads(fixture("superset-1.39.0-project-order-anchors.json")).items()}
+SWAPS_139 = (*MODULE.PROJECT_ORDER_SWAPS_1_39, *MODULE.SORT_PROJECTS_SWAPS_1_39, *MODULE.PIN_PROJECTS_SWAPS_1_39)
+# Per release: the four room regions (region, stock, patched) and the stock / patched bytes of each swap.
+PARTS = {
+    "1.37": dict(rooms={**{key: ROOMS[key] for key in ("store", "sort", "pin")}, "hook": ROOMS["hook 1.37"]},
+                 data=(DATA, DATA_SORTED), menu=(MENU, MENU_ITEM), context=(CONTEXT, CONTEXT_ITEM)),
+    "1.38": dict(rooms={key: ROOMS[key] for key in ("hook", "store", "sort", "pin")},
+                 data=(DATA, DATA_SORTED), menu=(MENU, MENU_ITEM), context=(CONTEXT, CONTEXT_ITEM)),
+    "1.39": dict(rooms=ROOMS_139, data=(DATA_139, DATA_SORTED_139), menu=ANCHORS_139["sort"], context=ANCHORS_139["pin"]),
+}
 # Labels each flag selection writes on a stock bundle.
 CORE = [HOOK.label, STORE.label, MODULE.PROJECT_ORDER_SWAPS[0][3]]
 SORT_LABELS = [SORT.label, MODULE.SORT_PROJECTS_SWAPS[0][3]]
@@ -85,18 +109,23 @@ STATUS = (
     (MODULE.STATUS_FILTER_REGIONS_1_38[2], "superset-1.38.0-status-filter-r3.js", (DATA, DATA_SORTED)),
     # The chip bits region is byte-identical (same pin) in 1.36.0-1.38.0.
     (MODULE.STATUS_FILTER_REGIONS_1_38[5], "superset-1.36.0-status-filter-r6.js", (CONTEXT, CONTEXT_ITEM)),
+    (MODULE.STATUS_FILTER_REGIONS_1_39[1], "superset-1.39.0-status-filter-r2.js", ANCHORS_139["sort"]),
+    (MODULE.STATUS_FILTER_REGIONS_1_39[2], "superset-1.39.0-status-filter-r3.js", (DATA_139, DATA_SORTED_139)),
+    (MODULE.STATUS_FILTER_REGIONS_1_39[5], "superset-1.39.0-status-filter-r6.js", ANCHORS_139["pin"]),
 )
 
 IMPORTED = sorted({name for names in (MODULE.PROJECT_ORDER_CHUNK_NAMES, MODULE.SORT_PROJECTS_CHUNK_NAMES, MODULE.PIN_PROJECTS_CHUNK_NAMES) for name in names[0]})
 LAYOUT_NAMES = device_tests.imports(IMPORTED) + b"".join(source for _name, source in MODULE.PROJECT_ORDER_HELPERS)
 
 
-def layout_chunk(rooms=None, data=DATA, menu=MENU, context=CONTEXT, names=LAYOUT_NAMES, release="1.38"):
+def layout_chunk(rooms=None, data=None, menu=None, context=None, names=LAYOUT_NAMES, release="1.38"):
     """The room regions, the order line and both menu anchors in one chunk, as in the real layout chunk."""
-    rooms = dict({key: ROOMS[key][1] for key in ("store", "sort", "pin")}, hook=ROOMS["hook" if release == "1.38" else "hook 1.37"][1], **(rooms or {}))
+    parts = PARTS[release]
+    rooms = dict({key: room[1] for key, room in parts["rooms"].items()}, **(rooms or {}))
+    data, menu, context = (parts[key][0] if value is None else value for key, value in (("data", data), ("menu", menu), ("context", context)))
     body = names
-    for key, region in (("store", STORE), ("sort", SORT), ("pin", PIN)):
-        body += rooms[key] + region.end + b"}) {}\n"
+    for key in ("store", "sort", "pin"):
+        body += rooms[key] + parts["rooms"][key][0].end + b"}) {}\n"
     body += b"function DashboardSidebarProjectsSortMenu() {\n  return _t(" + menu + b"function DashboardSidebarProjectContextMenu() {\n  return _t(" + context + b"x);\n}\n"
     body += b"function DashboardSidebar() {\n" + data + b"}\n"
     return body + rooms["hook"] + HOOK.end + b" DashboardLayout };\n"
@@ -113,11 +142,11 @@ def patch(data, sort=True, pin=True, **flags):
     )
 
 
-def stocked(patched: bytes, *keys: str) -> bytes:
+def stocked(patched: bytes, *keys: str, release="1.38") -> bytes:
     """The stock chunk with the named parts in their patched form ("data", "menu", "context" or a room)."""
-    swaps = {"data": (DATA, DATA_SORTED), "menu": (MENU, MENU_ITEM), "context": (CONTEXT, CONTEXT_ITEM)}
+    parts = PARTS[release]
     for key in keys:
-        old, new = swaps[key] if key in swaps else ROOMS[key][1:]
+        old, new = parts[key] if key in ("data", "menu", "context") else (parts["rooms"][key] if key in parts["rooms"] else ROOMS[key])[1:]
         patched = patched.replace(old, new)
     return patched
 
@@ -246,9 +275,10 @@ class SwapTest(unittest.TestCase):
         ] + list(MODULE.PINNED_SORT_REGIONS)
         anchors = [
             MODULE.SIDEBAR_DEVICE_MOUNT, MODULE.SIDEBAR_DEVICE_CLOUD, MODULE.SIDEBAR_FOOTER, MODULE.PINNED_ICON_STOCK,
-            MODULE.PINNED_PREFIX_STOCK, MODULE.PINNED_SORT_DATA, *(stock for _name, stock, _patched, _label in SWAPS),
+            MODULE.PINNED_PREFIX_STOCK, MODULE.PINNED_SORT_DATA, MODULE.PINNED_SORT_DATA_1_39,
+            *(stock for _name, stock, _patched, _label in SWAPS + SWAPS_139),
         ]
-        for key, (_region, stock, _patched) in ROOMS.items():
+        for key, (_region, stock, _patched) in {**ROOMS, "store 1.39": ROOMS_139["store"], "pin 1.39": ROOMS_139["pin"]}.items():
             for region in others:
                 with self.subTest(room=key, region=region.label):
                     self.assertNotIn(region.start, stock)
@@ -443,8 +473,125 @@ class BundleTest(unittest.TestCase):
             self.assertIs(MODULE.plan_replacements.__kwdefaults__[name], False, name)
 
 
+class Release139Test(unittest.TestCase):
+    """desktop-v1.39.0 (LUBOS-2797): the new store and pin rooms, the reshaped swaps, the release layout."""
+
+    # Value: protects=the 1.39 store and pin rooms are exactly the reviewed fixtures, keep their length, re-run to nothing, parse, change nothing but no-op comments and the listed `//` lines and gain their JS once; the hook and sort rooms are the 1.38 regions; fails_when=a 1.39 digest, edit or the injected JS changes without its fixture, or a 1.39 room rewrites upstream code; why_new=LUBOS-2797; seam=real 1.39.0 bytes
+    def test_new_rooms_are_pinned_and_only_lose_comments(self):
+        self.assertIs(_HOOK_139, HOOK)
+        self.assertEqual(MODULE.PROJECT_ORDER_LAYOUTS[1][3][1], MODULE.SORT_PROJECTS_REGIONS)
+        for key in ("store", "pin"):
+            region, stock, patched = ROOMS_139[key]
+            with self.subTest(room=key):
+                self.assertEqual(region.label, ROOMS[key][0].label)
+                self.assertEqual((region.legacy_sha256, region.upgrades), ((), ()))
+                self.assertEqual(len(stock), region.length)
+                self.assertEqual(hashlib.sha256(stock).hexdigest(), region.stock_sha256)
+                self.assertEqual(hashlib.sha256(patched).hexdigest(), region.patched_sha256)
+                self.assertEqual(MODULE._plan_region_rewrite(stock + region.end, region), [(0, stock, patched, region.label)])
+                self.assertEqual(MODULE._plan_region_rewrite(patched + region.end, region), [])
+                node_check(self, patched)
+                expected = without_comments(stock)
+                for old, new in region.edits:
+                    self.assertEqual(expected.count(old), 1, old[:60])
+                    if new == b"":
+                        self.assertTrue(all(line.strip().startswith(b"//") for line in old.splitlines()))
+                    expected = expected.replace(old, new)
+                self.assertEqual(patched.rstrip(b" "), expected)
+                self.assertEqual(patched.count(INJECTED[key]), 1)
+                self.assertIn(b"}\n" + INJECTED[key], patched)
+                self.assertNotIn(b"lpp", stock)
+
+    # Value: protects=the 1.39 swaps are the fixture bytes, length-preserving, and change only what 1.38 changes: the order line rebinds sortedGroups and adds the drag guard while the host filter lines stay, the checkbox follows the sort hint before the Show group, Pin project follows Import worktrees; fails_when=an anchor drifts from the real bytes, a swap changes length or drops a statement; why_new=LUBOS-2797; seam=real 1.39.0 bytes
+    def test_swaps_are_exact_and_length_preserving(self):
+        self.assertEqual((MODULE.PROJECT_ORDER_DATA_1_39, MODULE.PROJECT_ORDER_DATA_SORTED_1_39), (DATA_139, DATA_SORTED_139))
+        self.assertEqual((MODULE.SORT_PROJECTS_MENU_1_39, MODULE.SORT_PROJECTS_MENU_ITEM_1_39), ANCHORS_139["sort"])
+        self.assertEqual((MODULE.PIN_PROJECTS_MENU_1_39, MODULE.PIN_PROJECTS_MENU_ITEM_1_39), ANCHORS_139["pin"])
+        self.assertEqual([(name, label) for name, _stock, _patched, label in SWAPS_139], [(name, label) for name, _stock, _patched, label in SWAPS])
+        for _name, stock, patched, _label in SWAPS_139:
+            self.assertEqual(len(stock), len(patched))
+            for comment in MODULE.JS_NOOP_COMMENTS:
+                self.assertNotIn(comment, stock)
+        stock_lines, patched_lines = DATA_139.splitlines(), DATA_SORTED_139.splitlines()
+        self.assertEqual(len(stock_lines), len(patched_lines))
+        self.assertEqual(patched_lines[0].rstrip(), b"  const [sortedGroups, lppDrag] = lppUse(orderedGroups, sortMode);")
+        self.assertEqual(patched_lines[1:-1], stock_lines[1:-1])
+        self.assertIn(b"filterDashboardSidebarProjectsByHost(sortedGroups, hostFilter)", patched_lines[1])
+        self.assertEqual(patched_lines[-1], b"  const isProjectDragDisabled = isFilterActive || lppDrag;")
+        node_check(self, DATA_SORTED_139)
+        menu, menu_item = ANCHORS_139["sort"]
+        self.assertEqual(menu_item.rstrip(b" "), b'{ id: "iqSA4j" }) }), jsxRuntimeExports.jsx(lppSortItem, {}),')
+        menu_region = fixture("superset-1.39.0-status-filter-r2.js")
+        hint = menu_region.index(menu)
+        self.assertLess(hint, menu_region.index(b"DropdownMenuRadioGroup", hint))
+        context, context_item = ANCHORS_139["pin"]
+        self.assertEqual(context_item.rstrip(b" "), b'{id:"LhpIB7"}})]}),jsxRuntimeExports.jsx(lppPinItem,{projectId}),')
+
+    # Value: protects=the documented lifecycle per flag selection on the 1.39 layout: exactly its writes, a re-run is a no-op, --revert restores the original bytes; fails_when=a 1.39 part is not wired, a write is not length-preserving, or revert does not restore; why_new=LUBOS-2797; seam=temp ASAR
+    def test_apply_rerun_and_revert(self):
+        for selection, (flags, labels) in SELECTIONS.items():
+            with self.subTest(selection=selection), tempfile.TemporaryDirectory() as tmp:
+                original = bundle(layout_chunk(release="1.39"))
+                self.assertEqual(MODULE._select_layout(original, MODULE.PROJECT_ORDER_LAYOUTS, "project order")[0], "1.39")
+                target, backups = Path(tmp) / "app.asar", Path(tmp) / "backups"
+                target.write_bytes(original)
+                options = dict(size=6, hide_tray=False, custom_project_icons=False, keep_icon_on_hover=False,
+                               sort_projects=flags["sort"], pin_projects=flags["pin"])
+                _backup, changes = MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options)
+                self.assertEqual(sorted(changes), sorted(labels))
+                parts = ["hook", "store", "data"] + (["sort", "menu"] if flags["sort"] else []) + (["pin", "context"] if flags["pin"] else [])
+                self.assertEqual(target.read_bytes(), stocked(original, *parts, release="1.39"))
+                self.assertEqual(MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options), (None, []))
+                MODULE.revert(target, backups)
+                self.assertEqual(target.read_bytes(), original)
+
+    # Value: protects=a chunk mixing 1.38 and 1.39 rooms (either direction, whichever flags run), holding a 1.38 swap shape on the 1.39 layout, or holding one next to the 1.39 shape fails closed before a write; fails_when=layout selection falls back per region, only the selected parts' rooms are checked, a swap of the other release is accepted, or only the selected layout's shapes are counted; why_new=REBASE.md mixed-release rule (LUBOS-2797, Codex rounds 1-2); seam=none
+    def test_mixed_release_fails_closed(self):
+        for key in ("store", "pin"):
+            with self.subTest(stale_room=key):
+                mixed = layout_chunk(release="1.39", rooms={key: ROOMS[key][1]}).replace(
+                    ROOMS[key][1] + ROOMS_139[key][0].end, ROOMS[key][1] + ROOMS[key][0].end
+                )
+                with self.assertRaisesRegex(RuntimeError, "project order"):
+                    patch(bundle(mixed))
+        for key in ("store", "pin"):
+            for selection, (flags, _labels) in SELECTIONS.items():
+                with self.subTest(newer_room=key, selection=selection):
+                    mixed = layout_chunk(rooms={key: ROOMS_139[key][1]}).replace(
+                        ROOMS_139[key][1] + ROOMS[key][0].end, ROOMS_139[key][1] + ROOMS_139[key][0].end
+                    )
+                    self.assertEqual(mixed.count(ROOMS_139[key][1] + ROOMS_139[key][0].end), 1)
+                    # A selected room names its own part; an unselected one the layout it does not fit.
+                    expected = "does not fit the 1.37-1.38 layout" if key == "pin" and not flags["pin"] else "bundle structure may have changed"
+                    with self.assertRaisesRegex(RuntimeError, expected):
+                        patch(bundle(mixed), **flags)
+        for key, stale in (("data", DATA), ("menu", MENU), ("context", CONTEXT)):
+            with self.subTest(stale_swap=key):
+                with self.assertRaisesRegex(RuntimeError, "anchor of another release next to the 1.39 layout"):
+                    patch(bundle(layout_chunk(release="1.39", **{key: stale})))
+        for key, stale in (("data", DATA), ("menu", MENU), ("context", CONTEXT)):
+            for selection, (flags, _labels) in SELECTIONS.items():
+                with self.subTest(extra_swap=key, selection=selection):
+                    extra = layout_chunk(release="1.39") + b"\nfunction staleShape() {\n" + stale + b"\n}\n"
+                    with self.assertRaisesRegex(RuntimeError, "anchor of another release next to the 1.39 layout"):
+                        patch(bundle(extra), **flags)
+
+    # Value: protects=both flags stay opt-in, sticky and additive on 1.39: adding the second flag later adds only its own part; fails_when=the 1.39 core is rewritten by the second flag or a run without a flag fails on its bytes; why_new=LUBOS-2797; seam=none
+    def test_flags_are_sticky_and_additive(self):
+        data = bundle(layout_chunk(release="1.39"))
+        both, _changes = patch(data)
+        for first, second in (("sort", "pin"), ("pin", "sort")):
+            with self.subTest(first=first):
+                one, _changes = patch(data, **SELECTIONS[first][0])
+                self.assertEqual(patch(one, sort=False, pin=False), (one, []))
+                two, changes = patch(one, **SELECTIONS[second][0])
+                self.assertEqual(sorted(changes), sorted(set(SELECTIONS[second][1]) - set(CORE)))
+                self.assertEqual(two, both)
+        self.assertEqual(patch(both), (both, []))
+
+
 class CompositionTest(unittest.TestCase):
-    """--sort-projects / --pin-projects with every other family, in either order, on 1.37 and 1.38.
+    """--sort-projects / --pin-projects with every other family, in either order, on 1.37, 1.38 and 1.39.
 
     The synthetic bundle per release is the pinned sort one (real stock regions of the status filter,
     the device filter, the palette search and the pinned sort room, chained as in the real chunk) plus
@@ -454,7 +601,7 @@ class CompositionTest(unittest.TestCase):
     FAMILIES = {**pinned_tests.CompositionTest.FAMILIES, "pinned activity sort": dict(pinned_activity_sort=True)}
 
     def stock(self, release):
-        rooms = [ROOMS["hook" if release == "1.38" else "hook 1.37"][:2], *(ROOMS[key][:2] for key in ("store", "sort", "pin"))]
+        rooms = [PARTS[release]["rooms"][key][:2] for key in ("hook", "store", "sort", "pin")]
         return pinned_tests.CompositionTest("test_each_family_in_either_order_yields_the_same_bytes").stock(release, rooms)
 
     def patch(self, data, *families, sort=True, pin=True):
@@ -465,9 +612,10 @@ class CompositionTest(unittest.TestCase):
 
     # Value: protects=both flags compose with each named family in either order: the same bytes whichever runs first, both orders equal the joint run, a later run of either is a no-op, and neither undoes the other; fails_when=a swap inside a status region is not a declared shared pair, a room region overlaps another family, or a family's plan depends on the other's state; why_new=contract composition rule; seam=real 1.36-1.38 status, device, palette and pinned sort regions
     def test_each_family_in_either_order_yields_the_same_bytes(self):
-        for release in ("1.37", "1.38"):
+        for release in ("1.37", "1.38", "1.39"):
             stock = self.stock(release)
-            for anchor in (DATA, MENU, CONTEXT):
+            parts = PARTS[release]
+            for anchor, _patched in (parts["data"], parts["menu"], parts["context"]):
                 self.assertEqual(stock.count(anchor), 1)
             for family in self.FAMILIES:
                 with self.subTest(release=release, family=family):
@@ -479,28 +627,31 @@ class CompositionTest(unittest.TestCase):
                     self.assertEqual(len(together), len(stock))
                     self.assertEqual(self.patch(together, family), (together, []))
                     self.assertEqual(self.patch(together, family, sort=False, pin=False), (together, []))
-                    for patched in (DATA_SORTED, MENU_ITEM, CONTEXT_ITEM, *INJECTED.values()):
+                    for patched in (parts["data"][1], parts["menu"][1], parts["context"][1], *INJECTED.values()):
                         self.assertEqual(together.count(patched), 1)
                     self.assertNotEqual(self.patch(stock, family, sort=False, pin=False)[0], together)
 
     # Value: protects=the full production set (every named family at once) plus either flag or both gives the same bytes in both orders and re-runs to nothing; with the status filter the swaps are folded into the status region rewrites; fails_when=two families' writes overlap or a fold is lost; why_new=contract composition rule; seam=real fixtures as above
     def test_all_families_at_once_in_either_order(self):
         everything = list(self.FAMILIES)
-        for release in ("1.37", "1.38"):
+        for release in ("1.37", "1.38", "1.39"):
             stock = self.stock(release)
+            parts = PARTS[release]
+            pinned_sorted = MODULE.PINNED_SORT_DATA_SORTED_1_39 if release == "1.39" else MODULE.PINNED_SORT_DATA_SORTED
             for selection, (flags, labels) in SELECTIONS.items():
                 with self.subTest(release=release, selection=selection):
                     together, changes = self.patch(stock, *everything, **flags)
                     self.assertTrue({HOOK.label, STORE.label} <= set(changes))
                     for _name, _stock, _patched, label in SWAPS:
                         self.assertNotIn(label, changes)  # folded into the status filter region rewrites
+                    self.assertEqual(MODULE._select_layout(stock, MODULE.PROJECT_ORDER_LAYOUTS, "project order")[0], "1.39" if release == "1.39" else "1.37-1.38")
                     self.assertEqual(self.patch(self.patch(stock, *everything, sort=False, pin=False)[0], *everything, **flags)[0], together)
                     self.assertEqual(self.patch(self.patch(stock, **flags)[0], *everything, **flags)[0], together)
                     self.assertEqual(self.patch(together, *everything, **flags), (together, []))
-                    self.assertEqual(together.count(DATA_SORTED), 1)
-                    self.assertEqual(together.count(MENU_ITEM), 1 if flags["sort"] else 0)
-                    self.assertEqual(together.count(CONTEXT_ITEM), 1 if flags["pin"] else 0)
-                    self.assertEqual(together.count(MODULE.PINNED_SORT_DATA_SORTED), 1)
+                    self.assertEqual(together.count(parts["data"][1]), 1)
+                    self.assertEqual(together.count(parts["menu"][1]), 1 if flags["sort"] else 0)
+                    self.assertEqual(together.count(parts["context"][1]), 1 if flags["pin"] else 0)
+                    self.assertEqual(together.count(pinned_sorted), 1)
                     self.assertIn(b"SsfStatusChips", together)
                     self.assertIn(MODULE.SIDEBAR_DEVICE_MOUNT_FILTER, together)
             # Adding the second flag to a production bundle that has one adds only its own part.

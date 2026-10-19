@@ -1,7 +1,8 @@
-// Behaviour of --sort-projects / --pin-projects on the real desktop-v1.38.0 bytes: the patched room
+// Behaviour of --sort-projects / --pin-projects on the real desktop-v1.38.0 bytes (the 1.39.0 store,
+// menu item, data line and menus have their own tests): the patched room
 // regions (written by patch-asar.py rewrite_region and pinned by
 // tests/test_superset_project_order_patch.py) run on upstream's own sort helpers
-// (superset-1.37.0-sidebar-sort.js, byte-identical in v1.38.0), DashboardSidebar's project order
+// (superset-1.37.0-sidebar-sort.js, byte-identical in v1.38.0 and v1.39.0), DashboardSidebar's project order
 // line runs stock and swapped, and the stock sort menu and project context menu render with and
 // without their swapped item. React is stubbed; localStorage is a Map.
 import assert from "node:assert/strict";
@@ -52,9 +53,12 @@ const STORE = read("superset-1.38.0-project-order-r2.patched.js");
 const HOOK = read("superset-1.38.0-project-order-r1.patched.js");
 const SORT_ITEM = read("superset-1.38.0-sort-projects-r1.patched.js");
 const PIN_ITEM = read("superset-1.38.0-pin-projects-r1.patched.js");
+// desktop-v1.39.0 (LUBOS-2797): the store and pin rooms are new cuts; the hook and sort rooms are the 1.38.0 bytes.
+const STORE_1_39 = read("superset-1.39.0-project-order-r2.patched.js");
+const PIN_ITEM_1_39 = read("superset-1.39.0-pin-projects-r1.patched.js");
 
 // The layout chunk with the core regions and the menu items of the applied flags.
-function chunk({ sort = true, pin = true, entries = {}, broken = false } = {}) {
+function chunk({ sort = true, pin = true, entries = {}, broken = false, release = "1.38.0" } = {}) {
   const localStorage = storage(entries, { broken });
   const subscribed = [];
   const reactExports = new Proxy(
@@ -73,7 +77,8 @@ function chunk({ sort = true, pin = true, entries = {}, broken = false } = {}) {
     ...(sort ? {} : { lppSortItem: undefined }),
     ...(pin ? {} : { lppPinItem: undefined }),
   };
-  const sources = [SORT, STORE, HOOK, ...(sort ? [SORT_ITEM] : []), ...(pin ? [PIN_ITEM] : [])];
+  const [store, pinItem] = release === "1.39.0" ? [STORE_1_39, PIN_ITEM_1_39] : [STORE, PIN_ITEM];
+  const sources = [SORT, store, HOOK, ...(sort ? [SORT_ITEM] : []), ...(pin ? [pinItem] : [])];
   const names = ["lppUse", "lppSet", "lppSubscribe", "sortDashboardSidebarProjects", ...(sort ? ["lppSortItem"] : []), ...(pin ? ["lppPinItem"] : [])];
   return { ...load(sources, mocks, names), localStorage, subscribed, mocks };
 }
@@ -265,6 +270,20 @@ test("each flag applies only its own part: stored state of a flag that is not ap
   assert.equal(neither.lppUse(GROUPS, "active")[1], false);
 });
 
+test("1.39: the re-cut store and pin rooms give the same order, pins and menu item as 1.38", () => {
+  for (const entries of [SORT_ON, {}, { ...SORT_ON, "lubos-patch:pinned-projects": JSON.stringify(["p-empty"]) }]) {
+    for (const mode of ["active", "created", "manual"]) {
+      const [rows, drag] = chunk({ entries, release: "1.39.0" }).lppUse(GROUPS, mode);
+      const [expected, expectedDrag] = chunk({ entries }).lppUse(GROUPS, mode);
+      assert.deepEqual(ids(rows), ids(expected), `${mode} ${JSON.stringify(entries)}`);
+      assert.equal(drag, expectedDrag);
+    }
+  }
+  // The rendered item, its handler aside (a fresh closure per chunk).
+  const item = (api) => JSON.stringify(api.lppPinItem({ projectId: "p-docs" }));
+  assert.equal(item(chunk({ release: "1.39.0" })), item(chunk()));
+});
+
 // ---------------------------------------------------------------------------------------------
 // DashboardSidebar's project order line: stock vs swapped
 // ---------------------------------------------------------------------------------------------
@@ -299,6 +318,49 @@ test("the swapped line binds every stock name; sortedGroups follows the order an
     }
   }
   const off = sidebarHead(DATA_SORTED, "active", "", {});
+  assert.deepEqual(ids(off.sortedGroups), ids(GROUPS));
+  assert.equal(off.isProjectDragDisabled, false);
+});
+
+// 1.39 adds upstream's Local / Cloud host filter after the order: the swapped line keeps it.
+const DATA_1_39 = read("superset-1.39.0-project-order-data.js");
+const DATA_SORTED_1_39 = read("superset-1.39.0-project-order-data.patched.js");
+const BOUND_1_39 = [
+  "sortedGroups", "hostFilteredGroups", "displayedPinnedWorkspaces", "displayedSessionWorkspaces", "displayedGroups",
+  "displayedProjectIds", "trimmedFilterQuery", "isFilterActive", "isProjectDragDisabled",
+];
+
+function sidebarHead139(source, mode, hostFilter, entries = SORT_ON) {
+  const api = chunk({ entries, release: "1.39.0" });
+  const head = `function DashboardSidebarHead(orderedGroups, sortMode, projectFilterQuery, hostFilter, pinnedWorkspaces, sessionWorkspaces) {\n${source}  return { ${BOUND_1_39.join(", ")} };\n}`;
+  // Every group's cloud flag is its name ending in "b" (blog, api-b), so Local and Cloud both drop rows.
+  const cloud = (id) => id.endsWith("b") || id.endsWith("blog");
+  const mocks = {
+    ...api.mocks,
+    filterDashboardSidebarProjects: (groups) => groups,
+    filterDashboardSidebarProjectsByHost: (groups, filter) => (filter === "all" ? groups : groups.filter((group) => cloud(group.id) === (filter === "cloud"))),
+    matchesHostFilter: (workspace, filter) => (workspace.hostType === "cloud") === (filter === "cloud"),
+  };
+  const pinned = [{ id: "pin-local", hostType: "local" }, { id: "pin-cloud", hostType: "cloud" }];
+  return load([SORT, STORE_1_39, HOOK, SORT_ITEM, PIN_ITEM_1_39, head], mocks, ["DashboardSidebarHead"]).DashboardSidebarHead(GROUPS, mode, "", hostFilter, pinned, []);
+}
+
+test("1.39: the swapped line orders the projects first and keeps the host filter on the ordered list", () => {
+  assert.equal(DATA_SORTED_1_39.length, DATA_1_39.length);
+  for (const mode of ["active", "created", "manual"]) {
+    for (const hostFilter of ["all", "local", "cloud"]) {
+      const stock = sidebarHead139(DATA_1_39, mode, hostFilter);
+      const swapped = sidebarHead139(DATA_SORTED_1_39, mode, hostFilter);
+      const [expected, dragDisabled] = chunk({ entries: SORT_ON, release: "1.39.0" }).lppUse(GROUPS, mode);
+      assert.deepEqual(ids(swapped.sortedGroups), ids(expected), `${mode} ${hostFilter}`);
+      const kept = new Set(ids(stock.hostFilteredGroups));
+      assert.deepEqual(ids(swapped.hostFilteredGroups), ids(expected).filter((id) => kept.has(id)), `${mode} ${hostFilter}`);
+      assert.deepEqual(ids(swapped.displayedPinnedWorkspaces), ids(stock.displayedPinnedWorkspaces));
+      assert.equal(swapped.isFilterActive, stock.isFilterActive);
+      assert.equal(swapped.isProjectDragDisabled, stock.isFilterActive || dragDisabled, `${mode} ${hostFilter}`);
+    }
+  }
+  const off = sidebarHead139(DATA_SORTED_1_39, "active", "all", {});
   assert.deepEqual(ids(off.sortedGroups), ids(GROUPS));
   assert.equal(off.isProjectDragDisabled, false);
 });
@@ -354,5 +416,61 @@ test("the project context menu renders Pin project after Import worktrees with t
     const at = items.findIndex((node) => node.props.onSelect === "import");
     assert.equal(items[at + 1].type?.name === "lppPinItem", expected);
     if (expected) assert.deepEqual(items[at + 1].props, { projectId: "p-docs" });
+  }
+});
+
+// 1.39 shapes: the sort menu gains a Show (All / Local / Cloud) group after the hint, and the project
+// menu wraps the checkout items (Rename .. Import worktrees) in a fragment that cloud-repo projects skip.
+const MENU_1_39 = read("superset-1.39.0-status-filter-r2.js");
+const CONTEXT_MENU_1_39 = read("superset-1.39.0-status-filter-r6.js");
+const ANCHORS_1_39 = JSON.parse(read("superset-1.39.0-project-order-anchors.json"));
+
+test("1.39: the checkbox follows the sorted hint, before the Show group", () => {
+  const mocks = {
+    jsxRuntimeExports, reactExports: anything, cn, useLingui: () => ({ _: (message) => message.id }),
+    SORT_MODES: ["manual", "active", "created"], HOST_FILTERS: ["all", "local", "cloud"],
+  };
+  for (const [source, expected] of [[MENU_1_39, false], [swap(MENU_1_39, ANCHORS_1_39.sort[0], ANCHORS_1_39.sort[1]), true]]) {
+    const { DashboardSidebarProjectsSortMenu } = load([source, "function lppSortItem() {}"], mocks, ["DashboardSidebarProjectsSortMenu"]);
+    for (const sortMode of ["manual", "active"]) {
+      for (const hostFilter of [null, "all"]) {
+        const tree = DashboardSidebarProjectsSortMenu({ sortMode, onSortModeChange() {}, hostFilter, onHostFilterChange() {} });
+        const content = [];
+        walk(tree, (node) => node.props.align === "end" && content.push(node));
+        const children = content[0].props.children.filter(Boolean);
+        const at = children.findIndex((node) => node.type?.name === "lppSortItem");
+        assert.equal(at !== -1, expected);
+        if (!expected) continue;
+        // Label and radio group, then the hint (sorted modes only), then the checkbox, then the Show group.
+        assert.equal(at, sortMode === "manual" ? 2 : 3, `${sortMode} ${hostFilter}`);
+        assert.equal(children.length, at + 1 + (hostFilter === null ? 0 : 1));
+      }
+    }
+  }
+});
+
+test("1.39: Pin project follows Import worktrees inside the checkout items; cloud-repo projects have neither", () => {
+  const mocks = {
+    jsxRuntimeExports, reactExports: anything,
+    useV2UserPreferences: () => ({ preferences: { hiddenTagFolders: {} }, setTagFolderHidden() {} }),
+  };
+  for (const [source, expected] of [[CONTEXT_MENU_1_39, false], [swap(CONTEXT_MENU_1_39, ANCHORS_1_39.pin[0], ANCHORS_1_39.pin[1]), true]]) {
+    const { DashboardSidebarProjectContextMenu } = load([source, "function lppPinItem() {}"], mocks, ["DashboardSidebarProjectContextMenu"]);
+    for (const kind of [undefined, "cloud-repo"]) {
+      const tree = DashboardSidebarProjectContextMenu({ projectId: "p-docs", kind, onImportWorktrees: "import", onHide: "hide", onDelete: "delete" });
+      const items = [];
+      walk(tree, (node) => (node.props.onSelect || node.type?.name === "lppPinItem") && items.push(node));
+      const at = items.findIndex((node) => node.props.onSelect === "import");
+      const pins = items.filter((node) => node.type?.name === "lppPinItem");
+      assert.ok(items.some((node) => node.props.onSelect === "hide"));
+      if (kind === "cloud-repo") {
+        assert.equal(at, -1);
+        assert.equal(pins.length, 0);
+        continue;
+      }
+      assert.equal(items[at + 1].type?.name === "lppPinItem", expected);
+      assert.equal(pins.length, expected ? 1 : 0);
+      if (expected) assert.deepEqual(items[at + 1].props, { projectId: "p-docs" });
+    }
   }
 });
