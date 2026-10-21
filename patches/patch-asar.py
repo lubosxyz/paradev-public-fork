@@ -3209,6 +3209,87 @@ def _plan_sidebar_device_filter(data) -> list[tuple[int, bytes, bytes, str]]:
     return replacements
 
 
+
+# --desktop-pin-sync: exact desktop 1.39.0 regions; renderer exports only, no storage writes.
+DESKTOP_PIN_RENDERER_JS = b'useCollections.dps = function(org, connection) {\n  const {v2WorkspaceLocalState: collection} = useCollections();\n  reactExports.useEffect(() => {\n    if (!org || !connection?.port || !connection.secret) return;\n    let stopped = false, timer;\n    const publish = async () => {\n      try {\n        if (collection.status !== "ready") return;\n        const pins = [];\n        for (const row of collection.state.values()) {\n          if (!row || typeof row.workspaceId !== "string" || !row.sidebarState) throw Error("Invalid desktop pins");\n          const at = row.sidebarState.pinnedAt;\n          if (at != null) {\n            if (!Number.isSafeInteger(at) || at < 0) throw Error("Invalid pin time");\n            if (!row.sidebarState.isHidden) pins.push({workspaceId:row.workspaceId,pinnedAt:at});\n          }\n        }\n        await getHostServiceClientByUrl(`http://127.0.0.1:${connection.port}`).desktopPins.publish.mutate({version:1,organizationId:org,observedAt:Date.now(),pins},{signal:AbortSignal.timeout(2000)});\n      } catch {} finally {\n        if (!stopped) timer = setTimeout(publish, 1000);\n      }\n    };\n    void publish();\n    return () => {stopped = true;clearTimeout(timer);};\n  }, [org,connection?.port,connection?.secret,collection]);\n};\n'
+DESKTOP_PIN_HOST_JS = b'const dpsWaiters = new Map();\nfunction dpsRouter() {\n  const fail = (code) => {throw new gitHookTolerance.TRPCError({code,message:"Desktop pins unavailable"});};\n  return router({\n    publish: protectedProcedure.input(value => value).mutation(({ctx,input}) => {\n      if (ctx.isLocalCaller !== true) fail("FORBIDDEN");\n      if (!input || input.version !== 1 || input.organizationId !== ctx.organizationId || !Number.isSafeInteger(input.observedAt) || Math.abs(Date.now()-input.observedAt)>5000 || !Array.isArray(input.pins) || input.pins.length>5000) fail("BAD_REQUEST");\n      const ids = new Set();\n      for (const pin of input.pins) {\n        if (!pin || typeof pin.workspaceId!=="string" || !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(pin.workspaceId) || ids.has(pin.workspaceId) || !Number.isSafeInteger(pin.pinnedAt) || pin.pinnedAt<0) fail("BAD_REQUEST");\n        ids.add(pin.workspaceId);\n      }\n      const snapshot = {version:1,organizationId:ctx.organizationId,sourceHostId:hostServiceUtils.getHostId(),observedAt:input.observedAt,pins:input.pins.map(p=>({workspaceId:p.workspaceId,pinnedAt:p.pinnedAt}))};\n      for (const pending of dpsWaiters.get(ctx.organizationId) ?? []) {\n        if (input.observedAt >= pending.since) pending.resolve(snapshot);\n      }\n      return null;\n    }),\n    list: queryProcedure.query(({ctx}) => new Promise((resolve,reject) => {\n      let pending = dpsWaiters.get(ctx.organizationId);\n      if (!pending) dpsWaiters.set(ctx.organizationId,pending=new Set());\n      if (pending.size>=64) {reject(new gitHookTolerance.TRPCError({code:"TOO_MANY_REQUESTS"}));return;}\n      const finish = () => {clearTimeout(timer);pending.delete(waiter);if (!pending.size) dpsWaiters.delete(ctx.organizationId);};\n      const waiter = {since:Date.now(),resolve: snapshot => {finish();resolve(snapshot);}};\n      const timer = setTimeout(() => {finish();reject(new gitHookTolerance.TRPCError({code:"PRECONDITION_FAILED",message:"Desktop pins unavailable"}));},3500);\n      pending.add(waiter);\n    }))\n  });\n}\n'
+DESKTOP_PIN_REGIONS = (
+    RegionRewrite(
+        label='desktop pin sync: renderer helper',
+        start=b'function _lazyMethod(proto2, key2, make) {\n',
+        end=b'function union$2(options, params) {\n',
+        length=22076,
+        stock_sha256='ae24421aacb45a4dac27ea7e43b5e742a3f3ebd4371a6dd0bac55a2dd1e60038',
+        patched_sha256='d41be36a8a538e5ef52b1fb8b190ef7064ff5056e6106c2626e121d0d3f8a54e',
+        edits=(
+            (b'(ctx, json2, params) => unionProcessor(inst, ctx, json2, params);\n  inst.options = def.options;\n});\n', b'(ctx, json2, params) => unionProcessor(inst, ctx, json2, params);\n  inst.options = def.options;\n});\n' + DESKTOP_PIN_RENDERER_JS),
+        ),
+    ),
+    RegionRewrite(
+        label='desktop pin sync: renderer mount',
+        start=b'function LocalHostServiceProvider({\n',
+        end=b'function useLocalHostService() {\n',
+        length=6689,
+        stock_sha256='b26876e5127e7eeeae56c652093040d5de9f030d1cc4fe4ceaa05336b22a45ac',
+        patched_sha256='12b99ad27ef01b4a0d39a6a6950269bf213dada64850d79cc86bf665eda2c530',
+        edits=(
+            (b'  const {\n    data: activeOrganization\n  } =', b'  const { data: activeOrganization } ='),
+            (b'  const {\n    data: session\n  } =', b'  const { data: session } ='),
+            (b'  const {\n    activeOrganizationId: windowOrganizationId\n  } =', b'  const { activeOrganizationId: windowOrganizationId } ='),
+            (b'  const {\n    data: machineIdData\n  } =', b'  const { data: machineIdData } ='),
+            (b'  const {\n    data: activeConnection\n  } =', b'  const { data: activeConnection } ='),
+            (b'  const {\n    data: processStatus\n  } =', b'  const { data: processStatus } ='),
+            (b'  const sessionToken = session?.session?.token ?? null;\n', b'  const sessionToken=session?.session?.token??null;\n'),
+            (b'  const sessionUserId = session?.user.id ?? null;\n', b'  const sessionUserId=session?.user.id??null;\n'),
+            (b'  const activeOrganizationName = activeOrganization?.name ?? null;\n', b'  const activeOrganizationName=activeOrganization?.name??null;\n'),
+            (b'  if (!value) return null;\n', b'  useCollections.dps(activeOrganizationId,activeConnection);\n  if (!value) return null;\n'),
+        ),
+    ),
+    RegionRewrite(
+        label='desktop pin sync: host router',
+        start=b'const createSession = protectedProcedure.input(createSessionInputSchema).mutation(async ({ ctx, input }) => {\n',
+        end=b'const MAX_DISPLAY_BUFFER_BYTES = 32 * 1024 * 1024;\n',
+        length=65658,
+        stock_sha256='53d59230f2876774b6dce6b2e7c2b7ca8632b60d6e9a3fca486799171bd61c09',
+        patched_sha256='47cfcfb1f9820dd9a9072d9c6d137dda889db3be819098146c073334a44fa6ec',
+        edits=(
+            (b'    // The inner join guarantees a project row; select its id rather\n    // than the (nullable) workspace column.\n', b''),
+            (b'  // "worktree" (default) checks out `branch` in its own worktree.\n  // "local" registers a new workspace on the project\'s primary checkout\n  // \xe2\x80\x94 no clone, no worktree, no branch switch; files, the git index and\n  // the checked-out branch are shared with every other local workspace\n  // of the project, so the branch/PR/worktree inputs do not apply.\n', b''),
+            (b'  // Both `name` and `branch` are optional. A typed `name` also seeds\n  // the branch when `branch` is omitted. When both are omitted, the\n  // branch and its folder start as a few words of the prompt (or a\n  // friendly-random name) plus an id suffix. Background naming may\n  // rename the branch later, never the folder.\n', b''),
+            (b"  // Use the typed branch verbatim instead of namespacing it under the\n  // project branch prefix; a name collision reuses the existing branch\n  // (and its workspace), as with any typed branch. Set when the branch\n  // comes from an external provider (Linear's branchName), whose exact\n  // format the provider autolinks.\n", b''),
+            (b'  // Desktop "Wait for workspace setup before starting agents" setting,\n  // sent per-request. When true and setup commands resolve, a single\n  // terminal sugar agent is chained behind them in the setup terminal\n  // (`setup && agent`) instead of launching in parallel.\n', b''),
+            (b'  // Adopt the worktree git already has at this path instead of\n  // inferring the path from `branch`. When present, `branch` is\n  // caller context only; the server reads the current branch from git.\n', b''),
+            (b'  // When false, skip the setup terminal. Used by worktree import,\n  // where the worktree is usually already set up.\n', b''),
+            (b'      // Deletes tombstone the row instead of removing it, so a\n      // tombstone must not satisfy idempotency: matching one returns\n      // the archived row with `alreadyExists: true` and silently\n      // skips the create \xe2\x80\x94 no worktree, nothing in the sidebar. Its\n      // worktree is gone, so re-creating on the same branch inserts a\n      // fresh live row alongside it. The adopt path already filters\n      // these (#6383).\n', b''),
+            (b'          // The cloud\'s activation event predates local workspaces;\n          // "main" is its name for a workspace on the checkout.\n', b''),
+            (b"/**\n   * Enqueue-and-return variant of `create` for renderer clients: the full\n   * create (worktree add, agent dispatch) can run for minutes,\n   * which would pin one of Chromium's 6-per-origin pooled sockets \xe2\x80\x94 and\n   * relay-fronted hosts hard-cap request exchanges at 30s. Validates\n   * cheaply, responds immediately, then runs the real `create` in the\n   * background and broadcasts a `workspace:create-settled` event carrying\n   * everything the synchronous response used to. CLI/MCP/SDK/automations\n   * keep calling `create` directly.\n   */", b''),
+            (b"/**\n   * Bring back an archived (deleted or merged) workspace: re-create its\n   * worktree from the branch, or the linked PR's head when the branch is\n   * gone, then un-archive the row.\n   */", b''),
+            (b'const appRouter = router({\n', DESKTOP_PIN_HOST_JS + b'const appRouter = router({\n  desktopPins: dpsRouter(),\n'),
+        ),
+    ),
+ )
+
+
+def _plan_desktop_pin_sync(data):
+    specs = (
+        (DESKTOP_PIN_REGIONS[:1], (), ("useCollections", "getHostServiceClientByUrl")),
+        (DESKTOP_PIN_REGIONS[1:2], ("reactExports", "useCollections"), ()),
+        (DESKTOP_PIN_REGIONS[2:], (), ("gitHookTolerance", "hostServiceUtils", "protectedProcedure", "queryProcedure", "router")),
+    )
+    for regions, imported, defined in specs:
+        found = _region_chunk(data, regions, "desktop pin sync")
+        if found is not None:
+            path, _start, chunk = found
+            _require_chunk_names(path, chunk, imported, defined, "desktop pin sync")
+            if regions == DESKTOP_PIN_REGIONS[:1] and chunk.count(b"var reactExports = requireReact();") != 1:
+                raise RuntimeError("desktop pin sync: React binding changed")
+            if regions == DESKTOP_PIN_REGIONS[1:2] and b'e.SENTRY_RELEASE = { id: "1.39.0" };' not in chunk:
+                raise RuntimeError("desktop pin sync: unsupported desktop version")
+            if regions == DESKTOP_PIN_REGIONS[2:] and chunk.count(b'isLocalCaller: c.req.header(SUPERSET_RELAYED_HEADER) === void 0') != 1:
+                raise RuntimeError("desktop pin sync: local caller authentication changed")
+    return [write for region in DESKTOP_PIN_REGIONS for write in _plan_region_rewrite(data, region)]
+
+
 # --pinned-activity-sort (desktop-v1.37.0-v1.39.0; the region is byte-identical
 # in all three, the swap is byte-identical in 1.37 and 1.38). Upstream orders PINNED by pin time whatever the
 # Workspaces sort menu says (partitionSidebarWorkspacesByPinned). With the flag
@@ -3839,6 +3920,7 @@ def plan_replacements(
     status_filter_hotkeys: bool = False,
     automations_header: bool = False,
     sidebar_device_filter: bool = False,
+    desktop_pin_sync: bool = False,
     pinned_activity_sort: bool = False,
     sort_projects: bool = False,
     pin_projects: bool = False,
@@ -4112,6 +4194,9 @@ def plan_replacements(
 
     if sidebar_device_filter:
         replacements.extend(_plan_sidebar_device_filter(data))
+
+    if desktop_pin_sync:
+        replacements.extend(_plan_desktop_pin_sync(data))
 
     if pinned_activity_sort:
         replacements.extend(_plan_pinned_activity_sort(data))
@@ -4476,6 +4561,7 @@ def main(argv=None):
         action="store_true",
         help="device dropdown next to the sidebar back / forward arrows: show only the workspaces of one host",
     )
+    parser.add_argument("--desktop-pin-sync", action="store_true", help="export desktop workspace pins to mobile over the authenticated host relay (1.39.0)")
     parser.add_argument(
         "--pinned-activity-sort",
         action="store_true",
@@ -4524,6 +4610,7 @@ def main(argv=None):
             status_filter_hotkeys=args.status_filter_hotkeys,
             automations_header=args.automations_header,
             sidebar_device_filter=args.sidebar_device_filter,
+            desktop_pin_sync=args.desktop_pin_sync,
             pinned_activity_sort=args.pinned_activity_sort,
             sort_projects=args.sort_projects,
             pin_projects=args.pin_projects,

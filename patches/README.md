@@ -1435,3 +1435,21 @@ See conversation transcript on 2026-05-07. Key insights:
 - Storage key format: `v2-workspace-local-state-{orgId}`, stored under
   `file://` origin in Chromium's localStorage leveldb. Value envelope:
   `0x01 + <latin1 utf-8 json>`.
+
+## Desktop workspace pins on mobile (opt-in, 1.39.0)
+
+`--desktop-pin-sync` exports workspace pins from the active desktop organization
+through the existing authenticated host-service relay. It does not change pins,
+LevelDB, schemas, signing identity or permissions. The accompanying mobile fork
+reads a fresh snapshot on refresh, unions the last valid snapshots per desktop,
+and keeps them when a host is offline. A desktop unpin removes that source's
+vote; the other Mac can still pin the same workspace. Workspace pin actions on
+the synchronized phone refer back to desktop; project pins remain local.
+
+The publisher uses the hydrated renderer collection, sends only UUIDs and pin
+timestamps to loopback, and stops on unmount. Relayed callers cannot publish.
+Reads wait at most 3.5 seconds for a fresh publication. Unknown protocol versions,
+invalid rows, a closed renderer or an unsupported bundle fail without returning
+an authoritative empty list. All three patch regions are pinned to 1.39.0;
+missing symbols, changed local-caller auth or hash drift abort the entire plan.
+See `plans/20261021-desktop-mobile-pins.md` for merge and rollout semantics.

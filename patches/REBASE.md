@@ -448,3 +448,21 @@ triangle. Mapping the damage with every flag on the stock 1.39 bundle:
   applies with 85 writes to `291e2da7…`, a re-plan is 0, both orders
   (approved set first, opt-ins first) reach the same SHA-256, and `--revert`
   restores the stock SHA-256.
+
+## Desktop pin export (LUBOS-2944, 1.39.0 only)
+
+`DESKTOP_PIN_REGIONS` touches three disjoint files. The index chunk's Zod helper
+range supplies room by removing only PURE/i18n comments; its executable code is
+unchanged apart from attaching `useCollections.dps`. The LocalHostServiceProvider
+range calls that hook before its early return; exact whitespace-only declaration
+edits plus the PURE marker provide room. The host-service createSession..appRouter
+range removes explicitly pinned documentation comments and adds the authenticated
+snapshot router. Fixtures are byte excerpts of the shipped 1.39.0 bundle, not
+constructed from the constants. Verify complete patched chunks with node --check.
+
+The provider release banner must say 1.39.0. Verify the collection's ready status,
+Map rows and pin schema, the local loopback secret binding, and the existing
+`isLocalCaller` relay marker check before supporting another release. A timeout
+must remain an unavailable source, never an empty pin set. Keep the exporter
+read-only and preserve every existing route. Run the bridge behavior harness and
+both patch gates, including all flags together, before applying.
