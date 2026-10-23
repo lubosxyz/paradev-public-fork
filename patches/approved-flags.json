@@ -22,6 +22,7 @@
     "pinned_activity_sort",
     "sort_projects",
     "pin_projects",
-    "desktop_pin_sync"
+    "desktop_pin_sync",
+    "desktop_preset_sync"
   ]
 }

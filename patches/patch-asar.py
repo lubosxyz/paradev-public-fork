@@ -3290,6 +3290,195 @@ def _plan_desktop_pin_sync(data):
     return [write for region in DESKTOP_PIN_REGIONS for write in _plan_region_rewrite(data, region)]
 
 
+# --desktop-preset-sync: exact desktop 1.39.0 regions; the renderer exports the
+# terminal presets (V2 presets bar shortcuts) read-only, the host serves them.
+DESKTOP_PRESET_RENDERER_JS = b'''function dtsUse(org, collections) {
+  reactExports.useEffect(() => {
+    if (!org || !collections) return;
+    let stopped = false, timer;
+    const publish = async () => {
+      try {
+        const {v2TerminalPresets: presets, v2UserPreferences: prefs} = collections;
+        if (presets.status !== "ready" || prefs.status !== "ready") return;
+        const connection = await electronTrpcClient.hostServiceCoordinator.getConnection.query({organizationId:org});
+        if (stopped || !connection?.port || !connection.secret) return;
+        const url = `http://127.0.0.1:${connection.port}`;
+        setHostServiceSecret(url, connection.secret);
+        await getHostServiceClientByUrl(url).desktopPresets.publish.mutate({version:1,organizationId:org,observedAt:Date.now(),presets:[...presets.state.values()].map(p => ({id:p.id,name:p.name,description:p.description,cwd:p.cwd,commands:p.commands,projectIds:p.projectIds,pinnedToBar:p.pinnedToBar,executionMode:p.executionMode,tabOrder:p.tabOrder,agentId:p.agentId,useAsWorkspaceRun:p.useAsWorkspaceRun})),hiddenBuiltinPresetIds:prefs.state.get("preferences")?.hiddenBuiltinPresetIds ?? []},{signal:AbortSignal.timeout(2000)});
+      } catch {} finally {
+        if (!stopped) timer = setTimeout(publish, 1000);
+      }
+    };
+    void publish();
+    return () => {stopped = true;clearTimeout(timer);};
+  }, [org,collections]);
+}
+'''
+DESKTOP_PRESET_HOST_JS = b'''const dtsWaiters = new Map();
+function dtsRouter() {
+  const fail = (code) => {throw new gitHookTolerance.TRPCError({code,message:"Desktop presets unavailable"});};
+  const text = (v) => typeof v === "string" && Buffer.byteLength(v) <= 16384;
+  const texts = (v, max) => Array.isArray(v) && v.length <= max && v.every(text);
+  const opt = (v, ok) => v === void 0 || ok(v);
+  const bool = (v) => typeof v === "boolean";
+  const modes = ["split-pane", "new-tab", "new-tab-split-pane", "sequential"];
+  return router({
+    publish: protectedProcedure.input(value => value).mutation(({ctx,input}) => {
+      if (ctx.isLocalCaller !== true) fail("FORBIDDEN");
+      if (!input || input.version !== 1 || input.organizationId !== ctx.organizationId || !Number.isSafeInteger(input.observedAt) || Math.abs(Date.now()-input.observedAt)>5000 || !Array.isArray(input.presets) || input.presets.length>500 || !texts(input.hiddenBuiltinPresetIds,500)) fail("BAD_REQUEST");
+      const ids = new Set();
+      const presets = input.presets.map(p => {
+        if (!p || typeof p.id!=="string" || !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(p.id) || ids.has(p.id.toLowerCase()) || !text(p.name) || !opt(p.description,text) || !text(p.cwd) || !texts(p.commands,64) || !(p.projectIds===null || texts(p.projectIds,5000)) || !opt(p.pinnedToBar,bool) || !modes.includes(p.executionMode) || !Number.isSafeInteger(p.tabOrder) || !opt(p.agentId,text) || !opt(p.useAsWorkspaceRun,bool)) fail("BAD_REQUEST");
+        ids.add(p.id.toLowerCase());
+        return {id:p.id,name:p.name,description:p.description,cwd:p.cwd,commands:[...p.commands],projectIds:p.projectIds&&[...p.projectIds],pinnedToBar:p.pinnedToBar,executionMode:p.executionMode,tabOrder:p.tabOrder,agentId:p.agentId,useAsWorkspaceRun:p.useAsWorkspaceRun};
+      }).sort((a,b) => a.tabOrder-b.tabOrder);
+      for (const p of presets) for (const key in p) if (p[key] === void 0) delete p[key];
+      const snapshot = {version:1,organizationId:ctx.organizationId,sourceHostId:hostServiceUtils.getHostId(),observedAt:input.observedAt,presets,hiddenBuiltinPresetIds:[...input.hiddenBuiltinPresetIds]};
+      for (const pending of dtsWaiters.get(ctx.organizationId) ?? []) {
+        if (input.observedAt >= pending.since) pending.resolve(snapshot);
+      }
+      return null;
+    }),
+    list: queryProcedure.query(({ctx}) => new Promise((resolve,reject) => {
+      let pending = dtsWaiters.get(ctx.organizationId);
+      if (!pending) dtsWaiters.set(ctx.organizationId,pending=new Set());
+      if (pending.size>=64) {reject(new gitHookTolerance.TRPCError({code:"TOO_MANY_REQUESTS"}));return;}
+      const finish = () => {clearTimeout(timer);pending.delete(waiter);if (!pending.size) dtsWaiters.delete(ctx.organizationId);};
+      const waiter = {since:Date.now(),resolve: snapshot => {finish();resolve(snapshot);}};
+      const timer = setTimeout(() => {finish();reject(new gitHookTolerance.TRPCError({code:"PRECONDITION_FAILED",message:"Desktop presets unavailable"}));},3500);
+      pending.add(waiter);
+    }))
+  });
+}
+function dtsMount(app) {
+  return Object.keys(app._def.lazy).length ? app : router({...app._def.record,desktopPresets:dtsRouter()});
+}
+'''
+# dtsMount rebuilds the eager appRouter with desktopPresets added. The literal sits outside the four
+# regions (inside the pin export's host range), so the plan pins it: stock, or stock with the pin
+# export's desktopPins line, never a router with lazy entries that dtsMount would leave unextended.
+DESKTOP_PRESET_APP_ROUTER = b"const appRouter = router({\n"
+DESKTOP_PRESET_APP_ROUTER_PIN = b"  desktopPins: dpsRouter(),\n"
+DESKTOP_PRESET_APP_ROUTER_SHA256 = "609f90814f66963df3c8b00f814b1024aeafb2009396b93d6fc0d69cc9e6555d"
+DESKTOP_PRESET_REGIONS = (
+    RegionRewrite(
+        label='desktop preset sync: renderer helper',
+        start=b'const WORKSPACE_SIDEBAR_TABS = ["changes", "files", "review"];\n',
+        end=b'const SIDEBAR_STATE_DEFAULTS = {\n',
+        length=3442,
+        stock_sha256='eef74d4a38d4ac6f7730b965ce5325963a4767faefc53a5ecafa9177823a19d9',
+        patched_sha256='13b5137b101e24f15ab1971ac84d4bcdb2aa91776ed41648fbb515e485d142b9',
+        edits=tuple((comment, b'') for comment in (
+            b'    // Null = project-less "session" workspace (renders in the Sessions\n    // section). Identity field: no default \xe2\x80\x94 widening string \xe2\x86\x92 string|null\n    // keeps every pre-existing persisted row parsing unchanged, and heal\n    // must never synthesize null (that would silently reparent a corrupt\n    // project workspace into Sessions).\n',
+            b"    // Widened from uuid: may point at a tag-backed folder's composite\n    // `${projectId}:${tag}` key (written by move-into-derived-folder).\n",
+            b"    // Epoch ms when the user pinned this workspace to the sidebar's Pinned\n    // section; null = not pinned. Ordering is pinnedAt ascending.\n",
+            b'    // "Remove PR link" for cloud-sourced chips: that PR stays hidden, a\n    // different PR still shows.\n',
+            b'  // v1->v2 migration: terminals to recreate lazily on first workspace open\n  // (D2 in plans/20260716-v1-to-v2-auto-migration.md). Cleared after the\n  // sessions are created; panes come from useAutoAdoptBackgroundSessions.\n',
+            b"    // Source v1 pane \xe2\x80\x94 lets creation seed the pane's captured agent\n    // session as a resume candidate. Null on pre-existing entries.\n",
+            b'  // Terminal presets tagged "auto-run on workspace creation" that matched\n  // this workspace\'s project when the create resolved. Presets live in\n  // renderer localStorage, so the host can\'t run them; the v2 workspace\n  // page drains this queue once on first open (see\n  // useRunWorkspaceCreationPresets) and clears it before running.\n',
+            b'  // A chat branched into this worktree from another one. An agent keys its\n  // sessions to a project directory, so the branch cannot be resumed here:\n  // the new chat is started with the conversation as its first message. The\n  // v2 workspace page drains this once on first open (see\n  // useRunPendingChatHandoff) and clears it before running.\n',
+        )) + (
+            (b'const WORKSPACE_SIDEBAR_TAB_SCHEMA = _enum(WORKSPACE_SIDEBAR_TABS);\n', DESKTOP_PRESET_RENDERER_JS + b'const WORKSPACE_SIDEBAR_TAB_SCHEMA = _enum(WORKSPACE_SIDEBAR_TABS);\n'),
+        ),
+    ),
+    RegionRewrite(
+        label='desktop preset sync: renderer mount',
+        start=b'function createOrgCollections(organizationId) {\n',
+        end=b'const useMarkdownPreferencesStore = ',
+        length=8884,
+        stock_sha256='1b7e4b563ce0ff8d638cfd611e80647ff958fa21b6314c5990b0e3fc941dafef',
+        patched_sha256='edc3ac5285f4219c28e7967843be99d22f0a3a5837294f528690ef9111f8a8af',
+        edits=tuple((comment, b'') for comment in (
+            b'    // Explicit type for the same reason `withReadHeal` needs one: a\n    // passthrough generic drops the contextual typing that would\n    // otherwise narrow the key to string.\n',
+            b"    // Explicit type so `withReadHeal`'s passthrough generic keeps the\n    // linkage between schema and getKey for downstream inference.\n",
+            b'    // Cast widens the inferred literal "preferences" key to string so\n    // the collection slots into the shared OrgCollections.{...<TKey=string>}\n    // shape alongside the other v2 collections. Explicit `item` type so\n    // `withReadHeal`\'s passthrough generic keeps schema/getKey linkage.\n',
+        )) + (
+            (b'  if (!contextValue) {\n    return null;\n  }\n', b'  dtsUse(activeOrganizationId, collections2);\n  if (!contextValue) {\n    return null;\n  }\n'),
+        ),
+    ),
+    RegionRewrite(
+        label='desktop preset sync: host router',
+        start=b'const RESCUE_REPORT_INTERVAL_MS = 60 * 6e4;\n',
+        end=b'const PING_INTERVAL_MS = 3e4;\n',
+        length=17006,
+        stock_sha256='49cb3237c88c9599e07109db8f3cacbf840320a4ae896093831baa0a54d14059',
+        patched_sha256='d29c4f0db009282f66c1cc8c38dcc40f345e42e16698d6fe4aacace96a1c9a48',
+        edits=tuple((comment, b'') for comment in (
+            b'  /** Malformed upgrade (missing hostId/ticket, unknown endpoint): fix the caller. */\n',
+            b'  /** JWT missing, invalid, or expired: mint a fresh token, then reconnect. */\n',
+            b'  /** Access check denied this identity: retry slowly, likely a config problem. */\n',
+            b'  /** Dial ticket unknown, expired, or already consumed: abandon this stream. */\n',
+            b'  /** Host sent no keepalive inside the stale window: reconnect immediately. */\n',
+            b'  /** A newer socket for the same host registered: yield, do not reconnect over it. */\n',
+            b"  /** The host's control channel went away: this stream is dead, re-dial later. */\n",
+            b'  /**\n   * Returns the number or connection retries\n   */\n',
+            b'  /**\n   * The number of bytes of data that have been queued using calls to send() but not yet\n   * transmitted to the network. This value resets to zero once all queued data has been sent.\n   * This value does not reset to zero when the connection is closed; if you keep calling send(),\n   * this will continue to climb. Read only\n   */\n',
+            b'  /**\n   * The extensions selected by the server. This is currently only the empty string or a list of\n   * extensions as negotiated by the connection\n   */\n',
+            b'  /**\n   * A string indicating the name of the sub-protocol the server selected;\n   * this will be one of the strings specified in the protocols parameter when creating the\n   * WebSocket object\n   */\n',
+            b'  /**\n   * The current state of the connection; this is one of the Ready state constants\n   */\n',
+            b'  /**\n   * The URL as resolved by the constructor\n   */\n',
+            b'  /**\n   * Whether the websocket object is now in reconnectable state\n   */\n',
+            b"  /**\n   * An event listener to be called when the WebSocket connection's readyState changes to CLOSED\n   */\n",
+            b'  /**\n   * An event listener to be called when an error occurs\n   */\n',
+            b'  /**\n   * An event listener to be called when a message is received from the server\n   */\n',
+            b"  /**\n   * An event listener to be called when the WebSocket connection's readyState changes to OPEN;\n   * this indicates that the connection is ready to send and receive data\n   */\n",
+            b'  /**\n   * Closes the WebSocket connection or connection attempt, if any. If the connection is already\n   * CLOSED or CLOSING, this method does nothing.\n   *\n   * The `close` event is dispatched synchronously (mirroring how\n   * `reconnect()` dispatches its synthetic close). This guarantees\n   * consumers observe a terminal event for every explicit close, even\n   * if their listeners are detached right after this call \xe2\x80\x94 previously\n   * the real (asynchronous) browser close event could fire after\n   * listeners were removed and go unobserved entirely.\n   */\n',
+            b'  /**\n   * Closes the WebSocket connection or connection attempt and connects again.\n   * Resets retry counter;\n   */\n',
+            b'  /**\n   * Enqueue specified data to be transmitted to the server over the WebSocket connection.\n   *\n   * @returns `true` if the message was transmitted immediately over an open\n   * connection; `false` if it was buffered (sent when the connection next\n   * opens \xe2\x80\x94 the buffer is always flushed before the `open` event is\n   * dispatched) or dropped because `maxEnqueuedMessages` was reached.\n   */\n',
+            b"  /**\n   * Removes and returns all messages that were passed to send() but never\n   * transmitted (they were buffered while the connection wasn't open).\n   *\n   * Useful when a socket is being discarded and replaced (e.g. the React\n   * hooks recreate the socket when connection options change): the\n   * replacement socket can re-send these messages, instead of them being\n   * silently lost with the old instance.\n   */\n",
+        )) + (
+            (b'let didWarnAboutMissingWebSocket = false;\n', DESKTOP_PRESET_HOST_JS + b'let didWarnAboutMissingWebSocket = false;\n'),
+        ),
+    ),
+    RegionRewrite(
+        label='desktop preset sync: host mount',
+        start=b'function createApp(options) {\n',
+        end=b'async function writeTempAskpass(token) {\n',
+        length=12994,
+        stock_sha256='474ec668294da4d41be721d83fcde16fd74c54e8b269db824b172848da96fa6d',
+        patched_sha256='15920ec61b9c49a0074ee17f37d57a7d693bb99bf325d42cc0ec68d9ceb62055',
+        edits=tuple((comment, b'') for comment in (
+            b"      // Renderer clients send every request (including queries) as POST \xe2\x80\x94\n      // see createHostServiceLinks in @superset/workspace-client \xe2\x80\x94\n      // so a query with a large input (e.g. git.getDiffBulk's file-path\n      // list, or a same-tick batch across many workspaces) doesn't produce\n      // a GET URL long enough to blow past the header-size limit. Without\n      // this flag trpc's default HTTP-method map rejects those POSTs with\n      // METHOD_NOT_SUPPORTED before the query ever runs.\n",
+        )) + (
+            (b'      router: appRouter,\n', b'      router: dtsMount(appRouter),\n'),
+        ),
+    ),
+)
+
+
+def _require_preset_app_router(chunk: bytes) -> None:
+    at = chunk.find(DESKTOP_PRESET_APP_ROUTER)
+    end = chunk.find(b"\n});\n", at) + 5
+    literal = chunk[at:end]
+    if literal.startswith(DESKTOP_PRESET_APP_ROUTER + DESKTOP_PRESET_APP_ROUTER_PIN):
+        literal = DESKTOP_PRESET_APP_ROUTER + literal[len(DESKTOP_PRESET_APP_ROUTER + DESKTOP_PRESET_APP_ROUTER_PIN):]
+    if (chunk.count(DESKTOP_PRESET_APP_ROUTER) != 1 or end < 5
+            or hashlib.sha256(literal).hexdigest() != DESKTOP_PRESET_APP_ROUTER_SHA256):
+        raise RuntimeError("desktop preset sync: app router changed")
+
+
+def _plan_desktop_preset_sync(data):
+    specs = (
+        (DESKTOP_PRESET_REGIONS[:2], ("electronTrpcClient", "setHostServiceSecret", "getHostServiceClientByUrl"),
+         b"var reactExports = requireReact();", "React binding changed", None),
+        (DESKTOP_PRESET_REGIONS[2:], ("gitHookTolerance", "hostServiceUtils", "protectedProcedure", "queryProcedure", "router"),
+         b"isLocalCaller: c.req.header(SUPERSET_RELAYED_HEADER) === void 0", "local caller authentication changed",
+         _require_preset_app_router),
+    )
+    for regions, defined, marker, changed, shape in specs:
+        found = _region_chunk(data, regions, "desktop preset sync")
+        if found is not None:
+            path, _start, chunk = found
+            _require_chunk_names(path, chunk, (), defined, "desktop preset sync")
+            if b'SENTRY_RELEASE = { id: "1.39.0" };' not in chunk:
+                raise RuntimeError("desktop preset sync: unsupported desktop version")
+            if chunk.count(marker) != 1:
+                raise RuntimeError(f"desktop preset sync: {changed}")
+            if shape:
+                shape(chunk)
+    return [write for region in DESKTOP_PRESET_REGIONS for write in _plan_region_rewrite(data, region)]
+
+
 # --pinned-activity-sort (desktop-v1.37.0-v1.39.0; the region is byte-identical
 # in all three, the swap is byte-identical in 1.37 and 1.38). Upstream orders PINNED by pin time whatever the
 # Workspaces sort menu says (partitionSidebarWorkspacesByPinned). With the flag
@@ -3921,6 +4110,7 @@ def plan_replacements(
     automations_header: bool = False,
     sidebar_device_filter: bool = False,
     desktop_pin_sync: bool = False,
+    desktop_preset_sync: bool = False,
     pinned_activity_sort: bool = False,
     sort_projects: bool = False,
     pin_projects: bool = False,
@@ -4197,6 +4387,9 @@ def plan_replacements(
 
     if desktop_pin_sync:
         replacements.extend(_plan_desktop_pin_sync(data))
+
+    if desktop_preset_sync:
+        replacements.extend(_plan_desktop_preset_sync(data))
 
     if pinned_activity_sort:
         replacements.extend(_plan_pinned_activity_sort(data))
@@ -4562,6 +4755,7 @@ def main(argv=None):
         help="device dropdown next to the sidebar back / forward arrows: show only the workspaces of one host",
     )
     parser.add_argument("--desktop-pin-sync", action="store_true", help="export desktop workspace pins to mobile over the authenticated host relay (1.39.0)")
+    parser.add_argument("--desktop-preset-sync", action="store_true", help="export the desktop terminal presets (presets bar shortcuts) to mobile over the authenticated host relay (1.39.0)")
     parser.add_argument(
         "--pinned-activity-sort",
         action="store_true",
@@ -4611,6 +4805,7 @@ def main(argv=None):
             automations_header=args.automations_header,
             sidebar_device_filter=args.sidebar_device_filter,
             desktop_pin_sync=args.desktop_pin_sync,
+            desktop_preset_sync=args.desktop_preset_sync,
             pinned_activity_sort=args.pinned_activity_sort,
             sort_projects=args.sort_projects,
             pin_projects=args.pin_projects,

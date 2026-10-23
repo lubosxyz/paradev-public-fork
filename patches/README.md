@@ -1453,3 +1453,26 @@ invalid rows, a closed renderer or an unsupported bundle fail without returning
 an authoritative empty list. All three patch regions are pinned to 1.39.0;
 missing symbols, changed local-caller auth or hash drift abort the entire plan.
 See `plans/20261021-desktop-mobile-pins.md` for merge and rollout semantics.
+
+## Desktop terminal presets on mobile (opt-in, 1.39.0)
+
+`--desktop-preset-sync` exports the active organization's terminal presets (the
+V2 presets bar shortcuts) and `hiddenBuiltinPresetIds` through the same
+authenticated host-service relay, so the mobile app can list and run exactly the
+desktop's shortcuts. It does not change presets, localStorage, schemas, signing
+identity or permissions.
+
+The renderer publishes the hydrated `v2TerminalPresets` and `v2UserPreferences`
+collections to its own loopback host-service on a one-second heartbeat and stops
+on unmount. `desktopPresets.publish` accepts only an authenticated local caller
+(relayed callers get 403) and validates protocol version 1, the organization,
+freshness (±5 s), UUID ids without duplicates (case-insensitive), field types and caps (500
+presets, 64 commands per preset, 16 KB per string). `desktopPresets.list` waits
+at most 3.5 seconds for a publication made after the read started and returns
+`{version, organizationId, sourceHostId, observedAt, presets, hiddenBuiltinPresetIds}`;
+each preset carries only `id, name, description?, cwd, commands, projectIds,
+pinnedToBar?, executionMode, tabOrder, agentId?, useAsWorkspaceRun?`, stably
+sorted by `tabOrder`. A closed renderer or a rejected row is an error
+(PRECONDITION_FAILED), never an empty list. All four regions are pinned to
+1.39.0; it composes with `--desktop-pin-sync` and every other flag in any order.
+See `plans/20261024-desktop-mobile-presets.md`.

@@ -466,3 +466,33 @@ Map rows and pin schema, the local loopback secret binding, and the existing
 must remain an unavailable source, never an empty pin set. Keep the exporter
 read-only and preserve every existing route. Run the bridge behavior harness and
 both patch gates, including all flags together, before applying.
+
+## Desktop preset export (LUBOS-3112, 1.39.0 only)
+
+`DESKTOP_PRESET_REGIONS` adds four regions, disjoint from the pin export's:
+
+- renderer helper (index chunk, `WORKSPACE_SIDEBAR_TABS` .. `SIDEBAR_STATE_DEFAULTS`):
+  the workspace-local-state schema's `//` comments make room for `dtsUse`,
+  inserted after the region's first statement so the start anchor stays put.
+- renderer mount (index chunk, `createOrgCollections` .. `useMarkdownPreferencesStore`):
+  `CollectionsProvider` calls `dtsUse(activeOrganizationId, collections2)` before its
+  early return. The end anchor is past `useCollections` on purpose: padding shifts the
+  declaration after a region off column 0, and the pin export name-checks
+  `function useCollections` at column 0.
+- host router (host-service, `RESCUE_REPORT_INTERVAL_MS` .. `PING_INTERVAL_MS`): the
+  RELAY_CLOSE and partysocket JSDoc blocks make room for `dtsRouter` (364 B left).
+  `const RELAY_CLOSE` is not a valid start anchor; it also occurs in a bundled `.ts` source.
+- host mount (host-service, `createApp` .. `writeTempAskpass`): `trpcServer` mounts
+  `dtsMount(appRouter)`, which rebuilds the eager router with `desktopPresets` added and
+  leaves a router with lazy entries untouched. The `appRouter` literal itself lies in the pin
+  export's host range, so the plan pins it separately (`DESKTOP_PRESET_APP_ROUTER_SHA256`,
+  stock or stock plus the pin export's `desktopPins` line); any other shape aborts the plan.
+
+Guards: the 1.39.0 release banner in both chunks, `electronTrpcClient`,
+`setHostServiceSecret`, `getHostServiceClientByUrl` and a single React binding in the
+index chunk; `gitHookTolerance`, `hostServiceUtils`, `protectedProcedure`,
+`queryProcedure`, `router` and the single `isLocalCaller` relay marker check in
+host-service, and the exact `appRouter` literal. Before supporting another release, verify the preset collection's
+schema and `hiddenBuiltinPresetIds` preference, `getConnection`'s `{port, secret}`,
+and that `appRouter` still has no lazy entries. The fixtures are byte excerpts of the
+shipped bundle; run the preset harness and both gates with every flag together.
