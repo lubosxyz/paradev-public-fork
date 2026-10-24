@@ -685,6 +685,92 @@ class PaletteSearch139Test(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "already uses sspScore"):
             patch(bundle_139(layout=layout_chunk_139(names=LAYOUT_NAMES + b"function sspScore() {}\n")))
 
+
+# desktop-v1.40.0 (LUBOS-3122): only region 2 is re-pinned (cut from the real 1.40.0 layout-BlXpPEyz.js);
+# regions 1, 3 and 4 are the 1.39 ones. The hotkey registry gains NEW_CHAT (Cmd+Shift+J).
+REGIONS_140 = MODULE.PALETTE_SEARCH_REGIONS_1_40
+STOCK_140 = [STOCK_139[0], (FIXTURES / "superset-1.40.0-palette-r2.js").read_bytes(), *STOCK_139[2:]]
+PATCHED_140 = [PATCHED_139[0], (FIXTURES / "superset-1.40.0-palette-r2.patched.js").read_bytes(), *PATCHED_139[2:]]
+HOTKEYS_140 = (FIXTURES / "superset-1.40.0-hotkeys-registry.js").read_bytes()
+HOTKEYS_140_PATCHED = (FIXTURES / "superset-1.40.0-hotkeys-registry.patched.js").read_bytes()
+
+
+def layout_chunk_140(regions=None, names=LAYOUT_NAMES):
+    regions = STOCK_140[1:] if regions is None else regions
+    return names + b"".join(r + spec.end + tail for spec, r, tail in zip(REGIONS_140[1:], regions, TAILS_138, strict=True))
+
+
+def bundle_140(layout=None):
+    return bundle_138(layout=layout_chunk_140() if layout is None else layout, hotkeys=HOTKEYS_140)
+
+
+class PaletteSearch140Test(unittest.TestCase):
+    """The 1.40.0 layout: the same injected JS, region 2 re-pinned (LUBOS-3122)."""
+
+    # Value: protects=the 1.40 rewrites are exactly the reviewed fixtures, keep their length, re-run to nothing and parse, and reuse only the byte-identical 1.39 regions; fails_when=an edit, the injected JS or a 1.40 digest changes without its fixture, or region 2 inherits a digest that never ran on 1.40; why_new=LUBOS-3122; seam=real 1.40.0 bytes
+    def test_real_regions_are_pinned_idempotent_and_parseable(self):
+        for n, (region, old) in enumerate(zip(REGIONS_140, REGIONS_139, strict=True), 1):
+            self.assertEqual(region is old, n != 2)
+        self.assertEqual(REGIONS_140[1].edits, REGIONS_139[1].edits)
+        for region, stock, patched in zip(REGIONS_140, STOCK_140, PATCHED_140, strict=True):
+            with self.subTest(region=region.label):
+                self.assertEqual(len(stock), region.length)
+                self.assertEqual(hashlib.sha256(stock).hexdigest(), region.stock_sha256)
+                self.assertEqual(hashlib.sha256(patched).hexdigest(), region.patched_sha256)
+                self.assertEqual(MODULE._plan_region_rewrite(stock + region.end, region), [(0, stock, patched, region.label)])
+                self.assertEqual(MODULE._plan_region_rewrite(patched + region.end, region), [])
+                self.assertEqual((region.legacy_sha256, region.upgrades), ((), ()))
+                node_check(self, patched)
+
+    # Value: protects=the Cmd+K swap is the same two mac edits on the 1.40 registry, whose only change is the new NEW_CHAT entry; fails_when=1.40 binds Cmd+K or Cmd+Shift+K elsewhere, or the swap anchors drift; why_new=LUBOS-3122 (1.40 adds NEW_CHAT); seam=real 1.40.0 registry
+    def test_cmd_k_swap_on_the_1_40_registry(self):
+        start = HOTKEYS_140.index(b"  NEW_CHAT: {\n")
+        end = HOTKEYS_140.index(b'    category: "Chat"\n  },\n', start) + len(b'    category: "Chat"\n  },\n')
+        self.assertEqual(HOTKEYS_140[:start] + HOTKEYS_140[end:], HOTKEYS_138)
+        self.assertNotIn(b'"meta+k"', HOTKEYS_140[start:end])
+        self.assertNotIn(b'"meta+shift+k"', HOTKEYS_140[start:end])
+        swapped = bytearray(HOTKEYS_140)
+        for offset, old, new, _label in MODULE._plan_command_palette_cmd_k(HOTKEYS_140):
+            swapped[offset : offset + len(old)] = new
+        self.assertEqual(bytes(swapped), HOTKEYS_140_PATCHED)
+        self.assertEqual(MODULE._plan_command_palette_cmd_k(HOTKEYS_140_PATCHED), [])
+        node_check(self, HOTKEYS_140_PATCHED)
+
+    # Value: protects=the 1.40 bundle applies all four writes plus the Cmd+K swap, re-runs to nothing and reverts byte-identically, and each release picks its own layout; fails_when=the 1.40 layout is not selected or revert does not restore; why_new=LUBOS-3122; seam=temp ASAR
+    def test_apply_rerun_and_revert(self):
+        original = bundle_140()
+        self.assertEqual(MODULE._select_layout(original, MODULE.PALETTE_SEARCH_LAYOUTS, "command palette")[0], "1.40")
+        self.assertEqual(MODULE._select_layout(bundle_139(), MODULE.PALETTE_SEARCH_LAYOUTS, "command palette")[0], "1.39")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target, backups = root / "app.asar", root / "backups"
+            target.write_bytes(original)
+            options = dict(size=6, hide_tray=False, custom_project_icons=False, keep_icon_on_hover=False,
+                           command_palette_cmd_k=True, command_palette_workspace_search=True)
+            _backup, changes = MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options)
+            self.assertEqual(sorted(changes), sorted([r.label for r in REGIONS_140] + SWAP_LABELS))
+            patched = target.read_bytes()
+            self.assertEqual(len(patched), len(original))
+            for region, new in zip(REGIONS_140, PATCHED_140):
+                self.assertEqual(patched.count(new), 1, region.label)
+            self.assertEqual(patched.count(HOTKEYS_140_PATCHED), 1)
+            self.assertEqual(MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options), (None, []))
+            MODULE.revert(target, backups)
+            self.assertEqual(target.read_bytes(), original)
+
+    # Value: protects=a bundle mixing 1.39 and 1.40 palette regions, or half-patched 1.40 regions, fails closed before a write; fails_when=layout selection falls back per region or a partial 1.40 state is accepted; why_new=REBASE.md mixed-release rule (LUBOS-3122); seam=none
+    def test_mixed_release_or_generation_fails_closed(self):
+        # Region 2 is the only re-pinned one, so 1.39 bytes there make the whole layout 1.39's.
+        mixed = bundle_140(layout=layout_chunk_140([STOCK_139[1], *STOCK_140[2:]]))
+        self.assertEqual(MODULE._select_layout(mixed, MODULE.PALETTE_SEARCH_LAYOUTS, "command palette")[0], "1.39")
+        mixed = bundle_140(layout=layout_chunk_140([STOCK_140[1], STOCK_138[2], STOCK_138[3]]))
+        with self.assertRaisesRegex(RuntimeError, "command palette"):
+            patch(mixed)
+        half = bundle_140(layout=layout_chunk_140([PATCHED_140[1], *STOCK_140[2:]]))
+        with self.assertRaisesRegex(RuntimeError, "mix generations"):
+            patch(half)
+        self.assertEqual(patch(half, search=False)[1], SWAP_LABELS)
+
 @live_host_only("anchors, names and chunk syntax are checked against the Superset.app bundle installed on this host")
 class InstalledPaletteTest(unittest.TestCase):
     """The installed release still has the pinned stock bytes, and the patched chunks parse."""

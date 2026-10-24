@@ -668,6 +668,59 @@ class SupersetUiPatchTest(unittest.TestCase):
             self.assertEqual(asar.read_bytes(), original)
             self.assertEqual(backup.read_bytes(), original)
 
+    # Real desktop-v1.40.0 expanded header (layout-BlXpPEyz.js, DashboardSidebarHeader's return).
+    FIXTURE_1_40 = Path(__file__).parent / "fixtures" / "superset-1.40.0-sidebar-header.js"
+
+    def real_bundle_1_40(self, header=None):
+        """Real desktop-v1.40.0 expanded-header bytes plus the non-header families."""
+        header = self.FIXTURE_1_40.read_bytes() if header is None else header
+        return header + self.real_bundle_1_36()[len(self.FIXTURE_1_36.read_bytes()) :]
+
+    def retired_1_40(self):
+        """Stock and patched bytes of the header pairs 1.40.0 deleted."""
+        return [
+            shape for pair in MODULE.TOP_NAV_FLAGGED_VARIANTS for part in pair
+            if part[2] in MODULE.TOP_NAV_FLAGGED_RETIRED_1_40 for shape in part[:2]
+        ]
+
+    # Value: protects=the 1.40 junction constant is exact bytes of the real header, which holds the 1.36 header families and Usage but neither deleted pair; fails_when=the fixture or the junction drifts from the shipped bundle; why_new=LUBOS-3122 (1.40 deleted Cloud Workspaces and Projects); seam=real 1.40.0 bytes
+    def test_1_40_fixture_pins_the_junction_and_lacks_the_deleted_buttons(self):
+        header = self.FIXTURE_1_40.read_bytes()
+        self.assertEqual(header.count(MODULE.HEADER_CLOUDLESS_1_40), 1)
+        self.assertEqual(header.count(MODULE.TOP_NAV_STACK_1_36), 1)
+        for shape in self.retired_1_40():
+            self.assertNotIn(shape, header)
+        for button, label in MODULE.TOP_NAV_FLAGGED_VARIANTS:
+            if button[2] not in MODULE.TOP_NAV_FLAGGED_RETIRED_1_40:
+                self.assertEqual(header.count(button[0]), 1, button[2])
+                self.assertEqual(header.count(label[0]), 1, label[2])
+        self.assertNotIn(MODULE.HEADER_CLOUDLESS_1_40, self.FIXTURE_1_36.read_bytes())
+
+    # Value: protects=the real 1.40 header gets the grid, icon cells, labels and badge overlay, the deleted pairs are skipped, the result re-runs to nothing and parses; fails_when=the 1.36 rule demands the deleted buttons (the 1.40 run fails) or a 1.40 header family is left stock; why_new=LUBOS-3122; seam=real 1.40.0 bytes
+    def test_real_1_40_header_is_patchable_idempotent_and_parses(self):
+        original = self.real_bundle_1_40()
+        patched, changes = self.patch(original)
+        self.assertEqual(len(original), len(patched))
+        self.assertIn(MODULE.TOP_NAV_GRID_1_36, patched)
+        self.assertIn(MODULE.AUTOMATION_BADGE_OVERLAY_1_36, patched)
+        self.assertIn("sidebar: Usage icon button", changes)
+        for title in MODULE.TOP_NAV_FLAGGED_RETIRED_1_40:
+            self.assertFalse([change for change in changes if title in change], title)
+        self.assertNotIn(b'className: "flex-1 text-left"', patched[: len(self.FIXTURE_1_40.read_bytes())])
+        self.assertEqual(self.patch(patched), (patched, []))
+        header = patched[: len(self.FIXTURE_1_40.read_bytes())]
+        node_check(self, b"function DashboardSidebarHeader() {\n" + header)
+
+    # Value: protects=a deleted button next to the 1.40 junction (stock or patched), a second junction, or a junction on a pre-1.36 header fails closed before a write; fails_when=the junction only switches the deleted pairs off instead of requiring their absence; why_new=LUBOS-3122; seam=real 1.40.0 bytes
+    def test_1_40_junction_fails_closed_on_mixed_shapes(self):
+        for shape in self.retired_1_40():
+            with self.subTest(shape=shape[:40]), self.assertRaisesRegex(RuntimeError, "next to the 1.40 header junction"):
+                self.patch(self.real_bundle_1_40() + b"|" + shape)
+        with self.assertRaisesRegex(RuntimeError, "at most one 1.40 header junction"):
+            self.patch(self.real_bundle_1_40() + b"|" + MODULE.HEADER_CLOUDLESS_1_40)
+        with self.assertRaisesRegex(RuntimeError, "at most one 1.40 header junction"):
+            self.patch(self.stock_bundle() + b"|" + MODULE.HEADER_CLOUDLESS_1_40)
+
     def test_compact_sidebar_restores_shared_hint_and_only_hides_dashboard_callsites(self):
         globally_hidden = self.stock_bundle().replace(
             MODULE.SHORTCUT_HINT_VISIBLE,
@@ -3002,6 +3055,62 @@ class SupersetSidebarStatusFilter139PatchTest(SupersetSidebarStatusFilter138Patc
             self.patch(mixed)
 
 
+def _fixture_1_40(kind: str, n: int, suffix: str = ".js") -> Path:
+    """The 1.40.0 cut of region n, or the 1.39 one (or earlier) it is byte-identical to."""
+    path = FIXTURES / f"superset-1.40.0-{kind}-r{n}{suffix}"
+    return path if path.exists() else _fixture_1_39(kind, n, suffix)
+
+
+class SupersetSidebarStatusFilter140PatchTest(SupersetSidebarStatusFilter139PatchTest):
+    """The same filter on the desktop-v1.40.0 layout (LUBOS-3122): every inherited test runs on the 1.40 regions.
+
+    1.40 deletes the cloud section, whose code held regions 4, 12 and 13. Regions 1, 3, 5 and
+    12-14 are cut from desktop-v1.40.0 layout-BlXpPEyz.js; region 4 moves to a new room and
+    the counts get their own room, region 14. Regions 2 and 6-11 are byte-identical to 1.39.
+    """
+
+    REGIONS = MODULE.STATUS_FILTER_REGIONS_1_40
+    PALETTE_REGIONS = MODULE.PALETTE_SEARCH_REGIONS_1_40
+    PALETTE_FIXTURES = ["superset-1.37.0-palette-r1.js", "superset-1.40.0-palette-r2.js", "superset-1.38.0-palette-r3.js", "superset-1.39.0-palette-r4.js"]
+    REGION_FIXTURES = [_fixture_1_40("status-filter", n) for n in range(1, 15)]
+    PATCHED_FIXTURES = [_fixture_1_40("status-filter", n, ".patched.js") for n in range(1, 15)]
+
+    # Value: protects=the 1.40 regions are pinned on the real 1.40 bytes and reuse only the 1.39 regions that are byte-identical there; fails_when=a 1.40 fixture is missing, a reused 1.39 region drifted, or a 1.40 region inherits a legacy / upgrade digest that never ran on 1.40; why_new=LUBOS-3122 release layout; seam=real 1.40.0 bytes
+    def test_layout_reuses_identical_regions_and_has_no_earlier_generations(self):
+        earlier = MODULE.STATUS_FILTER_REGIONS_1_39
+        self.assertEqual(len(self.REGIONS), 14)
+        self.assertEqual(b"".join(r.edits[-1][1] for r in self.REGIONS[11:]).count(MODULE.STATUS_FILTER_FIRST_JS), 1)
+        rebased = {1, 3, 4, 5, 12, 13, 14}
+        for n, region in enumerate(self.REGIONS, 1):
+            with self.subTest(region=n):
+                self.assertEqual(self.REGION_FIXTURES[n - 1].name.startswith("superset-1.40.0-"), n in rebased)
+                if n in rebased:
+                    self.assertEqual((region.legacy_sha256, region.upgrades), ((), ()))
+                elif n == 10:
+                    # The section header keeps its bytes; only its end anchor moved (the cloud section is gone).
+                    self.assertEqual((region.start, region.stock_sha256, region.patched_sha256),
+                                     (earlier[9].start, earlier[9].stock_sha256, earlier[9].patched_sha256))
+                else:
+                    self.assertIs(region, earlier[n - 1])
+
+    # Value: protects=each release is planned with its own layout; fails_when=the 1.40 bundle is planned with 1.39 regions or the other way round; why_new=LUBOS-3122; seam=none
+    def test_each_release_selects_its_own_layout(self):
+        self.assertEqual(MODULE.status_filter_layout(self.stock_bundle())[0], "1.40")
+        earlier = SupersetSidebarStatusFilter139PatchTest("test_status_filter_is_idempotent").stock_bundle()
+        self.assertEqual(MODULE.status_filter_layout(earlier)[0], "1.39")
+        patched, _changes = self.patch(self.stock_bundle())
+        self.assertEqual(MODULE.status_filter_layout(patched)[0], "1.40")
+
+    # Value: protects=a bundle mixing 1.39 and 1.40 region bytes fails closed instead of patching half of each; fails_when=layout selection falls back per region; why_new=REBASE.md mixed-release rule; seam=none
+    def test_mixed_release_bundle_fails_closed(self):
+        stock_139 = SupersetSidebarStatusFilter139PatchTest.REGION_FIXTURES[0].read_bytes()
+        stock_140 = self.REGION_FIXTURES[0].read_bytes()
+        mixed = self.stock_bundle().replace(stock_140, stock_139)
+        self.assertNotEqual(mixed, self.stock_bundle())
+        with self.assertRaisesRegex(RuntimeError, "status filter"):
+            self.patch(mixed)
+
+
 class SupersetHideNavButtonsPatchTest(unittest.TestCase):
     """--hide-nav-buttons hides New Workspace, Search and Workspaces in the compact grid."""
 
@@ -3177,6 +3286,29 @@ class SupersetHideSidebarFooter139PatchTest(SupersetHideSidebarFooterPatchTest):
                 (MODULE.PROJECT_ORDER_DATA_1_39, MODULE.PROJECT_ORDER_DATA_SORTED_1_39),
             ),
         )
+
+
+
+class SupersetHideSidebarFooter140PatchTest(SupersetHideSidebarFooterPatchTest):
+    """--hide-sidebar-footer composed with the 1.40.0 status filter regions (LUBOS-3122)."""
+
+    REGIONS = SupersetSidebarStatusFilter140PatchTest.REGIONS
+    REGION_FIXTURES = SupersetSidebarStatusFilter140PatchTest.REGION_FIXTURES
+
+    # Value: protects=the 1.40 footer row is still the one shared write inside status filter region 3, next to the 1.40 sort swaps (PINNED's data line is the 1.38 shape again); fails_when=1.40 moves the row out of region 3 or the region loses a shared pair; why_new=LUBOS-3122; seam=real 1.40.0 region 3
+    def test_anchor_is_the_real_footer_row_and_hides_only_the_expanded_sidebar(self):
+        region3 = (FIXTURES / "superset-1.40.0-status-filter-r3.js").read_bytes()
+        self.assertEqual(region3.count(MODULE.SIDEBAR_FOOTER), 1)
+        self.assertEqual(
+            self.REGIONS[2].shared,
+            (
+                (MODULE.SIDEBAR_FOOTER, MODULE.SIDEBAR_FOOTER_HIDDEN),
+                (MODULE.PINNED_SORT_DATA, MODULE.PINNED_SORT_DATA_SORTED),
+                (MODULE.PROJECT_ORDER_DATA_1_39, MODULE.PROJECT_ORDER_DATA_SORTED_1_39),
+            ),
+        )
+        for stock, _patched in self.REGIONS[2].shared:
+            self.assertEqual(region3.count(stock), 1, stock)
 
 
 class SupersetSoundOnlyWhenWaitingPatchTest(unittest.TestCase):
@@ -3911,6 +4043,32 @@ class SupersetStatusFilterCollapse139Test(SupersetStatusFilterCollapseTest):
     HOTKEYS_REGION = _fixture_1_39("status-filter", 9, ".patched.js")
 
 
+
+class SupersetStatusFilterCollapse140Test(SupersetStatusFilterCollapseTest):
+    """The v5 collapse behaviour on the desktop-v1.40.0 regions (LUBOS-3122)."""
+
+    PATCHED = [_fixture_1_40("status-filter", n, ".patched.js") for n in (1, 2, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14)]
+    HOTKEYS_REGION = _fixture_1_40("status-filter", 9, ".patched.js")
+
+    def harness(self, assertions: str) -> str:
+        # 1.40 moves DashboardSidebarGroupHeader into region 1, so the harness no longer stubs it.
+        stub = 'const [DashboardSidebarWorkspaceItem, DashboardSidebarProjectRow, DashboardSidebarGroupHeader, RenameInput] = ["WorkspaceItem", "ProjectRow", "GroupHeader", "RenameInput"];'
+        harness = super().harness(assertions)
+        self.assertEqual(harness.count(stub), 1)
+        harness = harness.replace(stub, 'const [DashboardSidebarWorkspaceItem, DashboardSidebarProjectRow, RenameInput] = ["WorkspaceItem", "ProjectRow", "RenameInput"];')
+        # Rooms 12-14 sit in upstream code whose imports the harness does not stub; only their injected code is loaded.
+        for n, injected in (
+            (12, MODULE.STATUS_FILTER_FOLD_LIST_JS),
+            (13, MODULE.STATUS_FILTER_FIRST_JS + MODULE.STATUS_FILTER_CLEAR_JS),
+            (14, MODULE.STATUS_FILTER_COUNTS_JS),
+        ):
+            room = _fixture_1_40("status-filter", n, ".patched.js").read_text()
+            self.assertEqual(room.count(injected.decode()), 1, n)
+            self.assertEqual(harness.count(room), 1, n)
+            harness = harness.replace(room, injected.decode())
+        return harness
+
+
 class SupersetStatusFilterGenerationsTest(unittest.TestCase):
     """Older filter generations and the 1.37 sticky-row variant stay recognised end to end."""
 
@@ -4259,6 +4417,22 @@ class SupersetStatusFilterNames139Test(SupersetStatusFilterNamesTest):
 
     REGIONS = SupersetSidebarStatusFilter139PatchTest.REGIONS
     REGION_FIXTURES = SupersetSidebarStatusFilter139PatchTest.REGION_FIXTURES
+
+
+
+class SupersetStatusFilterHotkeys140PatchTest(SupersetStatusFilterHotkeys138PatchTest):
+    """--status-filter-hotkeys on the 1.40.0 regions and registry (LUBOS-3122); the registry adds NEW_CHAT (Cmd+Shift+J)."""
+
+    REGIONS = SupersetSidebarStatusFilter140PatchTest.REGIONS
+    REGION_FIXTURES = SupersetSidebarStatusFilter140PatchTest.REGION_FIXTURES
+    HOTKEYS = FIXTURES / "superset-1.40.0-hotkeys-registry.js"
+
+
+class SupersetStatusFilterNames140Test(SupersetStatusFilterNamesTest):
+    """The name check on a 1.40.0 chunk (LUBOS-3122)."""
+
+    REGIONS = SupersetSidebarStatusFilter140PatchTest.REGIONS
+    REGION_FIXTURES = SupersetSidebarStatusFilter140PatchTest.REGION_FIXTURES
 
 
 class SupersetAsarIntegrityFuseTest(unittest.TestCase):

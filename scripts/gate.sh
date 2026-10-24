@@ -33,7 +33,7 @@ trap 'rm -rf "$work"' EXIT
 
 step "node --check: fixtures and tools"
 # Byte excerpts cut mid-function; the tests read them as raw bytes, never as a module.
-EXCERPTS=" tests/fixtures/superset-1.36.0-sidebar-header.js "
+EXCERPTS=" tests/fixtures/superset-1.36.0-sidebar-header.js tests/fixtures/superset-1.40.0-sidebar-header.js "
 # The list is built by its own command so a find error stops the gate (set -e), unlike `< <(find)`.
 find tests/fixtures tools patches -type f \( -name '*.js' -o -name '*.mjs' -o -name '*.cjs' \) -print0 >"$work/js"
 count=0

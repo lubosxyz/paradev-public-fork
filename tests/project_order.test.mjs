@@ -1,8 +1,8 @@
-// Behaviour of --sort-projects / --pin-projects on the real desktop-v1.38.0 bytes (the 1.39.0 store,
+// Behaviour of --sort-projects / --pin-projects on the real desktop-v1.38.0 bytes (the 1.39.0 / 1.40.0 rooms and the 1.39.0
 // menu item, data line and menus have their own tests): the patched room
 // regions (written by patch-asar.py rewrite_region and pinned by
 // tests/test_superset_project_order_patch.py) run on upstream's own sort helpers
-// (superset-1.37.0-sidebar-sort.js, byte-identical in v1.38.0 and v1.39.0), DashboardSidebar's project order
+// (superset-1.37.0-sidebar-sort.js, byte-identical in v1.38.0 through v1.40.0), DashboardSidebar's project order
 // line runs stock and swapped, and the stock sort menu and project context menu render with and
 // without their swapped item. React is stubbed; localStorage is a Map.
 import assert from "node:assert/strict";
@@ -56,6 +56,10 @@ const PIN_ITEM = read("superset-1.38.0-pin-projects-r1.patched.js");
 // desktop-v1.39.0 (LUBOS-2797): the store and pin rooms are new cuts; the hook and sort rooms are the 1.38.0 bytes.
 const STORE_1_39 = read("superset-1.39.0-project-order-r2.patched.js");
 const PIN_ITEM_1_39 = read("superset-1.39.0-pin-projects-r1.patched.js");
+// desktop-v1.40.0 (LUBOS-3122): the hook, store and pin rooms are new cuts; the sort room is the 1.38.0 bytes.
+const HOOK_1_40 = read("superset-1.40.0-project-order-r1.patched.js");
+const STORE_1_40 = read("superset-1.40.0-project-order-r2.patched.js");
+const PIN_ITEM_1_40 = read("superset-1.40.0-pin-projects-r1.patched.js");
 
 // The layout chunk with the core regions and the menu items of the applied flags.
 function chunk({ sort = true, pin = true, entries = {}, broken = false, release = "1.38.0" } = {}) {
@@ -77,8 +81,11 @@ function chunk({ sort = true, pin = true, entries = {}, broken = false, release 
     ...(sort ? {} : { lppSortItem: undefined }),
     ...(pin ? {} : { lppPinItem: undefined }),
   };
-  const [store, pinItem] = release === "1.39.0" ? [STORE_1_39, PIN_ITEM_1_39] : [STORE, PIN_ITEM];
-  const sources = [SORT, store, HOOK, ...(sort ? [SORT_ITEM] : []), ...(pin ? [pinItem] : [])];
+  const [store, hook, pinItem] = {
+    "1.39.0": [STORE_1_39, HOOK, PIN_ITEM_1_39],
+    "1.40.0": [STORE_1_40, HOOK_1_40, PIN_ITEM_1_40],
+  }[release] ?? [STORE, HOOK, PIN_ITEM];
+  const sources = [SORT, store, hook, ...(sort ? [SORT_ITEM] : []), ...(pin ? [pinItem] : [])];
   const names = ["lppUse", "lppSet", "lppSubscribe", "sortDashboardSidebarProjects", ...(sort ? ["lppSortItem"] : []), ...(pin ? ["lppPinItem"] : [])];
   return { ...load(sources, mocks, names), localStorage, subscribed, mocks };
 }
@@ -270,10 +277,10 @@ test("each flag applies only its own part: stored state of a flag that is not ap
   assert.equal(neither.lppUse(GROUPS, "active")[1], false);
 });
 
-test("1.39: the re-cut store and pin rooms give the same order, pins and menu item as 1.38", () => {
+for (const release of ["1.39.0", "1.40.0"]) test(`${release}: the re-cut rooms give the same order, pins and menu item as 1.38`, () => {
   for (const entries of [SORT_ON, {}, { ...SORT_ON, "lubos-patch:pinned-projects": JSON.stringify(["p-empty"]) }]) {
     for (const mode of ["active", "created", "manual"]) {
-      const [rows, drag] = chunk({ entries, release: "1.39.0" }).lppUse(GROUPS, mode);
+      const [rows, drag] = chunk({ entries, release }).lppUse(GROUPS, mode);
       const [expected, expectedDrag] = chunk({ entries }).lppUse(GROUPS, mode);
       assert.deepEqual(ids(rows), ids(expected), `${mode} ${JSON.stringify(entries)}`);
       assert.equal(drag, expectedDrag);
@@ -281,7 +288,7 @@ test("1.39: the re-cut store and pin rooms give the same order, pins and menu it
   }
   // The rendered item, its handler aside (a fresh closure per chunk).
   const item = (api) => JSON.stringify(api.lppPinItem({ projectId: "p-docs" }));
-  assert.equal(item(chunk({ release: "1.39.0" })), item(chunk()));
+  assert.equal(item(chunk({ release })), item(chunk()));
 });
 
 // ---------------------------------------------------------------------------------------------

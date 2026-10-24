@@ -1,5 +1,5 @@
 // Behaviour of --automations-header and --sidebar-device-filter on the real desktop-v1.38.0 bytes
-// (byte-identical in v1.37.0; the 1.39.0 cloud row mapping has its own test): the patched region fixtures (written by patch-asar.py rewrite_region
+// (byte-identical in v1.37.0; the 1.39.0 / 1.40.0 cloud row mapping and the 1.40.0 automations page have their own tests): the patched region fixtures (written by patch-asar.py rewrite_region
 // and pinned by tests/test_superset_device_automations_patch.py) are evaluated with stubbed React.
 // Elements are plain {type, props, key} objects, so a test reads the rendered tree directly.
 import assert from "node:assert/strict";
@@ -62,6 +62,10 @@ const DEVICE_REGIONS = [1, 2, 3, 4, 5].map((n) => read(`superset-1.38.0-device-f
 // desktop-v1.39.0 (LUBOS-2797): regions 1 and 5 re-pinned, 2-4 byte-identical to 1.38.0.
 const DEVICE_REGIONS_1_39 = [
   read("superset-1.39.0-device-filter-r1.patched.js"), ...DEVICE_REGIONS.slice(1, 4), read("superset-1.39.0-device-filter-r5.patched.js"),
+];
+// desktop-v1.40.0 (LUBOS-3122): regions 1 and 2 re-pinned, 3-5 byte-identical to 1.39.0.
+const DEVICE_REGIONS_1_40 = [
+  read("superset-1.40.0-device-filter-r1.patched.js"), read("superset-1.40.0-device-filter-r2.patched.js"), ...DEVICE_REGIONS_1_39.slice(2),
 ];
 const DEVICE_NAMES = [
   "sdfUseRows", "sdfUseList", "sdfGroups", "sdfKids", "sdfUseHost", "sdfSet", "sdfUseDevices", "sdfUseCloud",
@@ -223,8 +227,8 @@ test("the cloud section shows under All devices and Cloud, and hides under a hos
   assert.equal(api.sdfUseCloud(undefined, "org"), true);
 });
 
-test("1.39: the new sidebar's inline cloud rows (hostId = their own id) read as Cloud, not as one device each", () => {
-  const api = device({ regions: DEVICE_REGIONS_1_39, cloud: [{ id: "c1" }] });
+for (const [release, regions] of [["1.39", DEVICE_REGIONS_1_39], ["1.40", DEVICE_REGIONS_1_40]]) test(`${release}: the new sidebar's inline cloud rows (hostId = their own id) read as Cloud, not as one device each`, () => {
+  const api = device({ regions, cloud: [{ id: "c1" }] });
   const inline = row("c1", "c1", "fork");
   const rows = [...ROWS, inline];
   const cloudRowById = new Map([["c1", inline]]);
@@ -235,7 +239,7 @@ test("1.39: the new sidebar's inline cloud rows (hostId = their own id) read as 
   api.sdfSet(M5);
   assert.deepEqual(api.sdfUseRows(rows, cloudRowById).map((w) => w.id), ["fork-m5", "ops-m5", "pinned-m5", "session-m5"]);
   // Without the new sidebar the map is empty and every row keeps its host, as on 1.38.
-  const legacy = device({ regions: DEVICE_REGIONS_1_39 });
+  const legacy = device({ regions });
   legacy.sdfSet(LOCAL);
   assert.deepEqual(legacy.sdfUseRows(ROWS, new Map()).map((w) => w.id), ["fork-local", "pinned-local", "session-local"]);
   assert.deepEqual(legacy.sdfUseDevices(LOCAL).map(([id]) => id), [LOCAL, M5]);
@@ -245,7 +249,7 @@ test("1.39: the new sidebar's inline cloud rows (hostId = their own id) read as 
 // --automations-header
 // ---------------------------------------------------------------------------------------------
 
-function automations() {
+function automations(release = "1.38.0") {
   const calls = { navigate: [], value: [], search: [] };
   const mocks = {
     jsxRuntimeExports, reactExports, cn,
@@ -257,7 +261,7 @@ function automations() {
     Tooltip: "Tooltip", TooltipTrigger: "TooltipTrigger", TooltipContent: "TooltipContent", LuCircleHelp: "LuCircleHelp",
     ButtonGroup: "ButtonGroup", LuPlus: "LuPlus", LuSparkles: "LuSparkles",
   };
-  const page = load([read("superset-1.38.0-automations-header-r2.patched.js")], mocks, ["sahKeyOf", "sahOptions", "SahHeader"]);
+  const page = load([read(`superset-${release}-automations-header-r2.patched.js`)], mocks, ["sahKeyOf", "sahOptions", "SahHeader"]);
   const header = load([read("superset-1.38.0-automations-header-r1.patched.js")], mocks, ["FeatureHeader"]);
   const stock = load([read("superset-1.38.0-automations-header-r1.js")], mocks, ["FeatureHeader"]);
   return { ...page, FeatureHeader: header.FeatureHeader, StockFeatureHeader: stock.FeatureHeader, calls };
@@ -275,8 +279,9 @@ const AUTOMATIONS = [
   { id: "a5", v2ProjectId: "p-fork" },
 ];
 
-test("the project options: each project with an automation once, by name, unknown projects next, sessions last", () => {
-  const { sahOptions, sahKeyOf } = automations();
+// 1.40.0 re-pins the page region (LUBOS-3122); the injected helpers and header must behave the same.
+for (const release of ["1.38.0", "1.40.0"]) test(`${release}: the project options: each project with an automation once, by name, unknown projects next, sessions last`, () => {
+  const { sahOptions, sahKeyOf } = automations(release);
   assert.equal(sahKeyOf(AUTOMATIONS[1]), "");
   const options = sahOptions(AUTOMATIONS, PROJECTS_BY_ID);
   assert.deepEqual(options.map(([key, project]) => [key, project?.name ?? null]), [
@@ -285,8 +290,8 @@ test("the project options: each project with an automation once, by name, unknow
   assert.deepEqual(sahOptions([], PROJECTS_BY_ID), []);
 });
 
-test("the header controls: project filter, All runs (every run) and the search, in that order", () => {
-  const api = automations();
+for (const release of ["1.38.0", "1.40.0"]) test(`${release}: the header controls: project filter, All runs (every run) and the search, in that order`, () => {
+  const api = automations(release);
   const options = api.sahOptions(AUTOMATIONS, PROJECTS_BY_ID);
   const onValue = (value) => api.calls.value.push(value);
   const onSearch = (value) => api.calls.search.push(value);

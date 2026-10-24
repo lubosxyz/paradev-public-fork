@@ -12,10 +12,18 @@ FIXTURES = Path(__file__).parent / 'fixtures'
 FILES = ['index.js', 'renderer.js', 'host-service.js']
 
 
+def pin_stock(file, release):
+    """The release's cut of a pin region, or the 1.39.0 one it is byte-identical to (1.40.0 re-cuts only the host router)."""
+    path = FIXTURES / f'superset-{release}-desktop-pins-{file}'
+    return (path if path.exists() else FIXTURES / f'superset-1.39.0-desktop-pins-{file}').read_bytes()
+
+
 class RegionTest(unittest.TestCase):
     def test_exact_regions_are_idempotent_and_reject_drift(self):
-        for region, file in zip(MODULE.DESKTOP_PIN_REGIONS, FILES):
-            stock = (FIXTURES / f'superset-1.39.0-desktop-pins-{file}').read_bytes()
+        cases = [(region, '1.39.0', file) for region, file in zip(MODULE.DESKTOP_PIN_REGIONS, FILES)]
+        cases += [(region, '1.40.0', file) for region, file in zip(MODULE.DESKTOP_PIN_REGIONS_1_40, FILES)]
+        for region, release, file in cases:
+            stock = pin_stock(file, release)
             self.assertEqual(hashlib.sha256(stock).hexdigest(), region.stock_sha256)
             data = stock + region.end
             writes = MODULE._plan_region_rewrite(data, region)

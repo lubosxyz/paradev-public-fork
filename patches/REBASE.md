@@ -449,7 +449,92 @@ triangle. Mapping the damage with every flag on the stock 1.39 bundle:
   (approved set first, opt-ins first) reach the same SHA-256, and `--revert`
   restores the stock SHA-256.
 
-## Desktop pin export (LUBOS-2944, 1.39.0 only)
+## Worked example: 1.39.0 → 1.40.0 (2026-10-24, LUBOS-3122)
+
+M1 and M5 staged the 1.40.0 update while running patched 1.39.0, and the
+patcher refused it. Mapping the damage with every flag on a copy of the stock
+1.40.0 bundle (`a5a97c72…`), extracted from a copy of the staged zip: tray,
+icons, hover, pinned icon, sound, footer, Cmd+K and PINNED sort plan as before;
+compact sidebar and nav buttons miss the Cloud Workspaces anchor, the status
+filter and its hotkeys span several files, palette search and the automations
+header miss their pinned end, the device filter lacks a swap anchor, pin and
+preset sync see an unsupported version and the project order flags find an
+anchor of another release. Upstream deleted the separate cloud section (every
+`DashboardSidebarCloud*` function; cloud workspaces are inline rows only), the
+Cloud Workspaces / Projects header buttons with `isCloudEnabled`, and the legacy
+workspace row with `useNewDashboardSidebarEnabled`, and memoized
+`DashboardSidebar`.
+
+- Header: a positive verify-only junction (`HEADER_CLOUDLESS_1_40`, the
+  Workspaces label closing straight into the Automations wrapper) selects the
+  1.40 header; both deleted pairs must then be absent, Usage stays required.
+  Without it the 1.36-1.39 rule applies; a junction next to a deleted pair
+  fails closed.
+- Workspace row families: no split markers, so the single global match of 1.38
+  applies again (`WORKSPACE_ROW_SPLIT_MARKERS` absent).
+- Status filter (fourth layout, `STATUS_FILTER_REGIONS_1_40`): region 1 grew (it
+  also holds `DashboardSidebarGroupHeader`), deletes three more `//` lines and
+  takes `ssfOn`; region 3 starts at the memoized `DashboardSidebar` with the 1.39
+  edits; region 5 is re-pinned; region 10 keeps its bytes but ends at
+  `RenameBranchDialog`; 2, 6-9 and 11 are byte-identical. Rooms 4, 12 and 13 are
+  gone with the cloud section, so their helpers move to four room-only regions
+  no other family touches: matching (hover-card safe triangle run), counts
+  (delete dialog run), group list (spinner and workspace icon run), hotkey
+  target with auto-clear (top bar run). Padding of regions 1-14: 139, 120, 19,
+  121, 75, 71, 1, 11, 8, 22, 34, 157, 20 and 47 B.
+- Palette search: regions 1, 3, 4 byte-identical, region 2 re-pinned (cloud
+  workspaces get their own host icon; 173 B left). The hotkey registry adds
+  `NEW_CHAT` (⌘⇧J), so 1.40 has its own registry fixture; the Cmd+K and chip
+  hotkey moves are unchanged.
+- Automations header: `FeatureHeader` byte-identical; the page gained
+  upstream's Last run sort away from the edits and is re-pinned (1,547 B left).
+- Sidebar device filter: the cloud guard swap is gone with its guard; inline
+  cloud rows already read as Cloud, so Cloud keeps exactly them and a host
+  hides them. `sdfUseCloud` stays in the drag guard region (its 1.39 bytes,
+  new end at `DashboardSidebarSectionHeader`). The data region (ends at the
+  memoized `DashboardSidebar`) and the device list room are re-pinned (13 and
+  122 B left). A cloud guard next to the 1.40 layout fails closed.
+- PINNED sort: the data line drops `{ inlineCloudWorkspaces }`, so 1.40 uses
+  the 1.38 swap; the helpers are byte-identical.
+- Sort / pin projects: checkbox region and all three swaps are the 1.39 shapes;
+  the hook (`DashboardLayout` mounts `WorkspaceSidebarPanel` and
+  `RestoreCloudWorkspaceMount`; 36 B left), store (a modal dialog prop; 162 B)
+  and menu item (the legacy row branch is gone; 69 B) regions are re-pinned.
+  `PROJECT_ORDER_LAYOUTS` gains a `1.40` layout.
+- Pin export: renderer regions byte-identical; the host router range grew by
+  the `sessions` entry and is re-pinned (972 B left). Preset export: renderer
+  mount and host router byte-identical; renderer helper (one more `//` TODO
+  line) and host mount (new startup/shutdown calls) re-pinned (404 and 494 B
+  left); `appRouter` gained `sessions: sessionsRouter`, still no lazy entries,
+  pinned as `DESKTOP_PRESET_APP_ROUTER_SHA256_1_40`. Release banners must name
+  1.40.0; router names, procedures, result shapes, caps and auth are unchanged.
+- Cross-family release check: every family still picks its layout alone
+  (`_select_layout`, the PINNED sort swaps), but each plan also probes every
+  family the bundle holds whole, flagged or not (`RELEASE_PROBES`,
+  `_probe_releases`), and refuses a bundle whose families share no release
+  (`mixed release layouts across families`) before any write, whatever flags
+  run, so families cannot be mixed one run at a time either; e.g. a 1.39
+  palette region 2 in an otherwise 1.40 bundle, where each family is whole on
+  its own. A family no layout fits whole is refused when the regions it holds
+  (by shape: start, end, length) share no release, e.g. a 1.39 device region 2
+  in a 1.40 device filter; an absent or merely changed family is left to its
+  own flag. Shapes, not layouts, because a re-cut region whose bytes stay put
+  keeps its older shape fitting inside a newer, whole layout. A new layout's name must therefore list exactly the releases it
+  serves (`_layout_releases`: `1.40`, `1.40.0`, `1.37-1.39`), and a new family
+  with layouts joins `RELEASE_PROBES`. The header generation stays its own check.
+- No upstream adoption, nothing retired. 1.37 / 1.38 / 1.39 stay supported (M1
+  and M5 run patched 1.39 and keep its backups).
+- Fixtures are cut from the real stock 1.40.0 bundle
+  (`tests/fixtures/superset-1.40.0-*`; byte-identical regions reuse earlier
+  fixtures). The 1.40 test classes inherit the 1.39 ones;
+  `tests/palette_search_1_40.test.mjs` runs the palette suite on 1.40.
+- Proof on the copy: every flag applies alone; all together write 79 times to
+  `442868bc…`, a re-plan is 0, forward and reverse sequential orders reach the
+  same SHA-256, `--revert` restores the stock SHA-256, and an isolated
+  host-service from the patched copy answers the pin and preset smoke
+  (401 / 403 / 400 / 412 / 200, relayed list equals the fixture).
+
+## Desktop pin export (LUBOS-2944, 1.39.0 and 1.40.0)
 
 `DESKTOP_PIN_REGIONS` touches three disjoint files. The index chunk's Zod helper
 range supplies room by removing only PURE/i18n comments; its executable code is
@@ -457,17 +542,18 @@ unchanged apart from attaching `useCollections.dps`. The LocalHostServiceProvide
 range calls that hook before its early return; exact whitespace-only declaration
 edits plus the PURE marker provide room. The host-service createSession..appRouter
 range removes explicitly pinned documentation comments and adds the authenticated
-snapshot router. Fixtures are byte excerpts of the shipped 1.39.0 bundle, not
+snapshot router. Fixtures are byte excerpts of the shipped 1.39.0 and 1.40.0
+bundles, not
 constructed from the constants. Verify complete patched chunks with node --check.
 
-The provider release banner must say 1.39.0. Verify the collection's ready status,
+The provider release banner must name the selected release (`DESKTOP_PIN_LAYOUTS`). Verify the collection's ready status,
 Map rows and pin schema, the local loopback secret binding, and the existing
 `isLocalCaller` relay marker check before supporting another release. A timeout
 must remain an unavailable source, never an empty pin set. Keep the exporter
 read-only and preserve every existing route. Run the bridge behavior harness and
 both patch gates, including all flags together, before applying.
 
-## Desktop preset export (LUBOS-3112, 1.39.0 only)
+## Desktop preset export (LUBOS-3112, 1.39.0 and 1.40.0)
 
 `DESKTOP_PRESET_REGIONS` adds four regions, disjoint from the pin export's:
 
@@ -488,7 +574,7 @@ both patch gates, including all flags together, before applying.
   export's host range, so the plan pins it separately (`DESKTOP_PRESET_APP_ROUTER_SHA256`,
   stock or stock plus the pin export's `desktopPins` line); any other shape aborts the plan.
 
-Guards: the 1.39.0 release banner in both chunks, `electronTrpcClient`,
+Guards: the selected release's banner (1.39.0 or 1.40.0) in both chunks, `electronTrpcClient`,
 `setHostServiceSecret`, `getHostServiceClientByUrl` and a single React binding in the
 index chunk; `gitHookTolerance`, `hostServiceUtils`, `protectedProcedure`,
 `queryProcedure`, `router` and the single `isLocalCaller` relay marker check in

@@ -17,34 +17,44 @@ FILES = ['renderer-helper', 'renderer-mount', 'host-router', 'host-mount']
 PIN_FILES = ['index.js', 'renderer.js', 'host-service.js']
 BANNER = b'SENTRY_RELEASE = { id: "1.39.0" };\n'
 BASE = {'size': 6, 'hide_tray': False, 'custom_project_icons': False, 'keep_icon_on_hover': False}
+# Each release's regions of both bridges; a 1.40.0 cut exists only where 1.40 changed the bytes.
+REGIONS = {
+    '1.39.0': (MODULE.DESKTOP_PRESET_REGIONS, MODULE.DESKTOP_PIN_REGIONS),
+    '1.40.0': (MODULE.DESKTOP_PRESET_REGIONS_1_40, MODULE.DESKTOP_PIN_REGIONS_1_40),
+}
 
 
-def stock(file):
-    return (FIXTURES / f'superset-1.39.0-desktop-presets-{file}.js').read_bytes()
+def _cut(name, release):
+    path = FIXTURES / f'superset-{release}-{name}'
+    return (path if path.exists() else FIXTURES / f'superset-1.39.0-{name}').read_bytes()
 
 
-def pin_stock(file):
-    return (FIXTURES / f'superset-1.39.0-desktop-pins-{file}').read_bytes()
+def stock(file, release='1.39.0'):
+    return _cut(f'desktop-presets-{file}.js', release)
 
 
-def bundle(renderer_head=None, host_head=None, drift=None, app_router=None):
+def pin_stock(file, release='1.39.0'):
+    return _cut(f'desktop-pins-{file}', release)
+
+
+def bundle(renderer_head=None, host_head=None, drift=None, app_router=None, release='1.39.0'):
     """Both bridges' exact regions in their own chunks: renderer index, provider chunk and host-service."""
-    a, b, c, d = MODULE.DESKTOP_PRESET_REGIONS
-    p0, p1, p2 = MODULE.DESKTOP_PIN_REGIONS
-    regions = {file: stock(file) for file in FILES}
+    (a, b, c, d), (p0, p1, p2) = REGIONS[release]
+    banner = BANNER.replace(b'1.39.0', release.encode())
+    regions = {file: stock(file, release) for file in FILES}
     if drift:
         regions[drift] = regions[drift][:-2] + b'!' + regions[drift][-1:]
     if renderer_head is None:
-        renderer_head = (BANNER + b'var reactExports = requireReact();\nconst electronTrpcClient = {};\n'
+        renderer_head = (banner + b'var reactExports = requireReact();\nconst electronTrpcClient = {};\n'
                          b'function setHostServiceSecret() {}\nfunction getHostServiceClientByUrl() {}\n')
     if host_head is None:
-        host_head = BANNER + b''.join(b'const %s = {};\n' % name for name in (
+        host_head = banner + b''.join(b'const %s = {};\n' % name for name in (
             b'gitHookTolerance', b'hostServiceUtils', b'router', b'protectedProcedure', b'queryProcedure'))
-    renderer = (renderer_head + pin_stock('index.js') + p0.end + b'}\n' + regions['renderer-helper'] + a.end + b'};\n'
+    renderer = (renderer_head + pin_stock('index.js', release) + p0.end + b'}\n' + regions['renderer-helper'] + a.end + b'};\n'
                 + regions['renderer-mount'] + b.end + b'{};\n')
-    provider = (b'e.SENTRY_RELEASE = { id: "1.39.0" };\nimport { r as reactExports, p as useCollections } from "./index.js";\n'
-                + pin_stock('renderer.js') + p1.end)
-    pin_host = pin_stock('host-service.js')
+    provider = (b'e.' + banner + b'import { r as reactExports, p as useCollections } from "./index.js";\n'
+                + pin_stock('renderer.js', release) + p1.end)
+    pin_host = pin_stock('host-service.js', release)
     if app_router:
         pin_host = pin_host.replace(*app_router)
     host = (host_head + pin_host + p2.end + regions['host-mount'] + d.end + b'}\n'
@@ -130,7 +140,10 @@ class PlanTest(unittest.TestCase):
         host_head = BANNER + b''.join(b'const %s = {};\n' % name for name in (
             b'gitHookTolerance', b'hostServiceUtils', b'router', b'protectedProcedure', b'queryProcedure'))
         cases = {
-            'unsupported desktop version': [bundle(renderer_head=renderer_head.replace(b'1.39.0', b'1.40.0')),
+            'unsupported desktop version': [bundle(renderer_head=renderer_head.replace(b'1.39.0', b'1.41.0')),
+                                            bundle(host_head=host_head.replace(b'1.39.0', b'1.41.0')),
+                                            # 1.39 regions under a 1.40 banner: the banner must name the selected release.
+                                            bundle(renderer_head=renderer_head.replace(b'1.39.0', b'1.40.0')),
                                             bundle(host_head=host_head.replace(b'1.39.0', b'1.40.0'))],
             'electronTrpcClient is not available': [bundle(renderer_head=renderer_head.replace(b'const electronTrpcClient', b'let electronTrpc'))],
             'setHostServiceSecret is not available': [bundle(renderer_head=renderer_head.replace(b'function setHostServiceSecret', b'function setSecret'))],
@@ -174,6 +187,73 @@ class PlanTest(unittest.TestCase):
         self.assertIn('desktop_preset_sync', flags['opt_in_flags'])
         self.assertNotIn('desktop_preset_sync', flags['patch_options'])
 
+
+
+class Release140Test(unittest.TestCase):
+    """desktop-v1.40.0 (LUBOS-3122): both bridges re-pinned where 1.40 changed the bytes, same wire contract."""
+
+    # Value: protects=every 1.40 region of both bridges is the pinned real 1.40 bytes, rewrites to its pinned digest, re-runs to nothing and parses; regions 1.40 did not change are the 1.39 objects and the re-pinned ones carry the 1.39 edits (so the injected JS, routers, procedures, caps and auth are byte-identical); fails_when=a 1.40 digest or edit drifts from its fixture, or a re-pin changes the bridge code; why_new=LUBOS-3122; seam=real 1.40.0 bytes
+    def test_regions_are_pinned_with_the_1_39_edits(self):
+        cases = (
+            (MODULE.DESKTOP_PRESET_REGIONS_1_40, MODULE.DESKTOP_PRESET_REGIONS, [stock(file, '1.40.0') for file in FILES], {1, 2}),
+            (MODULE.DESKTOP_PIN_REGIONS_1_40, MODULE.DESKTOP_PIN_REGIONS, [pin_stock(file, '1.40.0') for file in PIN_FILES], {0, 1}),
+        )
+        for regions, earlier, stocks, reused in cases:
+            for n, (region, old, original) in enumerate(zip(regions, earlier, stocks, strict=True)):
+                with self.subTest(region=region.label):
+                    self.assertEqual(region is old, n in reused)
+                    self.assertEqual((region.label, region.start, region.end, region.edits), (old.label, old.start, old.end, old.edits))
+                    self.assertEqual(len(original), region.length)
+                    self.assertEqual(hashlib.sha256(original).hexdigest(), region.stock_sha256)
+                    [(_, _, patched, _)] = MODULE._plan_region_rewrite(original + region.end, region)
+                    self.assertEqual(hashlib.sha256(patched).hexdigest(), region.patched_sha256)
+                    self.assertEqual(MODULE._plan_region_rewrite(patched + region.end, region), [])
+                    node_check(self, patched)
+        self.assertEqual([p.name for p in sorted(FIXTURES.glob('superset-1.40.0-desktop-p*'))], [
+            'superset-1.40.0-desktop-pins-host-service.js', 'superset-1.40.0-desktop-presets-host-mount.js',
+            'superset-1.40.0-desktop-presets-renderer-helper.js'])
+
+    # Value: protects=on a 1.40 bundle both bridges select the 1.40 layout, compose in any order to the same bytes and re-plan to nothing, and each bridge leaves the other's regions as its own run writes them; fails_when=the 1.40 layout is not selected, a 1.40 region collides with the other bridge, or the order changes the result; why_new=LUBOS-3122; seam=real 1.40.0 bytes
+    def test_composes_with_pin_sync_in_any_order(self):
+        both = bundle(release='1.40.0')
+        self.assertEqual(MODULE._select_layout(both, MODULE.DESKTOP_PRESET_LAYOUTS, 'desktop preset sync')[0], '1.40.0')
+        self.assertEqual(MODULE._select_layout(both, MODULE.DESKTOP_PIN_LAYOUTS, 'desktop pin sync')[0], '1.40.0')
+        writes = apply(both, desktop_pin_sync=True, desktop_preset_sync=True)
+        self.assertEqual(len(writes), 7)
+        self.assertEqual(MODULE.plan_replacements(both, **BASE, desktop_pin_sync=True, desktop_preset_sync=True), [])
+        for first, second in (('desktop_preset_sync', 'desktop_pin_sync'), ('desktop_pin_sync', 'desktop_preset_sync')):
+            data = bundle(release='1.40.0')
+            apply(data, **{first: True})
+            self.assertEqual(MODULE.plan_replacements(data, **BASE, **{first: True}), [])
+            apply(data, **{second: True})
+            self.assertEqual(data, both, f'{first} then {second}')
+        for region in (*MODULE.DESKTOP_PRESET_REGIONS_1_40, *MODULE.DESKTOP_PIN_REGIONS_1_40):
+            at = bytes(both).index(region.start)
+            self.assertEqual(hashlib.sha256(both[at:at+region.length]).hexdigest(), region.patched_sha256, region.label)
+
+    # Value: protects=a 1.40 bundle under a 1.39 or unknown banner, a bundle mixing 1.39 and 1.40 region bytes, or a 1.40 app router with a lazy entry fails before any write; fails_when=the banner check accepts any supported release, layout selection falls back per region, or the 1.40 app router digest is not checked; why_new=LUBOS-3122 (REBASE.md mixed-release rule); seam=real 1.40.0 bytes
+    def test_unknown_or_mixed_shapes_fail_before_any_write(self):
+        head = (b'SENTRY_RELEASE = { id: "1.40.0" };\nvar reactExports = requireReact();\nconst electronTrpcClient = {};\n'
+                b'function setHostServiceSecret() {}\nfunction getHostServiceClientByUrl() {}\n')
+        mixed_pin = bytearray(bytes(bundle(release='1.40.0')).replace(pin_stock('host-service.js', '1.40.0'), pin_stock('host-service.js')))
+        mixed_preset = bytearray(bytes(bundle(release='1.40.0')).replace(stock('host-mount', '1.40.0'), stock('host-mount')))
+        self.assertNotEqual(mixed_pin, bundle(release='1.40.0'))
+        self.assertNotEqual(mixed_preset, bundle(release='1.40.0'))
+        opener = b'const appRouter = router({\n'
+        cases = (
+            ('unsupported desktop version', bundle(release='1.40.0', renderer_head=head.replace(b'1.40.0', b'1.39.0')), {}),
+            ('unsupported desktop version', bundle(release='1.40.0', renderer_head=head.replace(b'1.40.0', b'1.41.0')), {}),
+            ('desktop pin sync', mixed_pin, dict(desktop_preset_sync=False)),
+            ('desktop preset sync', mixed_preset, dict(desktop_pin_sync=False)),
+            ('app router changed', bundle(release='1.40.0', app_router=(opener, opener + b'  later: lazy(() => import("./later.js")),\n')),
+             dict(desktop_pin_sync=False)),
+        )
+        for message, data, off in cases:
+            with self.subTest(message=message):
+                before = bytes(data)
+                with self.assertRaisesRegex(RuntimeError, message):
+                    apply(data, **({'desktop_pin_sync': True, 'desktop_preset_sync': True} | off))
+                self.assertEqual(bytes(data), before)
 
 @live_host_only('desktop preset sync touches two installed 1.39.0 chunks')
 class InstalledTest(unittest.TestCase):

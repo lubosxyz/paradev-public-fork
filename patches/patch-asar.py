@@ -444,6 +444,19 @@ TOP_NAV_FLAGGED_VARIANTS = [
         _label_variant("Usage", "7FaY4u", "flex-1 text-left"),
     ),
 ]
+# Desktop 1.40.0 deleted the Cloud Workspaces and Projects header buttons (and
+# their isCloudEnabled flag); Usage stays. Verify-only and positive: the expanded
+# Workspaces label closes straight into the Automations wrapper, a junction the
+# two deleted buttons sat in on 1.33-1.39. With it, both deleted pairs must be
+# absent; without it, the 1.36-1.39 rule (every pair required) applies.
+HEADER_CLOUDLESS_1_40 = (
+    b'id: "pmt7u4"\n'
+    b'          } }) })\n'
+    b'        ] }),\n'
+    b'        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "relative", children: [\n'
+    b'          /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { type: "button", '
+)
+TOP_NAV_FLAGGED_RETIRED_1_40 = ("Cloud Workspaces", "Projects")
 
 # Keep the old 1.25.1 bundle patchable; every logical label family accepts
 # exactly one current or legacy stock/patched variant.
@@ -1635,11 +1648,108 @@ STATUS_FILTER_REGIONS_1_39 = (
     _rebased(STATUS_FILTER_REGIONS_1_38[11], 37432, "af2cdb80ba13cff5c470f920ccf22e077b489bf7e4abc453d1770a3adf584600", "08b88c1eca058d52d4efda1b08b41594c8a0583e9c5a4ba9c9184df61fd6e618"),
     _rebased(STATUS_FILTER_REGIONS_1_38[12], 10757, "3cb459027c5653e6e522fab1b313f422fe3547aa8d917352afcb1f961995d070", "d967c8f5440f8dff28891c29b6599153a02ad4360b958a5aa6b0229cb840c5a7"),
 )
+# 1.40 deletes the separate cloud section (every DashboardSidebarCloud*
+# function; cloud workspaces are inline rows only), so regions 4, 12 and 13
+# lose their rooms, and memoizes DashboardSidebar. Region 1 grew (it now also
+# holds DashboardSidebarGroupHeader) and gives room by deleting three more `//`
+# lines; it takes ssfOn next to the chips. Region 3 starts at the memoized
+# DashboardSidebar with the 1.39 edits, and the --pinned-activity-sort data line
+# in it is the 1.38 shape again. Region 5 is re-pinned. Region 10 is
+# byte-identical but now ends at RenameBranchDialog. Regions 2 and 6-9, 11 are
+# byte-identical. The other helpers move to four room-only regions that no
+# other family touches (REBASE.md room rule): the matching (hover-card safe
+# triangle run), the counts (delete dialog run), the group list (spinner and
+# workspace icon run) and the hotkey target with the auto-clear (top bar run).
+# Fixtures: tests/fixtures/superset-1.40.0-status-filter-r*.js.
+STATUS_FILTER_REGIONS_1_40 = (
+    _rebased(
+        STATUS_FILTER_REGIONS_1_39[0], 24886, "792b3e7d008eb2a29e12c320a348035a835823675a0de836be0a3d224f757562", "9902673d298f42b34d0fdf9f6d72b55475a5674589796f827934becab6e64d41",
+        edits=(
+            *STATUS_FILTER_REGIONS_1_39[0].edits[:-1],
+            (
+                b"  // biome-ignore lint/a11y/noStaticElementInteractions: The header acts as a single toggle target "
+                b"while preserving nested inline controls in edit mode.\n",
+                b"",
+            ),
+            (
+                b"    // Group containers have a 2px left accent border. Use a 6px left\n"
+                b"    // margin so their content aligns with borderless top-level rows.\n",
+                b"",
+            ),
+            (
+                b"      // biome-ignore lint/a11y/noStaticElementInteractions: Nested action controls own their semantics; "
+                b"this wrapper isolates them from the header toggle.\n",
+                b"",
+            ),
+            _insert_before(b"const isBulkSelectable = (workspace) =>", STATUS_FILTER_CHIPS_JS + STATUS_FILTER_FOLD_ON_JS),
+        ),
+    ),
+    STATUS_FILTER_REGIONS_1_39[1],
+    _rebased(
+        STATUS_FILTER_REGIONS_1_39[2], 15747, "9040e22bb20e0a6f88961b2eef859c7d268fc7db82fbe87c80689b08a87bcab9", "4554c3c46267ca8a7c971cf021ad6d4da6ce470bbffa60edf994deec7a5b9b5e",
+        start=b"const DashboardSidebar = reactExports.memo(function DashboardSidebar2({\n",
+        shared=(
+            (SIDEBAR_FOOTER, SIDEBAR_FOOTER_HIDDEN), (PINNED_SORT_DATA, PINNED_SORT_DATA_SORTED),
+            (PROJECT_ORDER_DATA_1_39, PROJECT_ORDER_DATA_SORTED_1_39),
+        ),
+    ),
+    RegionRewrite(
+        label="status filter: matching",
+        start=b"function DashboardSidebarHiddenProjects({\n",
+        end=b"function DashboardSidebarWorkspaceHoverCardContent({\n",
+        length=25143,
+        stock_sha256="aa22612eed27f87baab26257073e1b1c4c35d5061de8f942ed1e4aba7e7f0475",
+        patched_sha256="b9f71bcbe54b48eb6555fe31563f238070ec217c628129fd4b899d6be0b10127",
+        edits=(_insert_before(b"function triangleSign(p1, p2, p3) {\n", STATUS_FILTER_MATCH_JS),),
+    ),
+    _rebased(STATUS_FILTER_REGIONS_1_39[4], 9778, "afad86f3af23d4d5c8f1feedbff3f3493fb8f0f358fa6bcfc5f4005c43d1a53d", "77e8c8f28d38257114e8a5df7dcce1442ab94dee6d558ce095e62a057228c605"),
+    *STATUS_FILTER_REGIONS_1_39[5:9],
+    replace(STATUS_FILTER_REGIONS_1_39[9], end=b"function RenameBranchDialog({\n"),
+    STATUS_FILTER_REGIONS_1_39[10],
+    RegionRewrite(
+        label=STATUS_FILTER_REGIONS[11].label,
+        start=b"function RenameBranchDialog({\n",
+        end=b"function DashboardSidebarAgentHoverRow({\n",
+        length=20154,
+        stock_sha256="829ff45c90cd30ac345ebaafd2b2431f070c368e49c19e1b22f72410d9842d9a",
+        patched_sha256="2b9b4c6801dc4aa37d1c2310e4095b3aca0fbbbe513e5b82820d8b9d559deede",
+        edits=(_insert_before(b"function RxDot(props) {\n", STATUS_FILTER_FOLD_LIST_JS),),
+    ),
+    RegionRewrite(
+        label="status filter: hotkey target and auto-clear",
+        start=b"function AddRepositoryModals() {\n",
+        end=b"function DashboardLayout() {\n",
+        length=14057,
+        stock_sha256="cbe312b332258c435f945b282c8703a6a06f29d9e8b9dad2db2ec7d2f2c6c7ca",
+        patched_sha256="b3d26e3d65e6ba5c9a6b921e65864cb10b2e1c946d6ace60035ded08aac77d15",
+        edits=(_insert_before(b"function deriveForwardSyncInput({\n", STATUS_FILTER_FIRST_JS + STATUS_FILTER_CLEAR_JS),),
+    ),
+    RegionRewrite(
+        label="status filter: counts",
+        start=b"function useDestroyDialogState({\n",
+        end=b"function useWorkspaceNamingFailedToast() {\n",
+        length=16905,
+        stock_sha256="e9a175a218dbb23831952aa9a9a91a279bc521f484499d45c1783b7bc324bdee",
+        patched_sha256="ed9224734a927cf78d2a7ad25b196c170e4fab76a3c146a631e3b6eed0f1609f",
+        edits=(
+            (
+                b"    // Two separate consents, never conflated: `force` covers git\n"
+                b"    // destructiveness (dirty worktree, unpushed commits), `skipTeardown`\n"
+                b"    // covers abandoning the teardown script and is set only by the\n"
+                b"    // teardown-failed retry \xe2\x80\x94 a warned \"Delete anyway\" still runs teardown.\n",
+                b"",
+            ),
+            (b"    // Awaited so the row stays hidden until a list without it lands.\n", b""),
+            _insert_before(b"function DashboardSidebarDeleteDialog({\n", STATUS_FILTER_COUNTS_JS),
+        ),
+    ),
+)
 # (name, regions, sibling variants): every supported release layout of the filter.
 STATUS_FILTER_LAYOUTS = (
     ("1.36-1.37", STATUS_FILTER_REGIONS, STATUS_FILTER_REGION_VARIANTS),
     ("1.38", STATUS_FILTER_REGIONS_1_38, ()),
     ("1.39", STATUS_FILTER_REGIONS_1_39, ()),
+    ("1.40", STATUS_FILTER_REGIONS_1_40, ()),
 )
 
 # Names the injected filter JS reads from upstream code outside the pinned
@@ -1732,6 +1842,33 @@ def _region_fits(data, region: RegionRewrite, variants: tuple[RegionRewrite, ...
     )
 
 
+# Every family picks its release layout on its own. plan_replacements collects
+# the picks, plus the releases of every family present in the bundle whatever
+# the flags (_probe_releases), and refuses a bundle whose records share no
+# release, so a bundle mixing releases fails before any write: across families
+# or inside one, flagged or not, in one run or one family at a time.
+_LAYOUT_PICKS = None
+
+
+def _layout_releases(name: str) -> frozenset:
+    """Minor releases a layout name covers: "1.39", "1.40.0", "1.37-1.39"."""
+    first, _, last = name.partition("-")
+    major, low = (int(part) for part in first.split(".")[:2])
+    high = int(last.split(".")[1]) if last else low
+    return frozenset(f"{major}.{minor}" for minor in range(low, high + 1))
+
+
+def _record_layout(label: str, releases) -> None:
+    if _LAYOUT_PICKS is not None:
+        _LAYOUT_PICKS.append((label, _layout_releases(releases) if isinstance(releases, str) else frozenset(releases)))
+
+
+def _require_one_release(picks) -> None:
+    if picks and not frozenset.intersection(*(releases for _label, releases in picks)):
+        detail = ", ".join(sorted({f"{label} {'/'.join(sorted(releases))}" for label, releases in picks}))
+        raise RuntimeError(f"mixed release layouts across families ({detail}); bundle structure may have changed")
+
+
 def _select_layout(data, layouts, label: str):
     """Return the one release layout (name, regions, variants, ...) whose every region the bundle holds.
 
@@ -1744,6 +1881,7 @@ def _select_layout(data, layouts, label: str):
     if len(whole) > 1:
         raise RuntimeError(f"{label}: the bundle fits several release layouts; bundle structure may have changed")
     if whole:
+        _record_layout(label, whole[0][0])
         return whole[0]
     return layouts[fits.index(max(fits))]
 
@@ -2590,6 +2728,17 @@ PALETTE_SEARCH_CHUNKS_1_39 = (
     (PALETTE_SEARCH_REGIONS_1_39[:1], *PALETTE_SEARCH_CHUNKS[0][1:]),
     (PALETTE_SEARCH_REGIONS_1_39[1:], *PALETTE_SEARCH_CHUNKS[1][1:]),
 )
+# 1.40: regions 1, 3 and 4 are byte-identical; region 2 is re-pinned with the same
+# edits (cloud workspaces get their own host icon, the docs URL became a constant).
+PALETTE_SEARCH_REGIONS_1_40 = (
+    PALETTE_SEARCH_REGIONS_1_39[0],
+    _rebased(PALETTE_SEARCH_REGIONS_1_39[1], 61469, "5c3603d247b4f2bbbaee1c625cea95d8cddd0e1a1b591490d3b4ae313021ca61", "9cc7a528792333c4698842e2a2be03b145c50fa239b77361e3dc436cc29e5c79"),
+    *PALETTE_SEARCH_REGIONS_1_39[2:],
+)
+PALETTE_SEARCH_CHUNKS_1_40 = (
+    (PALETTE_SEARCH_REGIONS_1_40[:1], *PALETTE_SEARCH_CHUNKS[0][1:]),
+    (PALETTE_SEARCH_REGIONS_1_40[1:], *PALETTE_SEARCH_CHUNKS[1][1:]),
+)
 # (name, regions, variants, chunks, generations): every supported release layout.
 PALETTE_SEARCH_LAYOUTS = (
     ("1.37", PALETTE_SEARCH_REGIONS, (), PALETTE_SEARCH_CHUNKS, PALETTE_SEARCH_GENERATIONS),
@@ -2605,6 +2754,13 @@ PALETTE_SEARCH_LAYOUTS = (
         {
             "stock": tuple(region.stock_sha256 for region in PALETTE_SEARCH_REGIONS_1_39),
             "generation 6": tuple(region.patched_sha256 for region in PALETTE_SEARCH_REGIONS_1_39),
+        },
+    ),
+    (
+        "1.40", PALETTE_SEARCH_REGIONS_1_40, (), PALETTE_SEARCH_CHUNKS_1_40,
+        {
+            "stock": tuple(region.stock_sha256 for region in PALETTE_SEARCH_REGIONS_1_40),
+            "generation 6": tuple(region.patched_sha256 for region in PALETTE_SEARCH_REGIONS_1_40),
         },
     ),
 )
@@ -2645,8 +2801,8 @@ def _plan_command_palette_workspace_search(data) -> list[tuple[int, bytes, bytes
     return replacements
 
 
-# --automations-header (desktop-v1.37.0-v1.39.0; the regions are byte-identical
-# in all three). Upstream splits /automations into Mine / Team tabs and keeps All runs
+# --automations-header (desktop-v1.37.0-v1.40.0; the regions are byte-identical
+# in 1.37-1.39, 1.40 re-pins the page, see AUTOMATIONS_HEADER_REGIONS_1_40). Upstream splits /automations into Mine / Team tabs and keeps All runs
 # and the search in that tab row. The page now lists every automation the
 # organization returns (Mine and Team merged) and the header row carries, between
 # the title and New automation: a project filter (All projects plus every project
@@ -2863,17 +3019,40 @@ def _require_family_chunks(data, chunks, label: str, swaps=(), others=((), ())) 
                 raise RuntimeError(f"{label}: {path} already uses {name}; bundle structure may have changed")
 
 
+# 1.40: FeatureHeader is byte-identical. AutomationsPage gained upstream's Last run
+# sort (a sort mode state, a branch in handleSort and in the sorted list, a sortable
+# Last run head), all away from the edits; the region is re-pinned with the same edits.
+AUTOMATIONS_HEADER_REGIONS_1_40 = (
+    AUTOMATIONS_HEADER_REGIONS[0],
+    _rebased(
+        AUTOMATIONS_HEADER_REGIONS[1], 26620,
+        "64216d765de80b23b12bc36bb42dc58156160726bc0a0ac2c5c1dcb649d1a3d8",
+        "dedc796490a4c05dcdbf3b91b856c09e5068cee3c8263527e7c5b756817c0061",
+    ),
+)
+# (release, regions, variants, chunks)
+AUTOMATIONS_HEADER_LAYOUTS = (
+    ("1.37-1.39", AUTOMATIONS_HEADER_REGIONS, (), AUTOMATIONS_HEADER_CHUNKS),
+    (
+        "1.40", AUTOMATIONS_HEADER_REGIONS_1_40, (),
+        tuple((AUTOMATIONS_HEADER_REGIONS_1_40[i : i + 1], *chunk[1:]) for i, chunk in enumerate(AUTOMATIONS_HEADER_CHUNKS)),
+    ),
+)
+
+
 def _plan_automations_header(data) -> list[tuple[int, bytes, bytes, str]]:
     """Validate both automations chunks and return the region rewrites still needed."""
-    _require_family_chunks(data, AUTOMATIONS_HEADER_CHUNKS, "automations header")
+    _release, regions, _variants, chunks = _select_layout(data, AUTOMATIONS_HEADER_LAYOUTS, "automations header")
+    _require_family_chunks(data, chunks, "automations header")
     replacements = []
-    for region in AUTOMATIONS_HEADER_REGIONS:
+    for region in regions:
         replacements.extend(_plan_region_rewrite(data, region))
     return replacements
 
 
-# --sidebar-device-filter (desktop-v1.37.0-v1.39.0; the regions of 1.37 and
-# 1.38 are byte-identical, 1.39 re-pins two, see SIDEBAR_DEVICE_REGIONS_1_39). A compact device dropdown in the expanded sidebar's
+# --sidebar-device-filter (desktop-v1.37.0-v1.40.0; the regions of 1.37 and
+# 1.38 are byte-identical, 1.39 re-pins two, see SIDEBAR_DEVICE_REGIONS_1_39; 1.40
+# re-pins two more and drops the cloud guard swap, see SIDEBAR_DEVICE_REGIONS_1_40). A compact device dropdown in the expanded sidebar's
 # title-bar row, right of the back / forward arrows (it renders with the ports
 # button through the PortsDropdown mount, SIDEBAR_DEVICE_MOUNT; a layers icon,
 # or the selected device's name, so it fits the default sidebar): All devices
@@ -3167,16 +3346,35 @@ SIDEBAR_DEVICE_REGIONS_1_39 = (
     *SIDEBAR_DEVICE_REGIONS[1:4],
     _rebased(SIDEBAR_DEVICE_REGIONS[4], 10957, "a2cdabd718da51056d6b4ca6c7e916846b565130757966ff5804a775062dbccd", "9fa4db0f6e89f5efe6c3e672058140f2215c15af834858038e732d1e72526361"),
 )
-# (name, regions, variants): every supported release layout of the device filter.
-SIDEBAR_DEVICE_LAYOUTS = (
-    ("1.37", SIDEBAR_DEVICE_REGIONS_1_37, ()),
-    ("1.38", SIDEBAR_DEVICE_REGIONS, ()),
-    ("1.39", SIDEBAR_DEVICE_REGIONS_1_39, ()),
+# 1.40 deletes the separate cloud section and its flag guard: cloud workspaces
+# are inline rows only, which sdfUseRows already files under Cloud, so Cloud
+# still keeps exactly the cloud rows and a host hides them. The 1.40 layout has
+# no cloud guard swap; sdfUseCloud stays in the drag guard region, unused, so
+# that region keeps its 1.39 bytes. The data region ends at the memoized
+# DashboardSidebar and is re-pinned with the 1.39 edits; the device list room is
+# re-pinned; the drag guard region is byte-identical and ends where
+# DashboardSidebarSectionHeader (status filter region 10) moved in; regions 4
+# and 5 are byte-identical.
+SIDEBAR_DEVICE_REGIONS_1_40 = (
+    _rebased(
+        SIDEBAR_DEVICE_REGIONS_1_39[0], 66078, "9c322187b3f26153d16e5f24e02d03561d6bd4a94ddba2dfe8f470d647713386", "64438e002ab0cc5490707b3f9f320fcf5fc9e53e10bf5317b04e75eab1f836a3",
+        end=b"const DashboardSidebar = reactExports.memo(function DashboardSidebar2({\n",
+    ),
+    _rebased(SIDEBAR_DEVICE_REGIONS_1_39[1], 31909, "51aeffe61a7a2e464d39b7c0be6acdb7ee09708811e707f1373773f783fb292b", "cff279aa5327d573dd87ed124deb523e87b06e877bd5107593a51d557d5cd68e"),
+    replace(SIDEBAR_DEVICE_REGIONS_1_39[2], end=b"function DashboardSidebarSectionHeader({\n"),
+    *SIDEBAR_DEVICE_REGIONS_1_39[3:],
 )
 # (name, stock, filtered, label) of the two anchor swaps outside the regions.
 SIDEBAR_DEVICE_SWAPS = (
     ("sidebar device filter mount", SIDEBAR_DEVICE_MOUNT, SIDEBAR_DEVICE_MOUNT_FILTER, "sidebar device filter: title-bar dropdown"),
     ("sidebar device filter cloud guard", SIDEBAR_DEVICE_CLOUD, SIDEBAR_DEVICE_CLOUD_FILTER, "sidebar device filter: cloud section"),
+)
+# (name, regions, variants, swaps): every supported release layout of the device filter.
+SIDEBAR_DEVICE_LAYOUTS = (
+    ("1.37", SIDEBAR_DEVICE_REGIONS_1_37, (), SIDEBAR_DEVICE_SWAPS),
+    ("1.38", SIDEBAR_DEVICE_REGIONS, (), SIDEBAR_DEVICE_SWAPS),
+    ("1.39", SIDEBAR_DEVICE_REGIONS_1_39, (), SIDEBAR_DEVICE_SWAPS),
+    ("1.40", SIDEBAR_DEVICE_REGIONS_1_40, (), SIDEBAR_DEVICE_SWAPS[:1]),
 )
 SIDEBAR_DEVICE_CHUNK_NAMES = (
     (
@@ -3194,15 +3392,22 @@ SIDEBAR_DEVICE_CHUNK_NAMES = (
 
 def _plan_sidebar_device_filter(data) -> list[tuple[int, bytes, bytes, str]]:
     """Validate the layout chunk, its regions and both swaps; return the writes still needed."""
-    _layout, regions, _variants = _select_layout(data, SIDEBAR_DEVICE_LAYOUTS, "sidebar device filter")
+    layout, regions, _variants, swaps = _select_layout(data, SIDEBAR_DEVICE_LAYOUTS, "sidebar device filter")
+    # A swap the layout does not have (1.40's deleted cloud guard) marks a mixed bundle.
+    for name, *shapes, _label in SIDEBAR_DEVICE_SWAPS:
+        if name not in {swap[0] for swap in swaps} and any(_find_all(data, shape) for shape in shapes):
+            raise RuntimeError(
+                f"sidebar device filter: {name} anchor of another release next to the {layout} layout; "
+                "bundle structure may have changed"
+            )
     _require_family_chunks(
         data, ((regions, *SIDEBAR_DEVICE_CHUNK_NAMES),), "sidebar device filter",
-        [pair for _name, *pair, _label in SIDEBAR_DEVICE_SWAPS],
+        [pair for _name, *pair, _label in swaps],
     )
     replacements = []
     for region in regions:
         replacements.extend(_plan_region_rewrite(data, region))
-    for name, stock, filtered, label in SIDEBAR_DEVICE_SWAPS:
+    for name, stock, filtered, label in swaps:
         offset, old = _single_variant(data, name, [stock, filtered])
         if old == stock:
             replacements.append((offset, stock, filtered, label))
@@ -3210,7 +3415,7 @@ def _plan_sidebar_device_filter(data) -> list[tuple[int, bytes, bytes, str]]:
 
 
 
-# --desktop-pin-sync: exact desktop 1.39.0 regions; renderer exports only, no storage writes.
+# --desktop-pin-sync: exact desktop 1.39.0 and 1.40.0 regions (DESKTOP_PIN_LAYOUTS); renderer exports only, no storage writes.
 DESKTOP_PIN_RENDERER_JS = b'useCollections.dps = function(org, connection) {\n  const {v2WorkspaceLocalState: collection} = useCollections();\n  reactExports.useEffect(() => {\n    if (!org || !connection?.port || !connection.secret) return;\n    let stopped = false, timer;\n    const publish = async () => {\n      try {\n        if (collection.status !== "ready") return;\n        const pins = [];\n        for (const row of collection.state.values()) {\n          if (!row || typeof row.workspaceId !== "string" || !row.sidebarState) throw Error("Invalid desktop pins");\n          const at = row.sidebarState.pinnedAt;\n          if (at != null) {\n            if (!Number.isSafeInteger(at) || at < 0) throw Error("Invalid pin time");\n            if (!row.sidebarState.isHidden) pins.push({workspaceId:row.workspaceId,pinnedAt:at});\n          }\n        }\n        await getHostServiceClientByUrl(`http://127.0.0.1:${connection.port}`).desktopPins.publish.mutate({version:1,organizationId:org,observedAt:Date.now(),pins},{signal:AbortSignal.timeout(2000)});\n      } catch {} finally {\n        if (!stopped) timer = setTimeout(publish, 1000);\n      }\n    };\n    void publish();\n    return () => {stopped = true;clearTimeout(timer);};\n  }, [org,connection?.port,connection?.secret,collection]);\n};\n'
 DESKTOP_PIN_HOST_JS = b'const dpsWaiters = new Map();\nfunction dpsRouter() {\n  const fail = (code) => {throw new gitHookTolerance.TRPCError({code,message:"Desktop pins unavailable"});};\n  return router({\n    publish: protectedProcedure.input(value => value).mutation(({ctx,input}) => {\n      if (ctx.isLocalCaller !== true) fail("FORBIDDEN");\n      if (!input || input.version !== 1 || input.organizationId !== ctx.organizationId || !Number.isSafeInteger(input.observedAt) || Math.abs(Date.now()-input.observedAt)>5000 || !Array.isArray(input.pins) || input.pins.length>5000) fail("BAD_REQUEST");\n      const ids = new Set();\n      for (const pin of input.pins) {\n        if (!pin || typeof pin.workspaceId!=="string" || !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(pin.workspaceId) || ids.has(pin.workspaceId) || !Number.isSafeInteger(pin.pinnedAt) || pin.pinnedAt<0) fail("BAD_REQUEST");\n        ids.add(pin.workspaceId);\n      }\n      const snapshot = {version:1,organizationId:ctx.organizationId,sourceHostId:hostServiceUtils.getHostId(),observedAt:input.observedAt,pins:input.pins.map(p=>({workspaceId:p.workspaceId,pinnedAt:p.pinnedAt}))};\n      for (const pending of dpsWaiters.get(ctx.organizationId) ?? []) {\n        if (input.observedAt >= pending.since) pending.resolve(snapshot);\n      }\n      return null;\n    }),\n    list: queryProcedure.query(({ctx}) => new Promise((resolve,reject) => {\n      let pending = dpsWaiters.get(ctx.organizationId);\n      if (!pending) dpsWaiters.set(ctx.organizationId,pending=new Set());\n      if (pending.size>=64) {reject(new gitHookTolerance.TRPCError({code:"TOO_MANY_REQUESTS"}));return;}\n      const finish = () => {clearTimeout(timer);pending.delete(waiter);if (!pending.size) dpsWaiters.delete(ctx.organizationId);};\n      const waiter = {since:Date.now(),resolve: snapshot => {finish();resolve(snapshot);}};\n      const timer = setTimeout(() => {finish();reject(new gitHookTolerance.TRPCError({code:"PRECONDITION_FAILED",message:"Desktop pins unavailable"}));},3500);\n      pending.add(waiter);\n    }))\n  });\n}\n'
 DESKTOP_PIN_REGIONS = (
@@ -3270,27 +3475,50 @@ DESKTOP_PIN_REGIONS = (
  )
 
 
+# 1.40.0: both renderer regions are byte-identical; the host router range grew by the
+# appRouter's new `sessions` entry and is re-pinned with the same edits. The collection,
+# provider, getConnection and isLocalCaller code the bridge relies on is unchanged.
+DESKTOP_PIN_REGIONS_1_40 = (
+    *DESKTOP_PIN_REGIONS[:2],
+    _rebased(
+        DESKTOP_PIN_REGIONS[2], 65686,
+        "59c12f3eaeadf65670ff9f4084de079667127263045cac62deef05c7aa50a117",
+        "3524526b457cde689b6f0008a12e8b9e89c0f207847627b22b401d8ce438ed63",
+    ),
+)
+# (release, regions, variants): the provider chunk's release banner must name the selected release.
+DESKTOP_PIN_LAYOUTS = (
+    ("1.39.0", DESKTOP_PIN_REGIONS, ()),
+    ("1.40.0", DESKTOP_PIN_REGIONS_1_40, ()),
+)
+
+
+def _release_banner(release: str) -> bytes:
+    return f'SENTRY_RELEASE = {{ id: "{release}" }};'.encode()
+
+
 def _plan_desktop_pin_sync(data):
+    release, regions, _variants = _select_layout(data, DESKTOP_PIN_LAYOUTS, "desktop pin sync")
     specs = (
-        (DESKTOP_PIN_REGIONS[:1], (), ("useCollections", "getHostServiceClientByUrl")),
-        (DESKTOP_PIN_REGIONS[1:2], ("reactExports", "useCollections"), ()),
-        (DESKTOP_PIN_REGIONS[2:], (), ("gitHookTolerance", "hostServiceUtils", "protectedProcedure", "queryProcedure", "router")),
+        (regions[:1], (), ("useCollections", "getHostServiceClientByUrl")),
+        (regions[1:2], ("reactExports", "useCollections"), ()),
+        (regions[2:], (), ("gitHookTolerance", "hostServiceUtils", "protectedProcedure", "queryProcedure", "router")),
     )
-    for regions, imported, defined in specs:
-        found = _region_chunk(data, regions, "desktop pin sync")
+    for part, (chunk_regions, imported, defined) in enumerate(specs):
+        found = _region_chunk(data, chunk_regions, "desktop pin sync")
         if found is not None:
             path, _start, chunk = found
             _require_chunk_names(path, chunk, imported, defined, "desktop pin sync")
-            if regions == DESKTOP_PIN_REGIONS[:1] and chunk.count(b"var reactExports = requireReact();") != 1:
+            if part == 0 and chunk.count(b"var reactExports = requireReact();") != 1:
                 raise RuntimeError("desktop pin sync: React binding changed")
-            if regions == DESKTOP_PIN_REGIONS[1:2] and b'e.SENTRY_RELEASE = { id: "1.39.0" };' not in chunk:
+            if part == 1 and b"e." + _release_banner(release) not in chunk:
                 raise RuntimeError("desktop pin sync: unsupported desktop version")
-            if regions == DESKTOP_PIN_REGIONS[2:] and chunk.count(b'isLocalCaller: c.req.header(SUPERSET_RELAYED_HEADER) === void 0') != 1:
+            if part == 2 and chunk.count(b'isLocalCaller: c.req.header(SUPERSET_RELAYED_HEADER) === void 0') != 1:
                 raise RuntimeError("desktop pin sync: local caller authentication changed")
-    return [write for region in DESKTOP_PIN_REGIONS for write in _plan_region_rewrite(data, region)]
+    return [write for region in regions for write in _plan_region_rewrite(data, region)]
 
 
-# --desktop-preset-sync: exact desktop 1.39.0 regions; the renderer exports the
+# --desktop-preset-sync: exact desktop 1.39.0 and 1.40.0 regions; the renderer exports the
 # terminal presets (V2 presets bar shortcuts) read-only, the host serves them.
 DESKTOP_PRESET_RENDERER_JS = b'''function dtsUse(org, collections) {
   reactExports.useEffect(() => {
@@ -3446,41 +3674,69 @@ DESKTOP_PRESET_REGIONS = (
 )
 
 
-def _require_preset_app_router(chunk: bytes) -> None:
+# 1.40.0: the renderer mount and host router regions are byte-identical. The renderer
+# helper range gained one `//` TODO line in the local-state schema and the host mount
+# range new startup and shutdown calls, both away from the edits; they are re-pinned
+# with the same edits. The appRouter literal gained `sessions: sessionsRouter` and still
+# has no lazy entries. Collection schemas, hiddenBuiltinPresetIds and getConnection's
+# {port, secret} are unchanged.
+DESKTOP_PRESET_REGIONS_1_40 = (
+    _rebased(
+        DESKTOP_PRESET_REGIONS[0], 3566,
+        "6084293430c09372351f5cd4f40064993db2e19d3c6e3558b2e6091f33dee590",
+        "7a27fe688ec4c8b45a672e2730c8f8dbaf6149b754450e9a72adf02e239a731e",
+    ),
+    *DESKTOP_PRESET_REGIONS[1:3],
+    _rebased(
+        DESKTOP_PRESET_REGIONS[3], 13649,
+        "59421acf62d061a3eabd09aa9ba45f78d8c615b7b2921004c49078735ddacd6e",
+        "0079ba3a9f8cd439d6fa6d8ee314e8bc30439c1a74f9485027627f3e40595492",
+    ),
+)
+DESKTOP_PRESET_APP_ROUTER_SHA256_1_40 = "ee2b24c9672c1a5b8e800a881a0afe4819ad2dfe611a8171d53313f13cc9f1c9"
+# (release, regions, variants, appRouter literal digest); both chunks' release banners must name the release.
+DESKTOP_PRESET_LAYOUTS = (
+    ("1.39.0", DESKTOP_PRESET_REGIONS, (), DESKTOP_PRESET_APP_ROUTER_SHA256),
+    ("1.40.0", DESKTOP_PRESET_REGIONS_1_40, (), DESKTOP_PRESET_APP_ROUTER_SHA256_1_40),
+)
+
+
+def _require_preset_app_router(chunk: bytes, expected_sha256: str = DESKTOP_PRESET_APP_ROUTER_SHA256) -> None:
     at = chunk.find(DESKTOP_PRESET_APP_ROUTER)
     end = chunk.find(b"\n});\n", at) + 5
     literal = chunk[at:end]
     if literal.startswith(DESKTOP_PRESET_APP_ROUTER + DESKTOP_PRESET_APP_ROUTER_PIN):
         literal = DESKTOP_PRESET_APP_ROUTER + literal[len(DESKTOP_PRESET_APP_ROUTER + DESKTOP_PRESET_APP_ROUTER_PIN):]
     if (chunk.count(DESKTOP_PRESET_APP_ROUTER) != 1 or end < 5
-            or hashlib.sha256(literal).hexdigest() != DESKTOP_PRESET_APP_ROUTER_SHA256):
+            or hashlib.sha256(literal).hexdigest() != expected_sha256):
         raise RuntimeError("desktop preset sync: app router changed")
 
 
 def _plan_desktop_preset_sync(data):
+    release, regions, _variants, app_router_sha256 = _select_layout(data, DESKTOP_PRESET_LAYOUTS, "desktop preset sync")
     specs = (
-        (DESKTOP_PRESET_REGIONS[:2], ("electronTrpcClient", "setHostServiceSecret", "getHostServiceClientByUrl"),
+        (regions[:2], ("electronTrpcClient", "setHostServiceSecret", "getHostServiceClientByUrl"),
          b"var reactExports = requireReact();", "React binding changed", None),
-        (DESKTOP_PRESET_REGIONS[2:], ("gitHookTolerance", "hostServiceUtils", "protectedProcedure", "queryProcedure", "router"),
+        (regions[2:], ("gitHookTolerance", "hostServiceUtils", "protectedProcedure", "queryProcedure", "router"),
          b"isLocalCaller: c.req.header(SUPERSET_RELAYED_HEADER) === void 0", "local caller authentication changed",
-         _require_preset_app_router),
+         lambda chunk: _require_preset_app_router(chunk, app_router_sha256)),
     )
-    for regions, defined, marker, changed, shape in specs:
-        found = _region_chunk(data, regions, "desktop preset sync")
+    for chunk_regions, defined, marker, changed, shape in specs:
+        found = _region_chunk(data, chunk_regions, "desktop preset sync")
         if found is not None:
             path, _start, chunk = found
             _require_chunk_names(path, chunk, (), defined, "desktop preset sync")
-            if b'SENTRY_RELEASE = { id: "1.39.0" };' not in chunk:
+            if _release_banner(release) not in chunk:
                 raise RuntimeError("desktop preset sync: unsupported desktop version")
             if chunk.count(marker) != 1:
                 raise RuntimeError(f"desktop preset sync: {changed}")
             if shape:
                 shape(chunk)
-    return [write for region in DESKTOP_PRESET_REGIONS for write in _plan_region_rewrite(data, region)]
+    return [write for region in regions for write in _plan_region_rewrite(data, region)]
 
 
-# --pinned-activity-sort (desktop-v1.37.0-v1.39.0; the region is byte-identical
-# in all three, the swap is byte-identical in 1.37 and 1.38). Upstream orders PINNED by pin time whatever the
+# --pinned-activity-sort (desktop-v1.37.0-v1.40.0; the region is byte-identical
+# in all four, the swap is byte-identical in 1.37, 1.38 and 1.40). Upstream orders PINNED by pin time whatever the
 # Workspaces sort menu says (partitionSidebarWorkspacesByPinned). With the flag
 # the PINNED rows follow the same mode as the project children: Last active
 # (lastActivityAt, else updatedAt) or Date created (createdAt), newest first,
@@ -3531,7 +3787,7 @@ PINNED_SORT_CHUNK_NAMES = (
 )
 # Upstream's sort helpers the injected JS calls; module-scope declarations of the layout chunk.
 PINNED_SORT_DEFINED_NAMES = ("makeStableComparator", "getWorkspaceTimestamp", "haveSameItems")
-# Their exact stock source (byte-identical in 1.37.0, 1.38.0 and 1.39.0). The call in
+# Their exact stock source (byte-identical in 1.37.0 through 1.40.0). The call in
 # PINNED_SORT_JS relies on these signatures and on the newest-first order, so a
 # reshaped helper (swapped parameters, reversed diff) refuses the family instead
 # of silently sorting PINNED by name.
@@ -3560,6 +3816,7 @@ PINNED_SORT_HELPERS = (
 def _plan_pinned_activity_sort(data) -> list[tuple[int, bytes, bytes, str]]:
     """Validate the layout chunk, the room region and the data swap; return the writes still needed."""
     release = _swap_release(data, PINNED_SORT_RELEASES)
+    _record_layout("pinned activity sort", ("1.39",) if release is PINNED_SORT_SWAPS_1_39 else ("1.37", "1.38", "1.40"))
     swaps = [pair for _name, *pair, _label in release]
     _require_family_chunks(data, ((PINNED_SORT_REGIONS, *PINNED_SORT_CHUNK_NAMES),), "pinned activity sort", swaps)
     found = _region_chunk(data, PINNED_SORT_REGIONS, "pinned activity sort")
@@ -3599,7 +3856,7 @@ def _swap_release(data, releases):
     return releases[found[0] if found else 0]
 
 
-# --sort-projects and --pin-projects (desktop-v1.37.0-v1.39.0), usable alone or
+# --sort-projects and --pin-projects (desktop-v1.37.0-v1.40.0), usable alone or
 # together. Upstream keeps the project order manual whatever the Workspaces sort
 # menu says (sortDashboardSidebarProjects sorts only inside each project).
 #   --sort-projects: a "Sort projects too" checkbox closes the sort menu. On,
@@ -3848,6 +4105,15 @@ PIN_PROJECTS_REGIONS_1_39 = (_rebased(PIN_PROJECTS_REGIONS[0], 10244, "95af2fa15
 PROJECT_ORDER_SWAPS_1_39 = (("project order data", PROJECT_ORDER_DATA_1_39, PROJECT_ORDER_DATA_SORTED_1_39, PROJECT_ORDER_SWAPS[0][3]),)
 SORT_PROJECTS_SWAPS_1_39 = (("sort projects menu", SORT_PROJECTS_MENU_1_39, SORT_PROJECTS_MENU_ITEM_1_39, SORT_PROJECTS_SWAPS[0][3]),)
 PIN_PROJECTS_SWAPS_1_39 = (("pin projects menu", PIN_PROJECTS_MENU_1_39, PIN_PROJECTS_MENU_ITEM_1_39, PIN_PROJECTS_SWAPS[0][3]),)
+# 1.40: the checkbox region and all three swaps are the 1.39 shapes. The hook
+# region (DashboardLayout mounts the new WorkspaceSidebarPanel and
+# RestoreCloudWorkspaceMount), the store room (a modal dialog prop) and the menu
+# item region (the legacy row branch is gone) are re-pinned with the 1.39 edits.
+PROJECT_ORDER_REGIONS_1_40 = (
+    _rebased(PROJECT_ORDER_REGIONS_1_39[0], 7198, "46bb3cbb2ba07edceb61ad446750e0ab9e94f9470ae5fd5b486c9c7b557d2f04", "b76c56a1a045d10b33f0f240c8e9251e58f746b6cb6699daf624c898b648de50"),
+    _rebased(PROJECT_ORDER_REGIONS_1_39[1], 8625, "2d9868773564089f17481d1343593add9eb69273108e95e2af6c55d4273ed573", "4e755c95dd4380aa09fe2eb506dde3089ce4bae129f3d673ddaea64b7d6865e7"),
+)
+PIN_PROJECTS_REGIONS_1_40 = (_rebased(PIN_PROJECTS_REGIONS_1_39[0], 9394, "aac1c6bf9248d93e321eadd176ef8ac3e6838af3863ad2c3ced08c1fa76e3955", "b1d840877f0e774144d3c4b98d7b4fda8a623ddc8173a18c3d3c4bbf0e17cad1"),)
 # (name, (core, sort, pin) regions, hook variants, (core, sort, pin) swaps): every
 # supported release layout. _select_layout picks it by the regions; the swaps
 # have to be that release's shapes, so a mixed bundle fails closed.
@@ -3860,6 +4126,11 @@ PROJECT_ORDER_LAYOUTS = (
     (
         "1.39", (*PROJECT_ORDER_REGIONS_1_39, *SORT_PROJECTS_REGIONS, *PIN_PROJECTS_REGIONS_1_39), (),
         (PROJECT_ORDER_REGIONS_1_39, SORT_PROJECTS_REGIONS, PIN_PROJECTS_REGIONS_1_39),
+        (PROJECT_ORDER_SWAPS_1_39, SORT_PROJECTS_SWAPS_1_39, PIN_PROJECTS_SWAPS_1_39),
+    ),
+    (
+        "1.40", (*PROJECT_ORDER_REGIONS_1_40, *SORT_PROJECTS_REGIONS, *PIN_PROJECTS_REGIONS_1_40), (),
+        (PROJECT_ORDER_REGIONS_1_40, SORT_PROJECTS_REGIONS, PIN_PROJECTS_REGIONS_1_40),
         (PROJECT_ORDER_SWAPS_1_39, SORT_PROJECTS_SWAPS_1_39, PIN_PROJECTS_SWAPS_1_39),
     ),
 )
@@ -4091,6 +4362,57 @@ def _single_variant(data, name: str, variants: list[bytes]) -> tuple[int, bytes]
     return _exactly_one(name, _variant_matches(data, variants))
 
 
+# Every family with release layouts or release swaps, probed on each plan whatever the flags.
+RELEASE_PROBES = (
+    ("status filter", STATUS_FILTER_LAYOUTS),
+    ("command palette", PALETTE_SEARCH_LAYOUTS),
+    ("automations header", AUTOMATIONS_HEADER_LAYOUTS),
+    ("sidebar device filter", SIDEBAR_DEVICE_LAYOUTS),
+    ("desktop pin sync", DESKTOP_PIN_LAYOUTS),
+    ("desktop preset sync", DESKTOP_PRESET_LAYOUTS),
+    ("project order", PROJECT_ORDER_LAYOUTS),
+)
+# The releases of each PINNED_SORT_RELEASES entry.
+PINNED_SORT_RELEASE_NAMES = (("1.37", "1.38", "1.40"), ("1.39",))
+
+
+def _probe_releases(data) -> None:
+    """Record the releases of every family the bundle holds (stock or patched), flagged or not.
+
+    A family some layout fits whole records those layouts' releases. A family no
+    layout fits whole is refused when the regions it does hold (keyed by shape:
+    start, end, length) share no release, i.e. it mixes releases; an absent or
+    merely changed family records nothing and is left to its own flag. Shapes, not
+    layouts, because a later release may re-cut a region whose bytes stay put, so
+    an older shape can still fit inside a newer, whole layout.
+    """
+    for label, layouts in RELEASE_PROBES:
+        shapes = {}
+        for name, regions, variants, *_rest in layouts:
+            for region in regions:
+                entry = shapes.setdefault((region.start, region.end, region.length), [region, set(), set()])
+                entry[1].update(variants)
+                entry[2] |= _layout_releases(name)
+        fits = {key for key, (region, variants, _releases) in shapes.items() if _region_fits(data, region, tuple(variants))}
+        whole = [
+            layout[0] for layout in layouts
+            if all((region.start, region.end, region.length) in fits for region in layout[1])
+        ]
+        if whole:
+            _record_layout(label, frozenset().union(*map(_layout_releases, whole)))
+        elif fits and not frozenset.intersection(*(frozenset(shapes[key][2]) for key in fits)):
+            raise RuntimeError(
+                f"mixed release layouts across families ({label} regions of several releases); "
+                "bundle structure may have changed"
+            )
+    found = [
+        names for names, swaps in zip(PINNED_SORT_RELEASE_NAMES, PINNED_SORT_RELEASES, strict=True)
+        if any(_find_all(data, shape) for _name, *shapes, _label in swaps for shape in shapes)
+    ]
+    if found:
+        _record_layout("pinned activity sort", frozenset().union(*found))
+
+
 def plan_replacements(
     data,
     *,
@@ -4116,6 +4438,9 @@ def plan_replacements(
     pin_projects: bool = False,
 ) -> list[tuple[int, bytes, bytes, str]]:
     """Validate the complete bundle first, then return equal-length writes."""
+    global _LAYOUT_PICKS
+    _LAYOUT_PICKS = []
+    _probe_releases(data)
     if not 4 <= size <= 9:
         raise ValueError("size must be 4..9 (Tailwind size-N)")
     if hide_nav_buttons and not compact_sidebar:
@@ -4336,9 +4661,23 @@ def plan_replacements(
             raise RuntimeError(
                 "mixed sidebar header generations; bundle structure may have changed"
             )
+        cloudless = len(_find_all(data, HEADER_CLOUDLESS_1_40))
+        if cloudless > 1 or (cloudless and not layout_1_36):
+            raise RuntimeError(
+                f"expected at most one 1.40 header junction on header generation {HEADER_RELEASE_1_36}, "
+                f"found {cloudless}; bundle structure may have changed"
+            )
         for button, label in TOP_NAV_FLAGGED_VARIANTS:
-            # One scan per pair; absent pairs are legal only before 1.36.
+            # One scan per pair; absent pairs are legal only before 1.36, and
+            # the 1.40 header must hold none of the pairs it deleted.
             matches = _variant_matches(data, [*button[:2], *label[:2]])
+            if cloudless and button[2] in TOP_NAV_FLAGGED_RETIRED_1_40:
+                if matches:
+                    raise RuntimeError(
+                        f"{button[2]} header button next to the 1.40 header junction; "
+                        "bundle structure may have changed"
+                    )
+                continue
             if not matches and not layout_1_36:
                 continue
             for part, kind, change in (
@@ -4397,6 +4736,8 @@ def plan_replacements(
     if sort_projects or pin_projects:
         replacements.extend(_plan_project_order(data, sort_projects, pin_projects))
 
+    picks, _LAYOUT_PICKS = _LAYOUT_PICKS, None
+    _require_one_release(picks)
     replacements = _fold_into_regions(replacements)
 
     _require_disjoint(replacements)
@@ -4754,8 +5095,8 @@ def main(argv=None):
         action="store_true",
         help="device dropdown next to the sidebar back / forward arrows: show only the workspaces of one host",
     )
-    parser.add_argument("--desktop-pin-sync", action="store_true", help="export desktop workspace pins to mobile over the authenticated host relay (1.39.0)")
-    parser.add_argument("--desktop-preset-sync", action="store_true", help="export the desktop terminal presets (presets bar shortcuts) to mobile over the authenticated host relay (1.39.0)")
+    parser.add_argument("--desktop-pin-sync", action="store_true", help="export desktop workspace pins to mobile over the authenticated host relay (1.39.0, 1.40.0)")
+    parser.add_argument("--desktop-preset-sync", action="store_true", help="export the desktop terminal presets (presets bar shortcuts) to mobile over the authenticated host relay (1.39.0, 1.40.0)")
     parser.add_argument(
         "--pinned-activity-sort",
         action="store_true",
