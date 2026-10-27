@@ -37,7 +37,7 @@ All `size-N` strings are 6 chars, so asar header offsets stay valid — no repac
 unpacking-pattern issues with native modules.
 
 With `--compact-sidebar`, the expanded utility navigation becomes a four-column
-icon grid. Anchor families track desktop-v1.25.1 and desktop-v1.26.0–v1.40.0:
+icon grid. Anchor families track desktop-v1.25.1 and desktop-v1.26.0–v2.0.0:
 eight buttons (New Workspace, Search,
 Workspaces, Automations, Tasks, Pull requests, plus the flag-gated Pages and
 Plugins; Usage left this header and later returned flag-gated, see below). Labels render through Lingui
@@ -93,7 +93,7 @@ Pages fill one row of the four-column grid. Keyboard shortcuts (New Workspace,
 run without the flag keeps the buttons hidden, so a routine re-apply never
 brings them back; `--revert` restores them.
 
-`--hide-sidebar-footer` (desktop-v1.36.0–v1.40.0 `DashboardSidebar`) hides the
+`--hide-sidebar-footer` (desktop-v1.36.0–v2.0.0 `DashboardSidebar`, `DashboardSidebarContent` since 2.0) hides the
 expanded sidebar's bottom row: the organization menu (avatar, team name, PRO
 badge), the updates pill and the settings cog. Only the expanded branch of the
 row's `cn(isCollapsed ? … : …)` becomes `"hidden"` (`SIDEBAR_FOOTER_HIDDEN`),
@@ -108,7 +108,7 @@ either order. The anchor is checked only when the flag is given or the row is
 already hidden, so it never blocks a release that lacks the row. Hidden is
 sticky like `--hide-nav-buttons`; `--revert` restores it.
 
-With `--pinned-icon-only` (anchors track desktop-v1.30.2–v1.40.0), rows in the sidebar
+With `--pinned-icon-only` (anchors track desktop-v1.30.2–v2.0.0), rows in the sidebar
 **PINNED** section show only the workspace name — `budtekomfi-cz/SSZ křivka…`
 becomes `SSZ křivka…` — and the project is identified by its icon (the project
 name stays in the icon tooltip). Two length-preserving edits in
@@ -129,7 +129,7 @@ Both anchors are validated as exactly one stock-or-patched variant; drift fails
 closed and a re-run is a no-op. Without the flag the pinned rows are left as
 they are; undo with `--revert`.
 
-With `--sidebar-status-filter` (desktop-v1.36.0–v1.40.0, `layout-*.js`) the expanded
+With `--sidebar-status-filter` (desktop-v1.36.0–v2.0.0, `layout-*.js`) the expanded
 sidebar gets two sticky rows at the very top, right below the
 `--compact-sidebar` navigation grid: a search field and below it a row of
 status chips. Both sit outside the scrolling list, so they stay in place while
@@ -453,7 +453,7 @@ pre-v1 backup `b1a1ad1c…` the same evening):
 - `inspect_asar()` reports `patches_needed: 0`.
 - `--revert` restores the original SHA-256.
 
-With `--sound-only-when-waiting` (desktop-v1.36.0–v1.40.0) the notification sound plays
+With `--sound-only-when-waiting` (desktop-v1.36.0–v2.0.0) the notification sound plays
 only while an agent is waiting for you (`PermissionRequest`, `PendingQuestion`).
 It no longer plays on `Stop`, i.e. when a task finishes. Notifications, ringtone
 choice, volume, mute and the Settings UI are unchanged. Two code paths play the
@@ -544,6 +544,26 @@ The PINNED sort data line is the 1.38 shape again. Behaviour is unchanged from
 (`tests/fixtures/superset-1.40.0-*`) are cut from the real stock bundle; worked
 example: `REBASE.md` "1.39.0 → 1.40.0".
 
+Desktop 2.0.0 wraps `DashboardSidebar` in an actions provider (the old body is
+now `DashboardSidebarContent`), drops the star nag card and hands sidebar rows
+one memoized selection click that reads the selectable ids from a ref. Every
+flag of the approved and the optional set is ported; none is dropped, because
+2.0 provides none of the behaviours natively. The status filter gets a fifth
+layout (regions 1, 3 and 5 re-pinned; the Shift-range cut rides on upstream's
+ref, set in its own layout effect, so the memoized click keeps its deps), the
+palette re-pins regions 2 and 3, the device filter regions 1 and 4, project
+order the hook, store and sort menu rooms; the automations regions are
+byte-identical (one `1.40,2.0` layout) and the PINNED sort uses the 1.38 swap.
+The hotkey registry adds `TOGGLE_RIGHT_PANE_FULL_SCREEN` on ⌘⇧L and moves
+`OPEN_DIFF_VIEWER` to ⌘⇧G; no chip hotkey or the Cmd+K swap collides.
+Behaviour is unchanged from 1.40 under every flag; 1.37 – 1.40 stay supported.
+Desktop pin / preset sync (outside the approved and the optional set) have no
+2.0 layout: their flags refuse 2.0 before a write, and their byte-identical 1.40
+regions do not count as a 1.40 family in a 2.0 bundle (the release check reads
+them only under one of their release banners). The 2.0 fixtures
+(`tests/fixtures/superset-2.0.0-*`) are cut from the real stock bundle; worked
+example: `REBASE.md` "1.40.0 → 2.0.0".
+
 The `LIVE_HOST_ONLY` anchor tests (`test_installed_bundle_accepts_*`) read the
 installed release's stock bytes, not the live file. `stock_snapshot()` follows
 the verified backup manifests (`backup_sha256` → `patched_sha256`, each backup
@@ -596,7 +616,7 @@ first (`--size 6 --hide-tray --custom-project-icons --keep-icon-on-hover
 --compact-sidebar --ack-invalid-apple-signature`) to bring back icons and the
 compact header, and rebase the failing optional family per `REBASE.md`.
 
-### Command palette on Cmd+K and workspace search (opt-in, desktop-v1.37.0–v1.40.0)
+### Command palette on Cmd+K and workspace search (opt-in, desktop-v1.37.0–v2.0.0)
 
 Two optional flags (LUBOS-2290, icons LUBOS-2406, icon size LUBOS-2414, new workspace LUBOS-2423). Like every new optional flag they stay
 **outside** the approved set (`approved-flags.json`, `PATCH_OPTIONS`, the
@@ -782,7 +802,7 @@ Enter, ⌘Enter from outside the palette untouched, the drill-down New workspace
 and without a match, last after matching workspaces with Enter switching to the
 first match, prefilled name).
 
-### Status chip hotkeys (opt-in, desktop-v1.37.0–v1.40.0)
+### Status chip hotkeys (opt-in, desktop-v1.37.0–v2.0.0)
 
 `--status-filter-hotkeys` (needs `--sidebar-status-filter`) gives three chips
 a mac shortcut. It stays outside the approved set like the palette flags and
@@ -838,7 +858,7 @@ map on refused with the `--revert` hint, fail-closed guards)
 and the node harness tests `test_chip_hotkeys_*` (inert map, toggles, render
 order including folders, search skip, modifiers, repeat, zero chips).
 
-### Automations header (opt-in, desktop-v1.37.0–v1.40.0)
+### Automations header (opt-in, desktop-v1.37.0–v2.0.0)
 
 `--automations-header` (LUBOS-2658) reshapes the `/automations` list page.
 Like the palette flags it stays outside the approved set and is applied by
@@ -871,10 +891,11 @@ it).
 
 Two hash-pinned regions in two chunks (`FeatureHeader-*.js`, the automations
 `page-*.js`), byte-identical in 1.37.0, 1.38.0 and 1.39.0; 1.40.0 re-pins the
-page (upstream's Last run sort) with the same edits. The tab row is deleted
+page (upstream's Last run sort) with the same edits, and 2.0.0 keeps both
+regions byte for byte (layout `1.40,2.0`). The tab row is deleted
 whole (`AUTOMATIONS_TAB_ROW`, its stock bytes without the no-op comments).
 
-### Sidebar device filter (opt-in, desktop-v1.37.0–v1.40.0)
+### Sidebar device filter (opt-in, desktop-v1.37.0–v2.0.0)
 
 `--sidebar-device-filter` (LUBOS-2658) adds a compact device dropdown to the
 expanded sidebar's title-bar row, right of the back / forward arrows (it
@@ -912,14 +933,15 @@ inline cloud rows (their own id as `hostId`) read as **Cloud**, so the
 dropdown lists no device per cloud workspace; regions 1 and 5 are re-pinned.
 On 1.40.0 the cloud section and its guard are gone, so the layout has no
 cloud guard swap; regions 1 and 2 are re-pinned and **Cloud** keeps the inline
-cloud rows. Tests: `tests/test_superset_device_automations_patch.py`
+cloud rows. On 2.0.0 regions 1 (ends at `DashboardSidebarContent`) and 4 are
+re-pinned with the same edits. Tests: `tests/test_superset_device_automations_patch.py`
 (pinned regions, fail-closed bundles, names, apply / re-run / revert,
 composition with `--sidebar-status-filter` and `--pinned-icon-only` in either
 order on both releases, the installed bundle) and
 `tests/device_automations.test.mjs` (the real sidebar pipeline per device, the
 dropdown, the project filter, FeatureHeader without `extra`).
 
-### PINNED follows the sort mode (opt-in, desktop-v1.37.0–v1.40.0)
+### PINNED follows the sort mode (opt-in, desktop-v1.37.0–v2.0.0)
 
 `--pinned-activity-sort` (LUBOS-2717) makes the **PINNED** section follow the
 sort mode picked in the Workspaces sort menu (`sidebarProjectSortMode`)
@@ -960,7 +982,8 @@ an upstream release that reshapes one of them refuses the family before any
 write instead of sorting PINNED by name. On 1.39.0 the data line passes
 `{ inlineCloudWorkspaces }` to `useDashboardSidebarData` and is re-cut; each
 release has its own swap and a bundle holding two releases' shapes fails
-closed. 1.40.0 drops the argument again, so its data line is the 1.38 shape.
+closed. 1.40.0 drops the argument again, so its data line is the 1.38 shape,
+as on 2.0.0.
 
 Apply on top of the approved set:
 
@@ -976,12 +999,12 @@ Tests: `tests/test_superset_pinned_sort_patch.py` (pinned region, the swap in
 every region 3 shape, fail-closed bundles, names and reshaped upstream
 helpers, apply / re-run / revert,
 half-applied completion, composition with every sidebar, palette and device
-family in either order on 1.37, 1.38, 1.39 and 1.40, the installed bundle) and
+family in either order on 1.37, 1.38, 1.39, 1.40 and 2.0, the installed bundle) and
 `tests/pinned_sort.test.mjs` (each mode's order incl. ties and missing times,
 parity with upstream, the swapped data line, the drag guard of the stock
 PINNED section).
 
-### Projects follow the sort mode and pin on top (opt-in, desktop-v1.37.0–v1.40.0)
+### Projects follow the sort mode and pin on top (opt-in, desktop-v1.37.0–v2.0.0)
 
 Upstream keeps the project order manual whatever the Workspaces sort menu says
 (the sort applies only inside each project). Two opt-in, sticky flags
@@ -1047,7 +1070,8 @@ carries upstream's host filter lines (`hostFilteredGroups`,
 `displayedPinnedWorkspaces`, `displayedSessionWorkspaces`), so the host
 filter reads the patched order. On 1.40.0 the checkbox region and the three
 swaps are the 1.39 shapes; the hook, store and menu item regions are
-re-pinned with the 1.39 edits.
+re-pinned with the 1.39 edits. On 2.0.0 the menu item region and the swaps
+stay; the hook, store and checkbox regions are re-pinned with the same edits.
 
 Apply on top of the approved set and `--pinned-activity-sort`:
 
@@ -1064,7 +1088,7 @@ Tests: `tests/test_superset_project_order_patch.py` (the four pinned regions
 and the 1.37 hook shape, the swaps in every status region shape, fail-closed
 bundles, swaps, names and reshaped helpers, apply / re-run / revert per flag
 and combined, half-applied completion, adding the second flag later,
-composition with every family in either order on 1.37, 1.38, 1.39 and 1.40, the
+composition with every family in either order on 1.37, 1.38, 1.39, 1.40 and 2.0, the
 installed bundle) and `tests/project_order.test.mjs` (both modes incl. ties and missing
 times, pins first in pin order, checkbox off and Manual order = stock, the
 drag flag, storage incl. corrupt and unreadable values, each flag alone, the
@@ -1460,7 +1484,7 @@ See conversation transcript on 2026-05-07. Key insights:
   `file://` origin in Chromium's localStorage leveldb. Value envelope:
   `0x01 + <latin1 utf-8 json>`.
 
-## Desktop workspace pins on mobile (opt-in, 1.39.0 and 1.40.0)
+## Desktop workspace pins on mobile (opt-in, 1.39.0 and 1.40.0; not 2.0.0)
 
 `--desktop-pin-sync` exports workspace pins from the active desktop organization
 through the existing authenticated host-service relay. It does not change pins,
@@ -1475,11 +1499,12 @@ timestamps to loopback, and stops on unmount. Relayed callers cannot publish.
 Reads wait at most 3.5 seconds for a fresh publication. Unknown protocol versions,
 invalid rows, a closed renderer or an unsupported bundle fail without returning
 an authoritative empty list. All three patch regions are pinned to 1.39.0 and
-1.40.0 (1.40 re-pins only the host router range, same edits);
+1.40.0 (1.40 re-pins only the host router range, same edits); 2.0.0 is not
+supported yet (the flag refuses it before a write);
 missing symbols, changed local-caller auth or hash drift abort the entire plan.
 See `plans/20261021-desktop-mobile-pins.md` for merge and rollout semantics.
 
-## Desktop terminal presets on mobile (opt-in, 1.39.0 and 1.40.0)
+## Desktop terminal presets on mobile (opt-in, 1.39.0 and 1.40.0; not 2.0.0)
 
 `--desktop-preset-sync` exports the active organization's terminal presets (the
 V2 presets bar shortcuts) and `hiddenBuiltinPresetIds` through the same
@@ -1500,5 +1525,6 @@ pinnedToBar?, executionMode, tabOrder, agentId?, useAsWorkspaceRun?`, stably
 sorted by `tabOrder`. A closed renderer or a rejected row is an error
 (PRECONDITION_FAILED), never an empty list. All four regions are pinned to
 1.39.0 and 1.40.0 (1.40 re-pins the renderer helper and host mount ranges, same
-edits); it composes with `--desktop-pin-sync` and every other flag in any order.
+edits); 2.0.0 is not supported yet (the flag refuses it before a write). It
+composes with `--desktop-pin-sync` and every other flag in any order.
 See `plans/20261024-desktop-mobile-presets.md`.

@@ -57,6 +57,8 @@ REGION_3 = (
     (MODULE.STATUS_FILTER_REGIONS_1_39[2], "superset-1.39.0-status-filter-r3.js", DATA_139, DATA_SORTED_139),
     # desktop-v1.40.0 (LUBOS-3122) drops inlineCloudWorkspaces again: the data line is the 1.37 shape.
     (MODULE.STATUS_FILTER_REGIONS_1_40[2], "superset-1.40.0-status-filter-r3.js", DATA, DATA_SORTED),
+    # desktop-v2.0.0 (LUBOS-3343) re-pins region 3 (DashboardSidebarContent); the data line is unchanged.
+    (MODULE.STATUS_FILTER_REGIONS_2_0[2], "superset-2.0.0-status-filter-r3.js", DATA, DATA_SORTED),
 )
 
 LAYOUT_NAMES = device_tests.imports(MODULE.PINNED_SORT_CHUNK_NAMES[0]) + b"".join(MODULE.PINNED_SORT_HELPERS)
@@ -399,7 +401,13 @@ class CompositionTest(unittest.TestCase):
     def stock(self, release, extra=()):
         """`extra`: (region, stock) pairs of another family, placed and chained like the rest."""
         device_stock = device_tests.DF_STOCK
-        if release == "1.40":
+        if release == "2.0":
+            status = icon_tests.SupersetSidebarStatusFilter200PatchTest("test_each_release_selects_its_own_layout")
+            regions = status.regions()
+            device, device_stock, cloud = MODULE.SIDEBAR_DEVICE_REGIONS_2_0, device_tests.DF_STOCK_200, b""
+            palette = list(zip(palette_tests.REGIONS_200, palette_tests.STOCK_200, strict=True))
+            hotkeys = palette_tests.HOTKEYS_200
+        elif release == "1.40":
             status = icon_tests.SupersetSidebarStatusFilter140PatchTest("test_each_release_selects_its_own_layout")
             regions = status.regions()
             device, device_stock, cloud = MODULE.SIDEBAR_DEVICE_REGIONS_1_40, device_tests.DF_STOCK_140, b""
@@ -450,7 +458,7 @@ class CompositionTest(unittest.TestCase):
 
     # Value: protects=the sort composes with each named family in either order: the same bytes whichever runs first, both orders equal the joint run, a later run of either is a no-op, and neither undoes the other; fails_when=the data line inside status region 3 is not a declared shared pair (the filter then restores the stock line or refuses the sorted region), the room region overlaps another family, or a family's plan depends on the other's state; why_new=contract composition rule; seam=real 1.36-1.38 status, device and palette regions, real hotkey registries
     def test_each_family_in_either_order_yields_the_same_bytes(self):
-        for release in ("1.37", "1.38", "1.39", "1.40"):
+        for release in ("1.37", "1.38", "1.39", "1.40", "2.0"):
             stock = self.stock(release)
             DATA_SORTED = DATA_SORTED_139 if release == "1.39" else globals()["DATA_SORTED"]  # noqa: N806
             self.assertEqual(stock.count(DATA_139 if release == "1.39" else DATA), 1)
@@ -471,7 +479,7 @@ class CompositionTest(unittest.TestCase):
     # Value: protects=the full production set (every named family at once) plus the sort gives the same bytes in both orders and re-runs to nothing; with the status filter the data line is folded into the region 3 rewrite (one write); fails_when=two families' writes overlap or the fold is lost; why_new=contract composition rule; seam=real fixtures as above
     def test_all_families_at_once_in_either_order(self):
         everything = list(self.FAMILIES)
-        for release in ("1.37", "1.38", "1.39", "1.40"):
+        for release in ("1.37", "1.38", "1.39", "1.40", "2.0"):
             with self.subTest(release=release):
                 stock = self.stock(release)
                 DATA_SORTED = DATA_SORTED_139 if release == "1.39" else globals()["DATA_SORTED"]  # noqa: N806

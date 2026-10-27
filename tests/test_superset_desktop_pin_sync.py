@@ -52,6 +52,12 @@ class InstalledTest(unittest.TestCase):
         flags = json.loads(Path('patches/approved-flags.json').read_text())
         options = flags['patch_options'] | {key: True for key in flags['opt_in_flags']}
         with stock.open('rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_COPY) as data:
+            if not any(data.find(MODULE._release_banner(layout[0])) >= 0 for layout in MODULE.DESKTOP_PIN_LAYOUTS):
+                # A release without a layout (2.0.0, LUBOS-3343): the flag refuses before a write, every other flag plans.
+                with self.assertRaisesRegex(RuntimeError, 'desktop pin sync: unsupported desktop version'):
+                    MODULE.plan_replacements(data, **(options | {'desktop_preset_sync': False}))
+                self.assertTrue(MODULE.plan_replacements(data, **(options | {'desktop_pin_sync': False, 'desktop_preset_sync': False})))
+                return
             writes = MODULE.plan_replacements(data, **options)
             bridge_writes = [w for w in writes if w[3].startswith('desktop pin sync:')]
             self.assertEqual(len(bridge_writes), 3)

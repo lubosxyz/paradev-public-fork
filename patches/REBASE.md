@@ -534,6 +534,69 @@ workspace row with `useNewDashboardSidebarEnabled`, and memoized
   host-service from the patched copy answers the pin and preset smoke
   (401 / 403 / 400 / 412 / 200, relayed list equals the fixture).
 
+## Worked example: 1.40.0 → 2.0.0 (2026-10-27, LUBOS-3343)
+
+M5 updated to 2.0.0 and the watcher reported `patch_plan_incompatible`
+(`mixed release layouts across families`). Mapping every flag on a copy of the
+stock 2.0.0 bundle (`6c8baea7…`) with the release probe off: tray, icons,
+hover, compact sidebar, nav buttons, pinned icon, sound, footer, Cmd+K, the
+automations header and PINNED sort plan as before; the status filter and its
+hotkeys miss region 3's start, palette search region 2 its length, the device
+filter region 1 its end, and sort / pin projects the hook length. The probe
+itself refused the bundle because 2.0 keeps the 1.40 preset export regions
+byte for byte, so that family read as 1.40 next to 2.0 families. Upstream
+wrapped `DashboardSidebar` in `DashboardSidebarActionsProvider` (the old body
+is `DashboardSidebarContent`), dropped the star nag card, moved row selection
+to one memoized `handleSelectionClick` that reads the selectable ids from a ref,
+and rebranded strings to Paradev.
+
+- Status filter (fifth layout, `STATUS_FILTER_REGIONS_2_0`): region 1 lost the
+  two anchors of the 1.40 edits 1 and 11 (the row `useMemo` deps and
+  `orderedWorkspaceIds: selectableWorkspaceIds`). The `ssfV` guard now follows
+  the new row deps line, still after the last hook of `SortableWorkspaceItem`;
+  the Shift-range cut cannot go into the memoized click (its deps are only
+  `selectWorkspaceFromEvent` and `containerId`, so it would read a stale
+  store, selection, rows and groups), so upstream's own deps-less layout effect
+  stores a fresh `ssfRange` closure on `selectableWorkspaceIdsRef.ssf` and the
+  click calls it. Region 3 starts at `DashboardSidebarContent` with the 1.40
+  edits and shared pairs; region 5 (`MoveToGroupItems` replaces the tag folder
+  hook) is re-pinned; the rest are byte-identical. Padding of regions 1, 3, 5:
+  58, 51 and 59 B.
+- Palette search: region 2 lost the dynamic-import comment the 1.38-1.40 rewrite
+  deleted for room, so the room comes from the host fan-out comment of the
+  removal target (85 B left); region 3 re-keys one i18n id (128 B). The hotkey
+  registry adds `TOGGLE_RIGHT_PANE_FULL_SCREEN` (⌘⇧L) and moves
+  `OPEN_DIFF_VIEWER` to ⌘⇧G; the Cmd+K and chip hotkey moves are unchanged.
+- Automations header: both regions byte-identical; the layout is renamed
+  `1.40,2.0` and `_layout_releases` reads comma lists.
+- Sidebar device filter: the data region ends at `DashboardSidebarContent`
+  (29 B left) and the state room gained the in-scope bulk menu context and
+  `MoveToGroupItems` (209 B); both re-pinned with the 1.40 edits.
+- PINNED sort: the 1.38 swap (`PINNED_SORT_RELEASE_NAMES` lists 2.0 there).
+- Sort / pin projects: pin menu region and all three swaps are the 1.40 / 1.39
+  shapes; the hook (`DashboardLayout` lost the right sidebar slot; 20 B left),
+  store (162 B) and checkbox (re-keyed i18n ids; 135 B) regions are re-pinned.
+  Store and checkbox keep their 1.40 lengths, so the shape-based probe cannot
+  tell a stale 1.40 room there from a 2.0 one: the room's digest refuses it
+  when its flag runs, and an unselected room is never written.
+- Pin / preset export (outside the approved and the optional set): no 2.0
+  layout yet; the flags refuse 2.0 (`unsupported desktop version`). Because
+  their regions can outlive their release byte for byte, the probe counts a
+  banner-bound family (`RELEASE_BANNER_PROBES`) only in a bundle carrying the
+  banner of one of its layouts.
+- No upstream adoption, nothing retired; 1.37 – 1.40 stay supported.
+- Fixtures are cut from the real stock 2.0.0 bundle
+  (`tests/fixtures/superset-2.0.0-*`; byte-identical regions reuse earlier
+  fixtures). The 2.0 test classes inherit the 1.40 ones;
+  `tests/palette_search_2_0.test.mjs` runs the palette suite on 2.0, and the
+  collapse harness drives the real ref-based Shift range.
+- Proof on the copy: all 18 flags of the approved and optional set write 72
+  times (515,977 B rewritten, length unchanged) to `a5542c5d…`, a re-run is
+  `already patched`, `--revert` restores the stock SHA-256; every touched JS
+  chunk passes `node --check`; `check-upstream-patches.py` (DSD main) with
+  this patcher reports `current` / `applied`, 0 writes needed, no optional
+  patch incompatible; the full set still plans on stock 1.40.0.
+
 ## Desktop pin export (LUBOS-2944, 1.39.0 and 1.40.0)
 
 `DESKTOP_PIN_REGIONS` touches three disjoint files. The index chunk's Zod helper

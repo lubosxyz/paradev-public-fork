@@ -255,6 +255,33 @@ class Release140Test(unittest.TestCase):
                     apply(data, **({'desktop_pin_sync': True, 'desktop_preset_sync': True} | off))
                 self.assertEqual(bytes(data), before)
 
+class Release200Test(unittest.TestCase):
+    """desktop-v2.0.0 (LUBOS-3343): no layout for either bridge, although 2.0 keeps the 1.40 preset regions byte for byte."""
+
+    # Value: protects=under the 2.0.0 banner the byte-identical 1.40 bridge regions are not counted as a 1.40 family (the whole-bundle release check would otherwise refuse every 2.0 plan as mixed), and each bridge flag still refuses before a write; under the 1.40.0 banner the probe records them as before; fails_when=the release probe ignores the banner, or a bridge flag plans on a release it was never reviewed on; why_new=LUBOS-3343 (2.0 desktop bundle failed the release check on these regions); seam=real 1.40.0 bytes under a 2.0.0 banner
+    def test_bridges_count_only_under_a_banner_of_their_layouts(self):
+        for release, picks in (('1.40.0', {'desktop preset sync', 'desktop pin sync'}), ('2.0.0', set())):
+            with self.subTest(release=release):
+                data = bytearray(bytes(bundle(release='1.40.0')).replace(b'"1.40.0"', f'"{release}"'.encode()))
+                self.assertEqual(MODULE.plan_replacements(data, **BASE), [])
+                with mock.patch.object(MODULE, '_LAYOUT_PICKS', []):
+                    MODULE._probe_releases(data)
+                    self.assertEqual({label for label, _releases in MODULE._LAYOUT_PICKS}, picks)
+        for flag in ('desktop_pin_sync', 'desktop_preset_sync'):
+            with self.subTest(flag=flag):
+                before = bytes(data)
+                with self.assertRaisesRegex(RuntimeError, 'unsupported desktop version'):
+                    apply(data, **{flag: True})
+                self.assertEqual(bytes(data), before)
+
+    # Value: protects=the probe only skips a banner-bound family: the 2.0 bridge regions under a 2.0.0 banner still plan every other family; fails_when=RELEASE_BANNER_PROBES grows to a family whose layout names are not exact releases; why_new=LUBOS-3343; seam=none
+    def test_only_the_bridges_are_banner_bound(self):
+        self.assertEqual(MODULE.RELEASE_BANNER_PROBES, ('desktop pin sync', 'desktop preset sync'))
+        for layouts in (MODULE.DESKTOP_PIN_LAYOUTS, MODULE.DESKTOP_PRESET_LAYOUTS):
+            for layout in layouts:
+                self.assertRegex(layout[0], r'^\d+\.\d+\.\d+$')
+
+
 @live_host_only('desktop preset sync touches two installed 1.39.0 chunks')
 class InstalledTest(unittest.TestCase):
     def test_all_flags_compose_and_patched_chunks_parse(self):
@@ -264,6 +291,12 @@ class InstalledTest(unittest.TestCase):
         flags = json.loads(Path('patches/approved-flags.json').read_text())
         options = flags['patch_options'] | {key: True for key in flags['opt_in_flags']}
         with snapshot.open('rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_COPY) as data:
+            if not any(data.find(MODULE._release_banner(layout[0])) >= 0 for layout in MODULE.DESKTOP_PRESET_LAYOUTS):
+                # A release without a layout (2.0.0, LUBOS-3343): the flag refuses before a write, every other flag plans.
+                with self.assertRaisesRegex(RuntimeError, 'desktop preset sync: unsupported desktop version'):
+                    MODULE.plan_replacements(data, **(options | {'desktop_pin_sync': False}))
+                self.assertTrue(MODULE.plan_replacements(data, **(options | {'desktop_preset_sync': False, 'desktop_pin_sync': False})))
+                return
             writes = MODULE.plan_replacements(data, **options)
             bridge_writes = [w for w in writes if w[3].startswith('desktop preset sync:')]
             self.assertEqual(len(bridge_writes), 4)

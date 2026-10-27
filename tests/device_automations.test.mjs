@@ -67,6 +67,10 @@ const DEVICE_REGIONS_1_39 = [
 const DEVICE_REGIONS_1_40 = [
   read("superset-1.40.0-device-filter-r1.patched.js"), read("superset-1.40.0-device-filter-r2.patched.js"), ...DEVICE_REGIONS_1_39.slice(2),
 ];
+// desktop-v2.0.0 (LUBOS-3343): regions 1 and 4 re-pinned, 2, 3 and 5 byte-identical to 1.40.0.
+const DEVICE_REGIONS_2_0 = [
+  read("superset-2.0.0-device-filter-r1.patched.js"), ...DEVICE_REGIONS_1_40.slice(1, 3), read("superset-2.0.0-device-filter-r4.patched.js"), DEVICE_REGIONS_1_40[4],
+];
 const DEVICE_NAMES = [
   "sdfUseRows", "sdfUseList", "sdfGroups", "sdfKids", "sdfUseHost", "sdfSet", "sdfUseDevices", "sdfUseCloud",
   "SdfDevices", "SdfDeviceItems", "partitionSidebarWorkspacesByPinned", "buildDashboardSidebarPinnedWorkspaces",
@@ -227,7 +231,7 @@ test("the cloud section shows under All devices and Cloud, and hides under a hos
   assert.equal(api.sdfUseCloud(undefined, "org"), true);
 });
 
-for (const [release, regions] of [["1.39", DEVICE_REGIONS_1_39], ["1.40", DEVICE_REGIONS_1_40]]) test(`${release}: the new sidebar's inline cloud rows (hostId = their own id) read as Cloud, not as one device each`, () => {
+for (const [release, regions] of [["1.39", DEVICE_REGIONS_1_39], ["1.40", DEVICE_REGIONS_1_40], ["2.0", DEVICE_REGIONS_2_0]]) test(`${release}: the new sidebar's inline cloud rows (hostId = their own id) read as Cloud, not as one device each`, () => {
   const api = device({ regions, cloud: [{ id: "c1" }] });
   const inline = row("c1", "c1", "fork");
   const rows = [...ROWS, inline];

@@ -60,6 +60,10 @@ const PIN_ITEM_1_39 = read("superset-1.39.0-pin-projects-r1.patched.js");
 const HOOK_1_40 = read("superset-1.40.0-project-order-r1.patched.js");
 const STORE_1_40 = read("superset-1.40.0-project-order-r2.patched.js");
 const PIN_ITEM_1_40 = read("superset-1.40.0-pin-projects-r1.patched.js");
+// desktop-v2.0.0 (LUBOS-3343): the hook, store and sort item rooms are new cuts; the pin room is the 1.40.0 bytes.
+const HOOK_2_0 = read("superset-2.0.0-project-order-r1.patched.js");
+const STORE_2_0 = read("superset-2.0.0-project-order-r2.patched.js");
+const SORT_ITEM_2_0 = read("superset-2.0.0-sort-projects-r1.patched.js");
 
 // The layout chunk with the core regions and the menu items of the applied flags.
 function chunk({ sort = true, pin = true, entries = {}, broken = false, release = "1.38.0" } = {}) {
@@ -84,8 +88,10 @@ function chunk({ sort = true, pin = true, entries = {}, broken = false, release 
   const [store, hook, pinItem] = {
     "1.39.0": [STORE_1_39, HOOK, PIN_ITEM_1_39],
     "1.40.0": [STORE_1_40, HOOK_1_40, PIN_ITEM_1_40],
+    "2.0.0": [STORE_2_0, HOOK_2_0, PIN_ITEM_1_40],
   }[release] ?? [STORE, HOOK, PIN_ITEM];
-  const sources = [SORT, store, hook, ...(sort ? [SORT_ITEM] : []), ...(pin ? [pinItem] : [])];
+  const sortItem = release === "2.0.0" ? SORT_ITEM_2_0 : SORT_ITEM;
+  const sources = [SORT, store, hook, ...(sort ? [sortItem] : []), ...(pin ? [pinItem] : [])];
   const names = ["lppUse", "lppSet", "lppSubscribe", "sortDashboardSidebarProjects", ...(sort ? ["lppSortItem"] : []), ...(pin ? ["lppPinItem"] : [])];
   return { ...load(sources, mocks, names), localStorage, subscribed, mocks };
 }
@@ -277,7 +283,7 @@ test("each flag applies only its own part: stored state of a flag that is not ap
   assert.equal(neither.lppUse(GROUPS, "active")[1], false);
 });
 
-for (const release of ["1.39.0", "1.40.0"]) test(`${release}: the re-cut rooms give the same order, pins and menu item as 1.38`, () => {
+for (const release of ["1.39.0", "1.40.0", "2.0.0"]) test(`${release}: the re-cut rooms give the same order, pins and menu item as 1.38`, () => {
   for (const entries of [SORT_ON, {}, { ...SORT_ON, "lubos-patch:pinned-projects": JSON.stringify(["p-empty"]) }]) {
     for (const mode of ["active", "created", "manual"]) {
       const [rows, drag] = chunk({ entries, release }).lppUse(GROUPS, mode);

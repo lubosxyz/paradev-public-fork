@@ -1744,12 +1744,57 @@ STATUS_FILTER_REGIONS_1_40 = (
         ),
     ),
 )
+# 2.0 wraps DashboardSidebar in DashboardSidebarActionsProvider and memoizes the
+# old body as DashboardSidebarContent (region 3's new start; the body lost only the
+# star nag card). The group content hands every row one memoized
+# handleSelectionClick that reads the selectable ids from a ref, and the row wraps
+# it per workspace before its useMemo. Region 1 keeps the 1.40 edits except two:
+# the row guard follows the new useMemo deps, and the Shift-range cut is stored on
+# that ref by upstream's own layout effect (fresh store, selection, rows and groups
+# at click time, without widening the callback's deps). Region 5 lost the folder
+# hook (MoveToGroupItems moved to the device state room, region 4 of that family).
+# Regions 2, 4 and 6-14 are byte-identical to 1.40.
+STATUS_FILTER_REGIONS_2_0 = (
+    _rebased(
+        STATUS_FILTER_REGIONS_1_40[0], 25422, "e7f1392a5dbefe1e3456b11f5260e839491bc1b2f98af0802ca2ef1fb2620173", "cab441a6d003a3f3179e2524cc44a7fea5dff3356c8d965c28b56cb57e44de72",
+        edits=(
+            STATUS_FILTER_REGIONS_1_40[0].edits[0],
+            (
+                b", [workspace, onHoverCardOpen, shortcutLabel, isInSection, indentation, isSelected, handleSelectionClick, pinnedContext]);\n",
+                b", [workspace, onHoverCardOpen, shortcutLabel, isInSection, indentation, isSelected, handleSelectionClick, pinnedContext]);\n"
+                b"  const ssfV = ssfUseShow([workspace], ssfK);\n"
+                b"  if (!ssfV) return null;\n"
+                b"  if (ssfV > 1) collapsed = ssfV > 2;\n",
+            ),
+            *STATUS_FILTER_REGIONS_1_40[0].edits[2:11],
+            (
+                b"    selectableWorkspaceIdsRef.current = selectableWorkspaceIds;\n",
+                b"    selectableWorkspaceIdsRef.current = selectableWorkspaceIds;\n"
+                b"    selectableWorkspaceIdsRef.ssf = (ids) => ssfRange(ssfStore, ids, isWorkspaceSelected, workspacesById, groupInfo);\n",
+            ),
+            (
+                b"orderedWorkspaceIds: selectableWorkspaceIdsRef.current\n",
+                b"orderedWorkspaceIds: selectableWorkspaceIdsRef.ssf(selectableWorkspaceIdsRef.current)\n",
+            ),
+            *STATUS_FILTER_REGIONS_1_40[0].edits[12:],
+        ),
+    ),
+    STATUS_FILTER_REGIONS_1_40[1],
+    _rebased(
+        STATUS_FILTER_REGIONS_1_40[2], 16528, "a975e1dba2478693d79c88186f991c495248365f5c3e03aaa35591d7ac6f23a7", "e0de3b88523883647abf12365c5dd694df2c94f476732842e466c5dc221ea71d",
+        start=b"const DashboardSidebarContent = reactExports.memo(function DashboardSidebarContent2({\n",
+    ),
+    STATUS_FILTER_REGIONS_1_40[3],
+    _rebased(STATUS_FILTER_REGIONS_1_40[4], 10535, "8adf6ff70b8c9d58c47bdef6ca60bf5b07af4d89fb7782d94dc7ca6361381c32", "11d6b2e88e558a740960760db90bf9b4193ec6beb7d61b73c69fd405db31f1fa"),
+    *STATUS_FILTER_REGIONS_1_40[5:],
+)
 # (name, regions, sibling variants): every supported release layout of the filter.
 STATUS_FILTER_LAYOUTS = (
     ("1.36-1.37", STATUS_FILTER_REGIONS, STATUS_FILTER_REGION_VARIANTS),
     ("1.38", STATUS_FILTER_REGIONS_1_38, ()),
     ("1.39", STATUS_FILTER_REGIONS_1_39, ()),
     ("1.40", STATUS_FILTER_REGIONS_1_40, ()),
+    ("2.0", STATUS_FILTER_REGIONS_2_0, ()),
 )
 
 # Names the injected filter JS reads from upstream code outside the pinned
@@ -1851,11 +1896,14 @@ _LAYOUT_PICKS = None
 
 
 def _layout_releases(name: str) -> frozenset:
-    """Minor releases a layout name covers: "1.39", "1.40.0", "1.37-1.39"."""
-    first, _, last = name.partition("-")
-    major, low = (int(part) for part in first.split(".")[:2])
-    high = int(last.split(".")[1]) if last else low
-    return frozenset(f"{major}.{minor}" for minor in range(low, high + 1))
+    """Minor releases a layout name covers: "1.39", "1.40.0", "1.37-1.39", "1.40,2.0" (a list across majors)."""
+    releases = set()
+    for part in name.split(","):
+        first, _, last = part.strip().partition("-")
+        major, low = (int(piece) for piece in first.split(".")[:2])
+        high = int(last.split(".")[1]) if last else low
+        releases.update(f"{major}.{minor}" for minor in range(low, high + 1))
+    return frozenset(releases)
 
 
 def _record_layout(label: str, releases) -> None:
@@ -2739,6 +2787,31 @@ PALETTE_SEARCH_CHUNKS_1_40 = (
     (PALETTE_SEARCH_REGIONS_1_40[:1], *PALETTE_SEARCH_CHUNKS[0][1:]),
     (PALETTE_SEARCH_REGIONS_1_40[1:], *PALETTE_SEARCH_CHUNKS[1][1:]),
 )
+# 2.0: region 2 lost the star nag card and with it the dynamic-import comment
+# block the 1.38-1.40 rewrite deleted for room; the room now comes from the host
+# fan-out comment of the removal target. Region 3 only re-keys one i18n id.
+# Regions 1 and 4 are byte-identical to 1.40.
+PALETTE_SEARCH_REGIONS_2_0 = (
+    PALETTE_SEARCH_REGIONS_1_40[0],
+    _rebased(
+        PALETTE_SEARCH_REGIONS_1_40[1], 60976, "840b519468b9ae3599ac79540beb7b1af48b126260be14df667c267309cf414d", "7fc3c4685f11f36268c1d4525b053a867b179124b4845cb35604869e14d46533",
+        edits=(
+            (
+                b"      // Before the host fan-out settles, an unlisted sibling means\n"
+                b"      // \"unknown\", not \"gone\" \xe2\x80\x94 prefer navigating to it over home; the\n"
+                b"      // workspace route's own not-found handling covers a true miss.\n",
+                b"",
+            ),
+            *PALETTE_SEARCH_REGIONS_1_40[1].edits[1:],
+        ),
+    ),
+    _rebased(PALETTE_SEARCH_REGIONS_1_40[2], 26223, "4dcfb2c05fd274154f5ef553419df9b00b69f34828914c60635c921374cd2dc4", "d45107e4a001b46b118242cd734fe1e82a137bf078e5a5fd41f18ffe1a164d61"),
+    PALETTE_SEARCH_REGIONS_1_40[3],
+)
+PALETTE_SEARCH_CHUNKS_2_0 = (
+    (PALETTE_SEARCH_REGIONS_2_0[:1], *PALETTE_SEARCH_CHUNKS[0][1:]),
+    (PALETTE_SEARCH_REGIONS_2_0[1:], *PALETTE_SEARCH_CHUNKS[1][1:]),
+)
 # (name, regions, variants, chunks, generations): every supported release layout.
 PALETTE_SEARCH_LAYOUTS = (
     ("1.37", PALETTE_SEARCH_REGIONS, (), PALETTE_SEARCH_CHUNKS, PALETTE_SEARCH_GENERATIONS),
@@ -2761,6 +2834,13 @@ PALETTE_SEARCH_LAYOUTS = (
         {
             "stock": tuple(region.stock_sha256 for region in PALETTE_SEARCH_REGIONS_1_40),
             "generation 6": tuple(region.patched_sha256 for region in PALETTE_SEARCH_REGIONS_1_40),
+        },
+    ),
+    (
+        "2.0", PALETTE_SEARCH_REGIONS_2_0, (), PALETTE_SEARCH_CHUNKS_2_0,
+        {
+            "stock": tuple(region.stock_sha256 for region in PALETTE_SEARCH_REGIONS_2_0),
+            "generation 6": tuple(region.patched_sha256 for region in PALETTE_SEARCH_REGIONS_2_0),
         },
     ),
 )
@@ -2801,8 +2881,8 @@ def _plan_command_palette_workspace_search(data) -> list[tuple[int, bytes, bytes
     return replacements
 
 
-# --automations-header (desktop-v1.37.0-v1.40.0; the regions are byte-identical
-# in 1.37-1.39, 1.40 re-pins the page, see AUTOMATIONS_HEADER_REGIONS_1_40). Upstream splits /automations into Mine / Team tabs and keeps All runs
+# --automations-header (desktop-v1.37.0-v2.0.0; the regions are byte-identical
+# in 1.37-1.39, 1.40 re-pins the page, see AUTOMATIONS_HEADER_REGIONS_1_40; 2.0 keeps 1.40's). Upstream splits /automations into Mine / Team tabs and keeps All runs
 # and the search in that tab row. The page now lists every automation the
 # organization returns (Mine and Team merged) and the header row carries, between
 # the title and New automation: a project filter (All projects plus every project
@@ -3030,11 +3110,11 @@ AUTOMATIONS_HEADER_REGIONS_1_40 = (
         "dedc796490a4c05dcdbf3b91b856c09e5068cee3c8263527e7c5b756817c0061",
     ),
 )
-# (release, regions, variants, chunks)
+# (release, regions, variants, chunks); both regions are byte-identical in 2.0.
 AUTOMATIONS_HEADER_LAYOUTS = (
     ("1.37-1.39", AUTOMATIONS_HEADER_REGIONS, (), AUTOMATIONS_HEADER_CHUNKS),
     (
-        "1.40", AUTOMATIONS_HEADER_REGIONS_1_40, (),
+        "1.40,2.0", AUTOMATIONS_HEADER_REGIONS_1_40, (),
         tuple((AUTOMATIONS_HEADER_REGIONS_1_40[i : i + 1], *chunk[1:]) for i, chunk in enumerate(AUTOMATIONS_HEADER_CHUNKS)),
     ),
 )
@@ -3050,9 +3130,10 @@ def _plan_automations_header(data) -> list[tuple[int, bytes, bytes, str]]:
     return replacements
 
 
-# --sidebar-device-filter (desktop-v1.37.0-v1.40.0; the regions of 1.37 and
+# --sidebar-device-filter (desktop-v1.37.0-v2.0.0; the regions of 1.37 and
 # 1.38 are byte-identical, 1.39 re-pins two, see SIDEBAR_DEVICE_REGIONS_1_39; 1.40
-# re-pins two more and drops the cloud guard swap, see SIDEBAR_DEVICE_REGIONS_1_40). A compact device dropdown in the expanded sidebar's
+# re-pins two more and drops the cloud guard swap, see SIDEBAR_DEVICE_REGIONS_1_40;
+# 2.0 re-pins two, see SIDEBAR_DEVICE_REGIONS_2_0). A compact device dropdown in the expanded sidebar's
 # title-bar row, right of the back / forward arrows (it renders with the ports
 # button through the PortsDropdown mount, SIDEBAR_DEVICE_MOUNT; a layers icon,
 # or the selected device's name, so it fits the default sidebar): All devices
@@ -3364,6 +3445,21 @@ SIDEBAR_DEVICE_REGIONS_1_40 = (
     replace(SIDEBAR_DEVICE_REGIONS_1_39[2], end=b"function DashboardSidebarSectionHeader({\n"),
     *SIDEBAR_DEVICE_REGIONS_1_39[3:],
 )
+# 2.0: the data region ends at the renamed DashboardSidebarContent (upstream wraps
+# DashboardSidebar in an actions provider), reuses unchanged workspaces across
+# renders and reads the pull request refresh inputs from a ref, all away from the
+# edits; the state room gained the in-scope context and MoveToGroupItems. Both are
+# re-pinned with the 1.40 edits; regions 2, 3 and 5 and the mount swap are
+# byte-identical.
+SIDEBAR_DEVICE_REGIONS_2_0 = (
+    _rebased(
+        SIDEBAR_DEVICE_REGIONS_1_40[0], 67187, "d894402794c2552d25565872f26724e5c43d300a5f2a88b3caaaab8332002dfb", "12028c63478de0b9d3d637f6701b01b038d5569751ba05aada0ecce92a8e898c",
+        end=b"const DashboardSidebarContent = reactExports.memo(function DashboardSidebarContent2({\n",
+    ),
+    *SIDEBAR_DEVICE_REGIONS_1_40[1:3],
+    _rebased(SIDEBAR_DEVICE_REGIONS_1_40[3], 6984, "ddbb9dd90c1e98fbcd576c00c9f23f8cc965129dc0a03d76f9476f5f86bdf44f", "2e1cc422e420e9a866dea679fb9435800cdd760318aa28517f9667860b1aaf27"),
+    SIDEBAR_DEVICE_REGIONS_1_40[4],
+)
 # (name, stock, filtered, label) of the two anchor swaps outside the regions.
 SIDEBAR_DEVICE_SWAPS = (
     ("sidebar device filter mount", SIDEBAR_DEVICE_MOUNT, SIDEBAR_DEVICE_MOUNT_FILTER, "sidebar device filter: title-bar dropdown"),
@@ -3375,6 +3471,7 @@ SIDEBAR_DEVICE_LAYOUTS = (
     ("1.38", SIDEBAR_DEVICE_REGIONS, (), SIDEBAR_DEVICE_SWAPS),
     ("1.39", SIDEBAR_DEVICE_REGIONS_1_39, (), SIDEBAR_DEVICE_SWAPS),
     ("1.40", SIDEBAR_DEVICE_REGIONS_1_40, (), SIDEBAR_DEVICE_SWAPS[:1]),
+    ("2.0", SIDEBAR_DEVICE_REGIONS_2_0, (), SIDEBAR_DEVICE_SWAPS[:1]),
 )
 SIDEBAR_DEVICE_CHUNK_NAMES = (
     (
@@ -3735,8 +3832,8 @@ def _plan_desktop_preset_sync(data):
     return [write for region in regions for write in _plan_region_rewrite(data, region)]
 
 
-# --pinned-activity-sort (desktop-v1.37.0-v1.40.0; the region is byte-identical
-# in all four, the swap is byte-identical in 1.37, 1.38 and 1.40). Upstream orders PINNED by pin time whatever the
+# --pinned-activity-sort (desktop-v1.37.0-v2.0.0; the region is byte-identical
+# in all five, the swap is byte-identical in 1.37, 1.38, 1.40 and 2.0). Upstream orders PINNED by pin time whatever the
 # Workspaces sort menu says (partitionSidebarWorkspacesByPinned). With the flag
 # the PINNED rows follow the same mode as the project children: Last active
 # (lastActivityAt, else updatedAt) or Date created (createdAt), newest first,
@@ -3787,7 +3884,7 @@ PINNED_SORT_CHUNK_NAMES = (
 )
 # Upstream's sort helpers the injected JS calls; module-scope declarations of the layout chunk.
 PINNED_SORT_DEFINED_NAMES = ("makeStableComparator", "getWorkspaceTimestamp", "haveSameItems")
-# Their exact stock source (byte-identical in 1.37.0 through 1.40.0). The call in
+# Their exact stock source (byte-identical in 1.37.0 through 2.0.0). The call in
 # PINNED_SORT_JS relies on these signatures and on the newest-first order, so a
 # reshaped helper (swapped parameters, reversed diff) refuses the family instead
 # of silently sorting PINNED by name.
@@ -3816,7 +3913,7 @@ PINNED_SORT_HELPERS = (
 def _plan_pinned_activity_sort(data) -> list[tuple[int, bytes, bytes, str]]:
     """Validate the layout chunk, the room region and the data swap; return the writes still needed."""
     release = _swap_release(data, PINNED_SORT_RELEASES)
-    _record_layout("pinned activity sort", ("1.39",) if release is PINNED_SORT_SWAPS_1_39 else ("1.37", "1.38", "1.40"))
+    _record_layout("pinned activity sort", PINNED_SORT_RELEASE_NAMES[PINNED_SORT_RELEASES.index(release)])
     swaps = [pair for _name, *pair, _label in release]
     _require_family_chunks(data, ((PINNED_SORT_REGIONS, *PINNED_SORT_CHUNK_NAMES),), "pinned activity sort", swaps)
     found = _region_chunk(data, PINNED_SORT_REGIONS, "pinned activity sort")
@@ -3856,7 +3953,7 @@ def _swap_release(data, releases):
     return releases[found[0] if found else 0]
 
 
-# --sort-projects and --pin-projects (desktop-v1.37.0-v1.40.0), usable alone or
+# --sort-projects and --pin-projects (desktop-v1.37.0-v2.0.0), usable alone or
 # together. Upstream keeps the project order manual whatever the Workspaces sort
 # menu says (sortDashboardSidebarProjects sorts only inside each project).
 #   --sort-projects: a "Sort projects too" checkbox closes the sort menu. On,
@@ -4114,6 +4211,14 @@ PROJECT_ORDER_REGIONS_1_40 = (
     _rebased(PROJECT_ORDER_REGIONS_1_39[1], 8625, "2d9868773564089f17481d1343593add9eb69273108e95e2af6c55d4273ed573", "4e755c95dd4380aa09fe2eb506dde3089ce4bae129f3d673ddaea64b7d6865e7"),
 )
 PIN_PROJECTS_REGIONS_1_40 = (_rebased(PIN_PROJECTS_REGIONS_1_39[0], 9394, "aac1c6bf9248d93e321eadd176ef8ac3e6838af3863ad2c3ced08c1fa76e3955", "b1d840877f0e774144d3c4b98d7b4fda8a623ddc8173a18c3d3c4bbf0e17cad1"),)
+# 2.0: the pin menu region and all three swaps are the 1.40 shapes. The hook
+# region (DashboardLayout lost the right sidebar slot), the store room and the
+# sort menu room (re-keyed i18n ids) are re-pinned with the same edits.
+PROJECT_ORDER_REGIONS_2_0 = (
+    _rebased(PROJECT_ORDER_REGIONS_1_40[0], 7069, "9b72d4e97d57328e08a0ba787d574495210075eecc588ad446dda881004eb846", "7dbcdf13a09b28e6618b1674ded4ff60258a3f67975b6277d835145e7c6bd5dd"),
+    _rebased(PROJECT_ORDER_REGIONS_1_40[1], 8625, "c4ffd2b1d7fc638f3fe717a6ff314fbbe4ce94c42209fb7c9bcc5666abaf0e02", "31a3cfde34fde1b359752e1fa2f1ffb96fc811d0abba422b79ff959cf5ffd32c"),
+)
+SORT_PROJECTS_REGIONS_2_0 = (_rebased(SORT_PROJECTS_REGIONS[0], 11438, "c15bf87cac44d8e2714f6041aead81dc89add79b6216b2ca9f777b1f51b2d1c0", "02e6a4d97d32362e7fc9d13d9d16c7a59002578bee1bdbaab90f3e76afef6f29"),)
 # (name, (core, sort, pin) regions, hook variants, (core, sort, pin) swaps): every
 # supported release layout. _select_layout picks it by the regions; the swaps
 # have to be that release's shapes, so a mixed bundle fails closed.
@@ -4131,6 +4236,11 @@ PROJECT_ORDER_LAYOUTS = (
     (
         "1.40", (*PROJECT_ORDER_REGIONS_1_40, *SORT_PROJECTS_REGIONS, *PIN_PROJECTS_REGIONS_1_40), (),
         (PROJECT_ORDER_REGIONS_1_40, SORT_PROJECTS_REGIONS, PIN_PROJECTS_REGIONS_1_40),
+        (PROJECT_ORDER_SWAPS_1_39, SORT_PROJECTS_SWAPS_1_39, PIN_PROJECTS_SWAPS_1_39),
+    ),
+    (
+        "2.0", (*PROJECT_ORDER_REGIONS_2_0, *SORT_PROJECTS_REGIONS_2_0, *PIN_PROJECTS_REGIONS_1_40), (),
+        (PROJECT_ORDER_REGIONS_2_0, SORT_PROJECTS_REGIONS_2_0, PIN_PROJECTS_REGIONS_1_40),
         (PROJECT_ORDER_SWAPS_1_39, SORT_PROJECTS_SWAPS_1_39, PIN_PROJECTS_SWAPS_1_39),
     ),
 )
@@ -4372,8 +4482,14 @@ RELEASE_PROBES = (
     ("desktop preset sync", DESKTOP_PRESET_LAYOUTS),
     ("project order", PROJECT_ORDER_LAYOUTS),
 )
+# Families whose layouts are bound to the release banner of their chunks (the
+# layout name is the exact release). Their regions can stay byte-identical in a
+# later release they do not support (2.0 keeps the 1.40 preset regions), so the
+# probe counts them only in a bundle carrying the banner of one of their layouts;
+# without one the family is unsupported and its own flag refuses it.
+RELEASE_BANNER_PROBES = ("desktop pin sync", "desktop preset sync")
 # The releases of each PINNED_SORT_RELEASES entry.
-PINNED_SORT_RELEASE_NAMES = (("1.37", "1.38", "1.40"), ("1.39",))
+PINNED_SORT_RELEASE_NAMES = (("1.37", "1.38", "1.40", "2.0"), ("1.39",))
 
 
 def _probe_releases(data) -> None:
@@ -4384,9 +4500,19 @@ def _probe_releases(data) -> None:
     start, end, length) share no release, i.e. it mixes releases; an absent or
     merely changed family records nothing and is left to its own flag. Shapes, not
     layouts, because a later release may re-cut a region whose bytes stay put, so
-    an older shape can still fit inside a newer, whole layout.
+    an older shape can still fit inside a newer, whole layout. A banner-bound
+    family (RELEASE_BANNER_PROBES) is skipped in a bundle without the banner of
+    any of its layouts.
     """
+    banners = {}
     for label, layouts in RELEASE_PROBES:
+        if label in RELEASE_BANNER_PROBES:
+            names = [layout[0] for layout in layouts]
+            for name in names:
+                if name not in banners:
+                    banners[name] = data.find(_release_banner(name)) >= 0
+            if not any(banners[name] for name in names):
+                continue
         shapes = {}
         for name, regions, variants, *_rest in layouts:
             for region in regions:

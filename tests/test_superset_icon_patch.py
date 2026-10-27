@@ -1757,6 +1757,8 @@ class SupersetSidebarStatusFilterPatchTest(unittest.TestCase):
         # region minus the no-op comment tokens and the deleted `//` lines.
         swaps = {
             b"orderedWorkspaceIds: selectableWorkspaceIds\n",
+            # 2.0 reads the ids from a ref inside the memoized click (LUBOS-3343).
+            b"orderedWorkspaceIds: selectableWorkspaceIdsRef.current\n",
             b"    !isSectionCollapsed && jsxRuntimeExports.jsx(SortableContext, { items: pinnedItems,",
             b"isCollapsed: section.isCollapsed, isEditing: isRenaming,",
             b"isCollapsed: project.isCollapsed, isRenaming,",
@@ -3111,6 +3113,72 @@ class SupersetSidebarStatusFilter140PatchTest(SupersetSidebarStatusFilter139Patc
             self.patch(mixed)
 
 
+def _fixture_2_0(kind: str, n: int, suffix: str = ".js") -> Path:
+    """The 2.0.0 cut of region n, or the 1.40 one (or earlier) it is byte-identical to."""
+    path = FIXTURES / f"superset-2.0.0-{kind}-r{n}{suffix}"
+    return path if path.exists() else _fixture_1_40(kind, n, suffix)
+
+
+class SupersetSidebarStatusFilter200PatchTest(SupersetSidebarStatusFilter140PatchTest):
+    """The same filter on the desktop-v2.0.0 layout (LUBOS-3343): every inherited test runs on the 2.0 regions.
+
+    2.0 wraps DashboardSidebar in an actions provider (region 3 starts at the renamed
+    DashboardSidebarContent) and hands rows one memoized selection click that reads the
+    ids from a ref (region 1). Regions 1, 3 and 5 are cut from desktop-v2.0.0
+    layout-CIxrIwmN.js; regions 2, 4 and 6-14 are byte-identical to 1.40.
+    """
+
+    REGIONS = MODULE.STATUS_FILTER_REGIONS_2_0
+    PALETTE_REGIONS = MODULE.PALETTE_SEARCH_REGIONS_2_0
+    PALETTE_FIXTURES = ["superset-1.37.0-palette-r1.js", "superset-2.0.0-palette-r2.js", "superset-2.0.0-palette-r3.js", "superset-1.39.0-palette-r4.js"]
+    REGION_FIXTURES = [_fixture_2_0("status-filter", n) for n in range(1, 15)]
+    PATCHED_FIXTURES = [_fixture_2_0("status-filter", n, ".patched.js") for n in range(1, 15)]
+
+    # Value: protects=the 2.0 regions are pinned on the real 2.0 bytes and reuse only the 1.40 regions that are byte-identical there; fails_when=a 2.0 fixture is missing, a reused 1.40 region drifted, or a 2.0 region inherits a legacy / upgrade digest that never ran on 2.0; why_new=LUBOS-3343 release layout; seam=real 2.0.0 bytes
+    def test_layout_reuses_identical_regions_and_has_no_earlier_generations(self):
+        earlier = MODULE.STATUS_FILTER_REGIONS_1_40
+        self.assertEqual(len(self.REGIONS), 14)
+        rebased = {1, 3, 5}
+        for n, region in enumerate(self.REGIONS, 1):
+            with self.subTest(region=n):
+                self.assertEqual(self.REGION_FIXTURES[n - 1].name.startswith("superset-2.0.0-"), n in rebased)
+                self.assertEqual(region is earlier[n - 1], n not in rebased)
+                if n in rebased:
+                    self.assertEqual((region.legacy_sha256, region.upgrades), ((), ()))
+                    self.assertEqual(region.end, earlier[n - 1].end)
+        self.assertEqual(self.REGIONS[2].edits, earlier[2].edits)
+        self.assertEqual(self.REGIONS[4].edits, earlier[4].edits)
+
+    # Value: protects=the Shift-range cut reaches the rows through upstream's ref with the store, selection, rows and groups of the latest render, without changing the callback's deps; fails_when=the cut is placed inside the memoized callback (stale closure) or the ref effect loses the cut; why_new=LUBOS-3343 (2.0 memoizes handleSelectionClick); seam=real 2.0.0 region 1
+    def test_shift_range_cut_rides_on_the_ref_effect(self):
+        stock = self.REGION_FIXTURES[0].read_bytes()
+        patched = self.PATCHED_FIXTURES[0].read_bytes()
+        self.assertEqual(stock.count(b"}), [selectWorkspaceFromEvent, containerId]);\n"), 1)
+        self.assertEqual(patched.count(b"}), [selectWorkspaceFromEvent, containerId]);\n"), 1)
+        self.assertEqual(patched.count(b"orderedWorkspaceIds: selectableWorkspaceIdsRef.ssf(selectableWorkspaceIdsRef.current)\n"), 1)
+        effect = patched.index(b"selectableWorkspaceIdsRef.ssf = (ids) => ssfRange(ssfStore, ids, isWorkspaceSelected, workspacesById, groupInfo);")
+        self.assertLess(patched.index(b"reactExports.useLayoutEffect(() => {\n    selectableWorkspaceIdsRef.current"), effect)
+        self.assertLess(patched.index(b"const ssfStore = reactExports.useContext(StatusStoreContext);"), effect)
+        self.assertNotIn(b"orderedWorkspaceIds: selectableWorkspaceIds\n", patched)
+
+    # Value: protects=each release is planned with its own layout; fails_when=the 2.0 bundle is planned with 1.40 regions or the other way round; why_new=LUBOS-3343; seam=none
+    def test_each_release_selects_its_own_layout(self):
+        self.assertEqual(MODULE.status_filter_layout(self.stock_bundle())[0], "2.0")
+        earlier = SupersetSidebarStatusFilter140PatchTest("test_status_filter_is_idempotent").stock_bundle()
+        self.assertEqual(MODULE.status_filter_layout(earlier)[0], "1.40")
+        patched, _changes = self.patch(self.stock_bundle())
+        self.assertEqual(MODULE.status_filter_layout(patched)[0], "2.0")
+
+    # Value: protects=a bundle mixing 1.40 and 2.0 region bytes fails closed instead of patching half of each; fails_when=layout selection falls back per region; why_new=REBASE.md mixed-release rule; seam=none
+    def test_mixed_release_bundle_fails_closed(self):
+        stock_140 = SupersetSidebarStatusFilter140PatchTest.REGION_FIXTURES[0].read_bytes()
+        stock_200 = self.REGION_FIXTURES[0].read_bytes()
+        mixed = self.stock_bundle().replace(stock_200, stock_140)
+        self.assertNotEqual(mixed, self.stock_bundle())
+        with self.assertRaisesRegex(RuntimeError, "status filter"):
+            self.patch(mixed)
+
+
 class SupersetHideNavButtonsPatchTest(unittest.TestCase):
     """--hide-nav-buttons hides New Workspace, Search and Workspaces in the compact grid."""
 
@@ -3307,6 +3375,20 @@ class SupersetHideSidebarFooter140PatchTest(SupersetHideSidebarFooterPatchTest):
                 (MODULE.PROJECT_ORDER_DATA_1_39, MODULE.PROJECT_ORDER_DATA_SORTED_1_39),
             ),
         )
+        for stock, _patched in self.REGIONS[2].shared:
+            self.assertEqual(region3.count(stock), 1, stock)
+
+
+class SupersetHideSidebarFooter200PatchTest(SupersetHideSidebarFooter140PatchTest):
+    """--hide-sidebar-footer composed with the 2.0.0 status filter regions (LUBOS-3343)."""
+
+    REGIONS = SupersetSidebarStatusFilter200PatchTest.REGIONS
+    REGION_FIXTURES = SupersetSidebarStatusFilter200PatchTest.REGION_FIXTURES
+
+    # Value: protects=the 2.0 footer row and both sort data lines are still the shared writes inside status filter region 3; fails_when=2.0 moves one out of region 3 or the region loses a shared pair; why_new=LUBOS-3343; seam=real 2.0.0 region 3
+    def test_anchor_is_the_real_footer_row_and_hides_only_the_expanded_sidebar(self):
+        region3 = (FIXTURES / "superset-2.0.0-status-filter-r3.js").read_bytes()
+        self.assertEqual(self.REGIONS[2].shared, MODULE.STATUS_FILTER_REGIONS_1_40[2].shared)
         for stock, _patched in self.REGIONS[2].shared:
             self.assertEqual(region3.count(stock), 1, stock)
 
@@ -4069,6 +4151,33 @@ class SupersetStatusFilterCollapse140Test(SupersetStatusFilterCollapseTest):
         return harness
 
 
+class SupersetStatusFilterCollapse200Test(SupersetStatusFilterCollapse140Test):
+    """The v5 collapse behaviour on the desktop-v2.0.0 regions (LUBOS-3343)."""
+
+    PATCHED = [_fixture_2_0("status-filter", n, ".patched.js") for n in (1, 2, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14)]
+    HOTKEYS_REGION = _fixture_2_0("status-filter", 9, ".patched.js")
+
+    def harness(self, assertions: str) -> str:
+        harness = super().harness(assertions)
+        # 2.0's section header reads setSectionColor from the actions context region 5 declares.
+        context = "context === DashboardSidebarSelectionContext ? { isWorkspaceSelected: () => false } : null"
+        self.assertEqual(harness.count(context), 1)
+        harness = harness.replace(
+            context,
+            "context === DashboardSidebarSelectionContext ? { isWorkspaceSelected: () => false } "
+            ": context === DashboardSidebarActionsContext ? { setSectionColor: () => {} } : null",
+        )
+        # The group content stores its ids (and the Shift-range cut) in a ref from a cleanup-less
+        # layout effect; it runs in place so it never ends SsfSearch's effect.
+        effect = "useLayoutEffect: (effect) => { layoutCleanup?.(); layoutCleanup = effect(); },"
+        self.assertEqual(harness.count(effect), 1)
+        return harness.replace(
+            effect,
+            'useLayoutEffect: (effect) => { if (String(effect).includes("selectableWorkspaceIdsRef")) return effect(); '
+            "layoutCleanup?.(); layoutCleanup = effect(); },",
+        )
+
+
 class SupersetStatusFilterGenerationsTest(unittest.TestCase):
     """Older filter generations and the 1.37 sticky-row variant stay recognised end to end."""
 
@@ -4433,6 +4542,21 @@ class SupersetStatusFilterNames140Test(SupersetStatusFilterNamesTest):
 
     REGIONS = SupersetSidebarStatusFilter140PatchTest.REGIONS
     REGION_FIXTURES = SupersetSidebarStatusFilter140PatchTest.REGION_FIXTURES
+
+
+class SupersetStatusFilterHotkeys200PatchTest(SupersetStatusFilterHotkeys138PatchTest):
+    """--status-filter-hotkeys on the 2.0.0 regions and registry (LUBOS-3343); the registry adds TOGGLE_RIGHT_PANE_FULL_SCREEN (Cmd+Shift+L)."""
+
+    REGIONS = SupersetSidebarStatusFilter200PatchTest.REGIONS
+    REGION_FIXTURES = SupersetSidebarStatusFilter200PatchTest.REGION_FIXTURES
+    HOTKEYS = FIXTURES / "superset-2.0.0-hotkeys-registry.js"
+
+
+class SupersetStatusFilterNames200Test(SupersetStatusFilterNamesTest):
+    """The name check on a 2.0.0 chunk (LUBOS-3343)."""
+
+    REGIONS = SupersetSidebarStatusFilter200PatchTest.REGIONS
+    REGION_FIXTURES = SupersetSidebarStatusFilter200PatchTest.REGION_FIXTURES
 
 
 class SupersetAsarIntegrityFuseTest(unittest.TestCase):

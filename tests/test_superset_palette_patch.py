@@ -771,6 +771,98 @@ class PaletteSearch140Test(unittest.TestCase):
             patch(half)
         self.assertEqual(patch(half, search=False)[1], SWAP_LABELS)
 
+
+# desktop-v2.0.0 (LUBOS-3343): regions 2 and 3 are re-pinned (cut from the real 2.0.0 layout-CIxrIwmN.js);
+# regions 1 and 4 are the 1.40 ones. The hotkey registry gains TOGGLE_RIGHT_PANE_FULL_SCREEN (Cmd+Shift+L).
+REGIONS_200 = MODULE.PALETTE_SEARCH_REGIONS_2_0
+STOCK_200 = [STOCK_140[0], *((FIXTURES / f"superset-2.0.0-palette-r{n}.js").read_bytes() for n in (2, 3)), STOCK_140[3]]
+PATCHED_200 = [PATCHED_140[0], *((FIXTURES / f"superset-2.0.0-palette-r{n}.patched.js").read_bytes() for n in (2, 3)), PATCHED_140[3]]
+HOTKEYS_200 = (FIXTURES / "superset-2.0.0-hotkeys-registry.js").read_bytes()
+HOTKEYS_200_PATCHED = (FIXTURES / "superset-2.0.0-hotkeys-registry.patched.js").read_bytes()
+
+
+def layout_chunk_200(regions=None, names=LAYOUT_NAMES):
+    regions = STOCK_200[1:] if regions is None else regions
+    return names + b"".join(r + spec.end + tail for spec, r, tail in zip(REGIONS_200[1:], regions, TAILS_138, strict=True))
+
+
+def bundle_200(layout=None):
+    return bundle_138(layout=layout_chunk_200() if layout is None else layout, hotkeys=HOTKEYS_200)
+
+
+class PaletteSearch200Test(unittest.TestCase):
+    """The 2.0.0 layout: the same injected JS, regions 2 and 3 re-pinned (LUBOS-3343)."""
+
+    # Value: protects=the 2.0 rewrites are exactly the reviewed fixtures, keep their length, re-run to nothing and parse, and reuse only the byte-identical 1.40 regions; region 2 trades the deleted dynamic-import comment for the host fan-out comment and keeps every other 1.40 edit; fails_when=an edit, the injected JS or a 2.0 digest changes without its fixture, or a reused region drifted on 2.0; why_new=LUBOS-3343; seam=real 2.0.0 bytes
+    def test_real_regions_are_pinned_idempotent_and_parseable(self):
+        for n, (region, old) in enumerate(zip(REGIONS_200, REGIONS_140, strict=True), 1):
+            self.assertEqual(region is old, n in (1, 4))
+        self.assertEqual(REGIONS_200[1].edits[1:], REGIONS_140[1].edits[1:])
+        self.assertEqual(REGIONS_200[1].edits[0][1], b"")
+        self.assertTrue(all(line.lstrip().startswith(b"// ") for line in REGIONS_200[1].edits[0][0].splitlines()))
+        self.assertEqual(REGIONS_200[2].edits, REGIONS_140[2].edits)
+        for region, stock, patched in zip(REGIONS_200, STOCK_200, PATCHED_200, strict=True):
+            with self.subTest(region=region.label):
+                self.assertEqual(len(stock), region.length)
+                self.assertEqual(hashlib.sha256(stock).hexdigest(), region.stock_sha256)
+                self.assertEqual(hashlib.sha256(patched).hexdigest(), region.patched_sha256)
+                self.assertEqual(MODULE._plan_region_rewrite(stock + region.end, region), [(0, stock, patched, region.label)])
+                self.assertEqual(MODULE._plan_region_rewrite(patched + region.end, region), [])
+                self.assertEqual((region.legacy_sha256, region.upgrades), ((), ()))
+                node_check(self, patched)
+
+    # Value: protects=the Cmd+K swap is the same two mac edits on the 2.0 registry, whose only change is the new TOGGLE_RIGHT_PANE_FULL_SCREEN entry; fails_when=2.0 binds Cmd+K or Cmd+Shift+K elsewhere, or the swap anchors drift; why_new=LUBOS-3343 (2.0 adds TOGGLE_RIGHT_PANE_FULL_SCREEN); seam=real 2.0.0 registry
+    def test_cmd_k_swap_on_the_2_0_registry(self):
+        start = HOTKEYS_200.index(b"  TOGGLE_RIGHT_PANE_FULL_SCREEN: {\n")
+        end = HOTKEYS_200.index(b"  OPEN_DIFF_VIEWER: {\n", start)
+        # The new entry takes Cmd+Shift+L from OPEN_DIFF_VIEWER, which moves to Cmd+Shift+G.
+        moved = (b'      mac: L$1("meta+shift+g"),\n      windows: L$1("ctrl+shift+alt+g"),\n      linux: L$1("ctrl+shift+alt+g")\n',
+                 b'      mac: L$1("meta+shift+l"),\n      windows: L$1("ctrl+shift+alt+l"),\n      linux: L$1("ctrl+shift+alt+l")\n')
+        rest = HOTKEYS_200[:start] + HOTKEYS_200[end:]
+        self.assertEqual(rest.count(moved[0]), 1)
+        self.assertEqual(rest.replace(*moved), HOTKEYS_140)
+        self.assertNotIn(b'"meta+k"', HOTKEYS_200[start:end])
+        self.assertNotIn(b'"meta+shift+k"', HOTKEYS_200[start:end])
+        swapped = bytearray(HOTKEYS_200)
+        for offset, old, new, _label in MODULE._plan_command_palette_cmd_k(HOTKEYS_200):
+            swapped[offset : offset + len(old)] = new
+        self.assertEqual(bytes(swapped), HOTKEYS_200_PATCHED)
+        self.assertEqual(MODULE._plan_command_palette_cmd_k(HOTKEYS_200_PATCHED), [])
+        node_check(self, HOTKEYS_200_PATCHED)
+
+    # Value: protects=the 2.0 bundle applies all four writes plus the Cmd+K swap, re-runs to nothing and reverts byte-identically, and each release picks its own layout; fails_when=the 2.0 layout is not selected or revert does not restore; why_new=LUBOS-3343; seam=temp ASAR
+    def test_apply_rerun_and_revert(self):
+        original = bundle_200()
+        self.assertEqual(MODULE._select_layout(original, MODULE.PALETTE_SEARCH_LAYOUTS, "command palette")[0], "2.0")
+        self.assertEqual(MODULE._select_layout(bundle_140(), MODULE.PALETTE_SEARCH_LAYOUTS, "command palette")[0], "1.40")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target, backups = root / "app.asar", root / "backups"
+            target.write_bytes(original)
+            options = dict(size=6, hide_tray=False, custom_project_icons=False, keep_icon_on_hover=False,
+                           command_palette_cmd_k=True, command_palette_workspace_search=True)
+            _backup, changes = MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options)
+            self.assertEqual(sorted(changes), sorted([r.label for r in REGIONS_200] + SWAP_LABELS))
+            patched = target.read_bytes()
+            self.assertEqual(len(patched), len(original))
+            for region, new in zip(REGIONS_200, PATCHED_200):
+                self.assertEqual(patched.count(new), 1, region.label)
+            self.assertEqual(patched.count(HOTKEYS_200_PATCHED), 1)
+            self.assertEqual(MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options), (None, []))
+            MODULE.revert(target, backups)
+            self.assertEqual(target.read_bytes(), original)
+
+    # Value: protects=a bundle mixing 1.40 and 2.0 palette regions, or half-patched 2.0 regions, fails closed before a write; fails_when=layout selection falls back per region or a partial 2.0 state is accepted; why_new=REBASE.md mixed-release rule (LUBOS-3343); seam=none
+    def test_mixed_release_or_generation_fails_closed(self):
+        mixed = bundle_200(layout=layout_chunk_200([STOCK_140[1], *STOCK_200[2:]]))
+        with self.assertRaisesRegex(RuntimeError, "command palette"):
+            patch(mixed)
+        half = bundle_200(layout=layout_chunk_200([PATCHED_200[1], *STOCK_200[2:]]))
+        with self.assertRaisesRegex(RuntimeError, "mix generations"):
+            patch(half)
+        self.assertEqual(patch(half, search=False)[1], SWAP_LABELS)
+
+
 @live_host_only("anchors, names and chunk syntax are checked against the Superset.app bundle installed on this host")
 class InstalledPaletteTest(unittest.TestCase):
     """The installed release still has the pinned stock bytes, and the patched chunks parse."""
