@@ -337,8 +337,8 @@ def _hidden_nav_variant(variant: tuple[bytes, bytes, str], prefix: str) -> bytes
 
 
 # --hide-nav-buttons (on top of --compact-sidebar, header generation 1.30+):
-# hide New Workspace, Search and Workspaces in the compact icon grid. The
-# remaining Automations, Tasks, Pull requests and Pages fill one row of the
+# hide New Workspace, Search, Workspaces and Pages in the compact icon grid. The
+# remaining Automations, Tasks, Pull requests and Plugins fill one row of the
 # four-column grid. Their keyboard shortcuts and the collapsed rail are
 # unchanged. Hidden is sticky: a run without the flag keeps an already hidden
 # button hidden (like --pinned-icon-only); --revert restores it.
@@ -348,6 +348,7 @@ HIDDEN_NAV_BUTTONS = {
         TOP_NAV_BUTTON_VARIANTS[1], "onPointerDown: handleSearchPointerDown, onClick: handleSearchClick, "
     ),
     "Workspaces": _hidden_nav_variant(TOP_NAV_BUTTON_VARIANTS[2], "onClick: handleWorkspacesClick, "),
+    "Pages": _hidden_nav_variant(TOP_NAV_BUTTON_VARIANTS[6], '"aria-current": isPagesOpen ? "page" : void 0, '),
 }
 
 
@@ -3120,10 +3121,259 @@ AUTOMATIONS_HEADER_LAYOUTS = (
 )
 
 
-def _plan_automations_header(data) -> list[tuple[int, bytes, bytes, str]]:
-    """Validate both automations chunks and return the region rewrites still needed."""
+def _plan_automations_header(data, view: bool = False) -> list[tuple[int, bytes, bytes, str]]:
+    """Validate both automations chunks and return the region rewrites still needed.
+
+    With `view`, or once --automations-view is applied (sticky), the page region
+    belongs to the view family, which writes the header edits too.
+    """
     _release, regions, _variants, chunks = _select_layout(data, AUTOMATIONS_HEADER_LAYOUTS, "automations header")
+    view = view or _automations_view_applied(data)
     _require_family_chunks(data, chunks, "automations header")
+    replacements = []
+    for region in regions:
+        if view and region.start == AUTOMATIONS_VIEW_PAGE.start:
+            continue
+        replacements.extend(_plan_region_rewrite(data, region))
+    if view:
+        replacements.extend(_plan_automations_view(data))
+    return replacements
+
+
+# --automations-view (needs --automations-header; desktop-v2.0.0). Builds on the
+# header family's page rewrite (AUTOMATIONS_VIEW_PAGE carries its edits and then
+# AUTOMATIONS_VIEW_PAGE_DELTA, and upgrades a page already at the header digest in
+# place), so the two flags never plan two writes for one region:
+# - a project list left of the page (`SahProjects`, it replaces the header's
+#   project dropdown): every project with an automation, with its icon and count,
+#   in the order the user drags them to (localStorage `sah-project-order`, the
+#   keys of the listed projects only, rewritten whole on each drop), Session and
+#   All projects. The page opens on the first group in that order; a selection
+#   whose project lost its last automation falls back to the first group.
+# - status chips below the stat cards (`SahChips`), styled like the sidebar's
+#   status chips: the last run failed / missed / running / succeeded / skipped,
+#   and paused automations. A chip at zero hides unless it is active. Click
+#   toggles (union), Option-click shows only that chip. They filter the table of
+#   the selected group, before the search.
+# - the page uses the full viewport width (no `max-w-5xl`), like the detail page.
+# - the automation detail page (AutomationBody) drops its Settings / Run History
+#   tabs: the settings fill the left column, Run History (the same
+#   PreviousRunsList) the right one.
+# Sticky like --hide-nav-buttons: a later run with --automations-header alone
+# keeps both regions; --revert undoes the step.
+AUTOMATIONS_VIEW_JS = b'''// patch-asar.py --automations-header --automations-view
+const sahKeyOf = (automation) => automation.v2ProjectId ?? "";
+function sahLoad() {
+  try {
+    const order = JSON.parse(localStorage.getItem("sah-project-order"));
+    return Array.isArray(order) ? order.filter((key) => typeof key === "string") : [];
+  } catch {
+    return [];
+  }
+}
+function sahOptions(automations, projectsById, order) {
+  const counts = new Map();
+  for (const a of automations) counts.set(sahKeyOf(a), (counts.get(sahKeyOf(a)) ?? 0) + 1);
+  const rank = (key) => order.indexOf(key) + 1 || 1e9;
+  return [...counts].map(([key, count]) => [key, projectsById.get(key), count]).sort(([a, p], [b, q]) => rank(a) - rank(b) || !a - !b || !p - !q || (p?.name ?? "").localeCompare(q?.name ?? ""));
+}
+function sahLabel([key, project]) {
+  const { jsx: h, jsxs: hs, Fragment } = jsxRuntimeExports;
+  return hs(Fragment, { children: [
+    project ? h(ProjectThumbnail, { projectName: project.name, iconUrl: project.iconUrl, className: "!size-5 shrink-0" }) : h("span", { className: "size-5 shrink-0" }),
+    h("span", { className: "truncate", children: key ? project?.name ?? "Unknown project" : h(Trans, { id: "CqO9qC" }) })
+  ] });
+}
+function SahProjects({ options, value, onValue, onOrder, total }) {
+  const { jsx: h, jsxs: hs } = jsxRuntimeExports;
+  const [drag, setDrag] = reactExports.useState(null);
+  const drop = (target) => {
+    const keys = options.map(([key]) => key);
+    const from = keys.indexOf(drag);
+    const to = keys.indexOf(target);
+    setDrag(null);
+    if (from < 0 || to < 0 || from === to) return;
+    keys.splice(to, 0, ...keys.splice(from, 1));
+    onOrder(keys);
+    try {
+      localStorage.setItem("sah-project-order", JSON.stringify(keys));
+    } catch {
+    }
+  };
+  const row = (key, selected, label, count, dnd) => hs("button", { type: "button", ...dnd, onClick: () => onValue(key), className: cn("flex h-8 w-full shrink-0 items-center gap-2 rounded-md px-2 text-left text-sm transition-colors", selected ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50 hover:text-foreground", drag === key && "opacity-50"), children: [
+    label,
+    h("span", { className: "ml-auto text-xs tabular-nums text-muted-foreground", children: count })
+  ] }, key);
+  return hs("nav", { "aria-label": "Automation projects", className: "flex w-56 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-border px-2 py-4", children: [
+    ...options.map(([key, project, count]) => row(key, key === value, sahLabel([key, project]), count, { draggable: true, onDragStart: () => setDrag(key), onDragEnd: () => setDrag(null), onDragOver: (event) => event.preventDefault(), onDrop: () => drop(key) })),
+    h("div", { className: "my-1 h-px shrink-0 bg-border" }),
+    row("*", value === null, h("span", { className: "truncate", children: "All projects" }), total)
+  ] });
+}
+function SahHeader({ search, onSearch }) {
+  const { jsx: h, jsxs: hs } = jsxRuntimeExports;
+  const { _: _t } = useLingui();
+  const navigate = useNavigate();
+  return hs("div", { className: "flex items-center gap-2", children: [
+    hs(Button, { type: "button", variant: "ghost", size: "sm", className: "h-8 gap-1.5 px-3 text-muted-foreground hover:text-foreground", onClick: () => navigate({ to: "/automations/runs", search: { scope: "all" } }), children: [
+      h("span", { children: h(Trans, { id: "R0NXcY" }) }),
+      h(LuArrowUpRight, { className: "size-3.5" })
+    ] }),
+    hs("div", { className: "relative", children: [
+      h(LuSearch, { className: "pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" }),
+      h(Input, { value: search, onChange: (e) => onSearch(e.target.value), placeholder: _t({ id: "A1taO8" }), "aria-label": _t({ id: "8dX1fH" }), className: "h-8 w-44 pl-8" })
+    ] })
+  ] });
+}
+'''
+# Room-only region (AutomationActionsMenuItems to AutomationStatCards): the chips.
+AUTOMATIONS_VIEW_ROOM_JS = b'''// patch-asar.py --automations-view
+const SAH_CHIPS = [[1, "Failed", "red"], [2, "Missed", "amber"], [4, "Running", "yellow"], [8, "Success", "emerald"], [16, "Skipped", "slate"], [32, "Paused", "neutral"]];
+function sahBits(automation, run) {
+  const s = run?.status;
+  return (s === "dispatch_failed" ? 1 : s === "skipped_offline" ? 2 : s === "dispatching" ? 4 : s === "dispatched" ? 8 : s ? 16 : 0) | (automation.enabled ? 0 : 32);
+}
+function SahChips({ items, lastRunById, mask, onMask }) {
+  const { jsx: h, jsxs: hs } = jsxRuntimeExports;
+  const chips = SAH_CHIPS.map(([bit, name, hue]) => [bit, name, `var(--color-${hue}-500)`, items.filter((a) => sahBits(a, lastRunById.get(a.id)) & bit).length]).filter(([bit, , , count]) => count || mask & bit);
+  return chips.length > 0 && h("div", { role: "group", "aria-label": "Automation status filter", className: "mt-4 flex flex-wrap items-center justify-end gap-1.5", children: chips.map(([bit, name, color, count]) => {
+    const on = (mask & bit) !== 0;
+    return hs("button", { type: "button", "aria-pressed": on, title: "Option-click: only this status", onClick: (event) => onMask(event.altKey ? mask === bit ? 0 : bit : mask ^ bit), style: on ? { backgroundColor: color, borderColor: color, color: "black" } : { borderColor: color }, className: cn("flex h-6 items-center gap-1.5 rounded-full border px-2.5 text-xs font-medium tabular-nums transition-colors", !on && "text-muted-foreground hover:bg-fill-hover", !count && "opacity-40"), children: [
+      h("span", { className: "size-1.5 shrink-0 rounded-full", style: { backgroundColor: on ? "currentColor" : color } }),
+      name,
+      count
+    ] }, bit);
+  }) });
+}
+'''
+# Edits on the header family's page rewrite (its own output, comments already gone).
+AUTOMATIONS_VIEW_PAGE_DELTA = (
+    (
+        b"  const [sahProject, setSahProject] = reactExports.useState(null);\n",
+        b"  const [sahProject, setSahProject] = reactExports.useState(null);\n"
+        b"  const [sahMask, setSahMask] = reactExports.useState(0);\n"
+        b"  const [sahOrder, setSahOrder] = reactExports.useState(sahLoad);\n",
+    ),
+    (
+        b"  const sahProjects = reactExports.useMemo(() => sahOptions(automations, projectsById), [automations, projectsById]);\n"
+        b"  const sahKey = sahProjects.some(([key]) => key === sahProject) ? sahProject : null;\n",
+        b"  const sahProjects = reactExports.useMemo(() => sahOptions(automations, projectsById, sahOrder), [automations, projectsById, sahOrder]);\n"
+        b'  const sahKey = sahProject === "*" ? null : sahProjects.some(([key]) => key === sahProject) ? sahProject : sahProjects[0]?.[0] ?? null;\n',
+    ),
+    (
+        b"    if (!query) return tabVisible;\n"
+        b"    return tabVisible.filter((a) => a.name.toLowerCase().includes(query));\n"
+        b"  }, [tabVisible, search]);\n",
+        b"    return tabVisible.filter((a) => (!sahMask || sahBits(a, lastRunById.get(a.id)) & sahMask) && a.name.toLowerCase().includes(query));\n"
+        b"  }, [tabVisible, search, sahMask, lastRunById]);\n",
+    ),
+    (
+        b"jsxRuntimeExports.jsx(SahHeader, { options: sahProjects, value: sahKey, onValue: setSahProject, search, onSearch: setSearch })",
+        b"jsxRuntimeExports.jsx(SahHeader, { search, onSearch: setSearch })",
+    ),
+    (
+        b'    jsxRuntimeExports.jsx("div", { className: "min-h-0 flex-1 overflow-y-auto", children: jsxRuntimeExports.jsxs("div", '
+        b'{ className: "mx-auto flex min-h-full w-full max-w-5xl flex-col px-8 pt-4 pb-12", children: [\n',
+        b'    jsxRuntimeExports.jsxs("div", { className: "flex min-h-0 flex-1", children: [sahProjects.length > 0 && '
+        b"jsxRuntimeExports.jsx(SahProjects, { options: sahProjects, value: sahKey, onValue: setSahProject, onOrder: setSahOrder, "
+        b'total: automations.length }), jsxRuntimeExports.jsx("div", { className: "min-h-0 min-w-0 flex-1 overflow-y-auto", '
+        b'children: jsxRuntimeExports.jsxs("div", { className: "flex min-h-full w-full flex-col px-8 pt-4 pb-12", children: [\n',
+    ),
+    (
+        b"    ] }) }),\n    jsxRuntimeExports.jsx(HostOfflineRunDialog, ",
+        b"    ] }) })] }),\n    jsxRuntimeExports.jsx(HostOfflineRunDialog, ",
+    ),
+    (
+        b'      jsxRuntimeExports.jsx("div", { className: cn("mt-6", tabEmpty && "flex flex-1 flex-col"), ',
+        b"      jsxRuntimeExports.jsx(SahChips, { items: tabVisible, lastRunById, mask: sahMask, onMask: setSahMask }),\n"
+        b'      jsxRuntimeExports.jsx("div", { className: cn("mt-3", tabEmpty && "flex flex-1 flex-col"), ',
+    ),
+    (AUTOMATIONS_HEADER_JS, AUTOMATIONS_VIEW_JS),
+)
+_AUTOMATIONS_HEADER_PAGE_1_40 = AUTOMATIONS_HEADER_REGIONS_1_40[1]
+AUTOMATIONS_VIEW_PAGE = replace(
+    _AUTOMATIONS_HEADER_PAGE_1_40,
+    label="automations view: project list, status chips, full width",
+    patched_sha256="26d32390d60e6938ab55950f4139e694b5ff233064d77b9f39eb0ebb4c5b9175",
+    edits=_AUTOMATIONS_HEADER_PAGE_1_40.edits + AUTOMATIONS_VIEW_PAGE_DELTA,
+    upgrades=((_AUTOMATIONS_HEADER_PAGE_1_40.patched_sha256, AUTOMATIONS_VIEW_PAGE_DELTA),),
+)
+# The Settings / Run History tab row of AutomationBody, without its no-op comments.
+AUTOMATIONS_DETAIL_TABS = (
+    b'    jsxRuntimeExports.jsx("div", { className: "mt-6 mb-6 flex items-center gap-1", children: [{\n'
+    b'      value: "settings",\n      label: _t(\n        \n        {\n          id: "Tz0i8g"\n        }\n      )\n    }, {\n'
+    b'      value: "runs",\n      label: _t(\n        \n        {\n          id: "haZgbw"\n        }\n      )\n'
+    b'    }].map((tabOption) => jsxRuntimeExports.jsx("button", { type: "button", onClick: () => setTab(tabOption.value), '
+    b'className: cn("rounded-md px-3 py-1.5 text-sm transition-colors", tab === tabOption.value ? '
+    b'"bg-accent font-medium text-foreground" : "text-muted-foreground hover:text-foreground"), '
+    b"children: tabOption.label }, tabOption.value)) }),\n"
+    b'    tab === "settings" ? jsxRuntimeExports.jsxs("fieldset", { disabled: readOnly, className: "contents", children: [\n'
+)
+AUTOMATIONS_VIEW_DETAIL = RegionRewrite(
+    label="automations view: detail settings and run history side by side",
+    start=b"function AutomationBody({\n",
+    end=b"function AutomationBreadcrumbBar({\n",
+    length=9534,
+    stock_sha256="ef3d7a0b1552bcf7bbfcb498728645d81c3a9220960f861613d60e290066b52f",
+    patched_sha256="5e6e566a98393f9d58915ab124112bf2511f3fd6325233ca1075398f68419676",
+    edits=(
+        (
+            AUTOMATIONS_DETAIL_TABS,
+            b'    jsxRuntimeExports.jsxs("div", { className: "mt-6 flex items-start gap-8", children: [jsxRuntimeExports.jsxs("fieldset", '
+            b'{ disabled: readOnly, className: "flex min-w-0 flex-1 flex-col", children: [\n',
+        ),
+        (
+            b"    ] }) : jsxRuntimeExports.jsx(PreviousRunsList, { runs: recentRuns, hasMore: hasMoreRuns, "
+            b"isLoadingMore: isLoadingMoreRuns, onLoadMore: onLoadMoreRuns })\n",
+            b'    ] }), jsxRuntimeExports.jsxs("aside", { className: "w-96 shrink-0", children: [jsxRuntimeExports.jsx("h2", '
+            b'{ className: "mb-2 px-2 text-sm text-muted-foreground", children: _t({ id: "haZgbw" }) }), '
+            b"jsxRuntimeExports.jsx(PreviousRunsList, { runs: recentRuns, hasMore: hasMoreRuns, "
+            b"isLoadingMore: isLoadingMoreRuns, onLoadMore: onLoadMoreRuns })] })] })\n",
+        ),
+    ),
+)
+AUTOMATIONS_VIEW_ROOM = RegionRewrite(
+    label="automations view: room for the status chips",
+    start=b"function AutomationActionsMenuItems({\n",
+    end=b"const WEEKDAYS_9AM = ",
+    length=17788,
+    stock_sha256="4d5c2a564a589c5f7483b851683ca7954bccef5545870ba98118d43ed2d350fb",
+    patched_sha256="d393365fa71c0dc9fb0ad2e6b382afd883df9646646f6fe855cc4b11451c70d6",
+    edits=(
+        _insert_after(b"jsxRuntimeExports.jsx(RunSparkline, { buckets })\n    ] })\n  ] });\n}\n", AUTOMATIONS_VIEW_ROOM_JS),
+    ),
+)
+AUTOMATIONS_VIEW_REGIONS = (AUTOMATIONS_VIEW_PAGE, AUTOMATIONS_VIEW_ROOM, AUTOMATIONS_VIEW_DETAIL)
+AUTOMATIONS_VIEW_CHUNKS = (
+    (
+        AUTOMATIONS_VIEW_REGIONS[:2],
+        (
+            "jsxRuntimeExports", "reactExports", "cn", "useLingui", "useNavigate", "Trans", "Button", "Input",
+            "LuSearch", "LuArrowUpRight", "ProjectThumbnail", "FeatureHeader", "useFailedAutomations",
+        ),
+        ("sahKeyOf", "SAH_CHIPS", "sahBits", "sahLoad", "sahOptions", "sahLabel", "SahProjects", "SahChips", "SahHeader"),
+    ),
+    (AUTOMATIONS_VIEW_REGIONS[2:], ("jsxRuntimeExports", "cn"), ()),
+)
+AUTOMATIONS_VIEW_LAYOUTS = (("2.0", AUTOMATIONS_VIEW_REGIONS, (), AUTOMATIONS_VIEW_CHUNKS),)
+
+
+def _region_digest(data, region: RegionRewrite) -> str | None:
+    """SHA-256 of the region's bytes at its pinned length, or None when its start is not unique."""
+    offsets = _find_all(data, region.start)
+    if len(offsets) != 1:
+        return None
+    return hashlib.sha256(bytes(data[offsets[0] : offsets[0] + region.length])).hexdigest()
+
+
+def _automations_view_applied(data) -> bool:
+    return _region_digest(data, AUTOMATIONS_VIEW_PAGE) == AUTOMATIONS_VIEW_PAGE.patched_sha256
+
+
+def _plan_automations_view(data) -> list[tuple[int, bytes, bytes, str]]:
+    """Validate the automations page and detail chunks and return the view rewrites still needed."""
+    _release, regions, _variants, chunks = _select_layout(data, AUTOMATIONS_VIEW_LAYOUTS, "automations view")
+    _require_family_chunks(data, chunks, "automations view")
     replacements = []
     for region in regions:
         replacements.extend(_plan_region_rewrite(data, region))
@@ -4477,6 +4727,7 @@ RELEASE_PROBES = (
     ("status filter", STATUS_FILTER_LAYOUTS),
     ("command palette", PALETTE_SEARCH_LAYOUTS),
     ("automations header", AUTOMATIONS_HEADER_LAYOUTS),
+    ("automations view", AUTOMATIONS_VIEW_LAYOUTS),
     ("sidebar device filter", SIDEBAR_DEVICE_LAYOUTS),
     ("desktop pin sync", DESKTOP_PIN_LAYOUTS),
     ("desktop preset sync", DESKTOP_PRESET_LAYOUTS),
@@ -4556,6 +4807,7 @@ def plan_replacements(
     command_palette_workspace_search: bool = False,
     status_filter_hotkeys: bool = False,
     automations_header: bool = False,
+    automations_view: bool = False,
     sidebar_device_filter: bool = False,
     desktop_pin_sync: bool = False,
     desktop_preset_sync: bool = False,
@@ -4573,6 +4825,8 @@ def plan_replacements(
         raise ValueError("--hide-nav-buttons needs --compact-sidebar")
     if status_filter_hotkeys and not sidebar_status_filter:
         raise ValueError("--status-filter-hotkeys needs --sidebar-status-filter")
+    if automations_view and not automations_header:
+        raise ValueError("--automations-view needs --automations-header")
 
     replacements = []
 
@@ -4845,7 +5099,7 @@ def plan_replacements(
         replacements.extend(_plan_command_palette_workspace_search(data))
 
     if automations_header:
-        replacements.extend(_plan_automations_header(data))
+        replacements.extend(_plan_automations_header(data, view=automations_view))
 
     if sidebar_device_filter:
         replacements.extend(_plan_sidebar_device_filter(data))
@@ -5188,7 +5442,7 @@ def main(argv=None):
     parser.add_argument(
         "--hide-nav-buttons",
         action="store_true",
-        help="with --compact-sidebar: hide the New Workspace, Search and Workspaces icons",
+        help="with --compact-sidebar: hide the New Workspace, Search, Workspaces and Pages icons",
     )
     parser.add_argument(
         "--hide-sidebar-footer",
@@ -5215,6 +5469,12 @@ def main(argv=None):
         "--automations-header",
         action="store_true",
         help="Automations page: one list without the Mine / Team tabs; project filter, All runs and search in the header row",
+    )
+    parser.add_argument(
+        "--automations-view",
+        action="store_true",
+        help="with --automations-header (2.0): project list on the left (drag to reorder, opens on the first), status chips, "
+        "full width; the automation detail shows Run History right of the settings",
     )
     parser.add_argument(
         "--sidebar-device-filter",
@@ -5270,6 +5530,7 @@ def main(argv=None):
             command_palette_workspace_search=args.command_palette_workspace_search,
             status_filter_hotkeys=args.status_filter_hotkeys,
             automations_header=args.automations_header,
+            automations_view=args.automations_view,
             sidebar_device_filter=args.sidebar_device_filter,
             desktop_pin_sync=args.desktop_pin_sync,
             desktop_preset_sync=args.desktop_preset_sync,

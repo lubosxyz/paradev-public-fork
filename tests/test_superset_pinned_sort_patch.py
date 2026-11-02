@@ -445,7 +445,7 @@ class CompositionTest(unittest.TestCase):
                 region, stock = by_start[region.end]
                 chain += stock
             chains.append(chain + region.end)
-        base = icon_tests.SupersetHideNavButtonsPatchTest("test_three_buttons_are_hidden_and_the_rest_stay").stock_bundle()
+        base = icon_tests.SupersetHideNavButtonsPatchTest("test_four_buttons_are_hidden_and_the_rest_stay").stock_bundle()
         # 1.39 regions name the new sidebar: with_row_pair brings the real row pair, pinned anchors included.
         pinned = [] if release == "1.39" else [self.PINNED.STOCK_THUMBNAIL, self.PINNED.STOCK_PREFIX]
         return icon_tests.with_row_pair(b"|".join([base, *chains, device_tests.MOUNT + cloud, *pinned, hotkeys]))

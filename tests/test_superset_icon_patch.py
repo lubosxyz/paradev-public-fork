@@ -823,6 +823,7 @@ class SupersetUiPatchTest(unittest.TestCase):
             command_palette_workspace_search=False,
             status_filter_hotkeys=False,
             automations_header=False,
+            automations_view=False,
             sidebar_device_filter=False,
             desktop_pin_sync=False,
             desktop_preset_sync=False,
@@ -3197,8 +3198,8 @@ class SupersetHideNavButtonsPatchTest(unittest.TestCase):
             compact_sidebar=True, hide_nav_buttons=hide,
         )
 
-    # Value: protects=the three buttons become equal-length `hidden` buttons and the other grid cells stay icon buttons; fails_when=a hidden variant changes length, keeps a visible class or hides the wrong button; why_new=Lubos 2026-10-09 does not use these three icons; seam=none
-    def test_three_buttons_are_hidden_and_the_rest_stay(self):
+    # Value: protects=the four buttons become equal-length `hidden` buttons and the other grid cells stay icon buttons; fails_when=a hidden variant changes length, keeps a visible class or hides the wrong button; why_new=Lubos 2026-10-09 does not use the first three icons, 2026-11-02 Pages; seam=none
+    def test_four_buttons_are_hidden_and_the_rest_stay(self):
         original = self.stock_bundle()
 
         patched, changes = self.patch(original, hide=True)
@@ -3209,9 +3210,10 @@ class SupersetHideNavButtonsPatchTest(unittest.TestCase):
                 self.assertIn(hidden, patched)
                 self.assertIn(f'title: "{title}", className: "hidden"'.encode(), hidden)
                 self.assertIn(f"sidebar: {title} hidden", changes)
-        self.assertEqual(sorted(MODULE.HIDDEN_NAV_BUTTONS), ["New Workspace", "Search", "Workspaces"])
+        self.assertEqual(sorted(MODULE.HIDDEN_NAV_BUTTONS), ["New Workspace", "Pages", "Search", "Workspaces"])
         for _source, target, title in MODULE.TOP_NAV_BUTTON_VARIANTS[3:]:
-            self.assertIn(target, patched, title)
+            if title not in MODULE.HIDDEN_NAV_BUTTONS:
+                self.assertIn(target, patched, title)
 
     # Value: protects=hidden is sticky and idempotent: a re-run with or without the flag keeps it, and the compact patch still upgrades a stock bundle without the flag; fails_when=a routine re-apply without the flag un-hides the buttons or fails on the hidden bytes; why_new=new flag; seam=none
     def test_hidden_is_sticky_and_idempotent(self):
@@ -3226,7 +3228,18 @@ class SupersetHideNavButtonsPatchTest(unittest.TestCase):
             self.assertNotIn(hidden_variant, shown)
         upgraded, changes = self.patch(shown, hide=True)
         self.assertEqual(upgraded, hidden)
-        self.assertEqual(len(changes), 3)
+        self.assertEqual(len(changes), 4)
+
+    # Value: protects=a bundle hidden by the three-button generation (the live state before Pages joined) gains only the Pages write; fails_when=the earlier hidden bytes are refused or rewritten; why_new=Lubos 2026-11-02 hides Pages; seam=none
+    def test_three_button_generation_gains_pages(self):
+        hidden, _changes = self.patch(self.stock_bundle(), hide=True)
+        pages_source, pages_icon, _title = MODULE.TOP_NAV_BUTTON_VARIANTS[6]
+        earlier = hidden.replace(MODULE.HIDDEN_NAV_BUTTONS["Pages"], pages_icon)
+        self.assertNotEqual(earlier, hidden)
+        upgraded, changes = self.patch(earlier, hide=True)
+        self.assertEqual(changes, ["sidebar: Pages hidden"])
+        self.assertEqual(upgraded, hidden)
+        self.assertEqual(self.patch(earlier, hide=False)[1], [])
 
     # Value: protects=the flag refuses to run without the compact grid or on a pre-1.30 header it has no variant for; fails_when=the guard is dropped and the flag silently does nothing or patches the wrong button; why_new=new flag; seam=none
     def test_flag_needs_compact_sidebar_and_a_1_30_header(self):
@@ -4277,7 +4290,7 @@ class SupersetStatusFilterGenerationsTest(unittest.TestCase):
     # Value: protects=every --hide-nav-buttons entry names a real header button; fails_when=a key is mistyped or an upstream title is renamed, so HIDDEN_NAV_BUTTONS.get(title) misses and the button silently stays visible; why_new=the map mixes positional variants with string keys; seam=none
     def test_hidden_nav_keys_match_real_button_titles(self):
         titles = {variant[2] for variant in (*MODULE.TOP_NAV_BUTTON_VARIANTS, MODULE.TOP_NAV_NEW_WORKSPACE_1_30)}
-        self.assertEqual(set(MODULE.HIDDEN_NAV_BUTTONS), {"New Workspace", "Search", "Workspaces"})
+        self.assertEqual(set(MODULE.HIDDEN_NAV_BUTTONS), {"New Workspace", "Search", "Workspaces", "Pages"})
         self.assertLessEqual(set(MODULE.HIDDEN_NAV_BUTTONS), titles)
 
 

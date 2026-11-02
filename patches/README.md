@@ -85,10 +85,11 @@ bundle plus a length-preserving inline `gridTemplateColumns` declaration
 the archive.
 
 `--hide-nav-buttons` (needs `--compact-sidebar`, header generation 1.30+)
-hides three of those icons: New Workspace, Search and Workspaces. Their
-`className` becomes `"hidden"`, padded to the same length
-(`HIDDEN_NAV_BUTTONS`), so the remaining Automations, Tasks, Pull requests and
-Pages fill one row of the four-column grid. Keyboard shortcuts (New Workspace,
+hides four of those icons: New Workspace, Search, Workspaces and (since
+2026-11-02) Pages. Their `className` becomes `"hidden"`, padded to the same
+length (`HIDDEN_NAV_BUTTONS`), so the remaining Automations, Tasks, Pull
+requests and Plugins fill one row of the four-column grid. A bundle hidden by
+the three-button generation gains only the Pages write on the next run. Keyboard shortcuts (New Workspace,
 ⌘K search) and the collapsed icon rail are unchanged. Hidden is sticky: a later
 run without the flag keeps the buttons hidden, so a routine re-apply never
 brings them back; `--revert` restores them.
@@ -894,6 +895,46 @@ Two hash-pinned regions in two chunks (`FeatureHeader-*.js`, the automations
 page (upstream's Last run sort) with the same edits, and 2.0.0 keeps both
 regions byte for byte (layout `1.40,2.0`). The tab row is deleted
 whole (`AUTOMATIONS_TAB_ROW`, its stock bytes without the no-op comments).
+
+### Automations view (opt-in, desktop-v2.0.0)
+
+`--automations-view` (needs `--automations-header`) reshapes the automations
+pages further. Opt-in and sticky like the flags above: a later run with
+`--automations-header` alone keeps it, `--revert` undoes the step.
+
+- **Project list.** A column left of the list page (`SahProjects`) replaces the
+  header's project dropdown: every project with at least one automation, with
+  its icon and count, then **Session**, a separator and **All projects**. Drag a
+  row onto another to move it there; the order is stored in localStorage
+  `sah-project-order` (the keys of the listed projects only, rewritten whole on
+  each drop, so it is bounded by the project count). Projects without a stored
+  place follow by name. The page opens on the first group every time the
+  section is opened; a selection whose project lost its last automation falls
+  back to the first group. The **Automations** stat card follows the group.
+- **Status chips.** A row below the stat cards (`SahChips`), styled like the
+  sidebar status chips: **Failed**, **Missed**, **Running**, **Success**,
+  **Skipped** (debounced or rejected) by the last run (`useFailedAutomations`
+  `lastRunById`), and **Paused**. Counts cover the selected group; a chip at
+  zero hides unless it is active. Click toggles a chip (union), Option-click
+  shows only that chip. The search narrows the chip-filtered table. Component
+  state, not persisted.
+- **Full width.** The list page drops `max-w-5xl`, like the detail page.
+- **Detail page.** `AutomationBody` drops its Settings / Run History tabs: the
+  settings fill the left column and **Run History** (upstream's
+  `PreviousRunsList`, with Load more) a 24 rem column on the right.
+
+Three hash-pinned regions in two chunks: the list page region of
+`--automations-header` (`AUTOMATIONS_VIEW_PAGE` carries the header edits and
+then `AUTOMATIONS_VIEW_PAGE_DELTA`; a page at the header digest upgrades in
+place, so both flags never plan two writes for one region), a room-only region
+from `AutomationActionsMenuItems` to `AutomationStatCards` in the same chunk
+(the chips) and `AutomationBody` in the detail `page-*.js` chunk. Only the 2.0.0
+layout exists: on 1.40 the flag fails closed before a write. Tests:
+`tests/test_superset_automations_view_patch.py` (pins, upgrade, sticky,
+fail-closed, names, apply / re-run / revert, the installed bundle and its CSS)
+and `tests/automations_view.test.mjs` (the real patched page and detail
+rendered with stubbed React: first group, drag order, chips, side-by-side
+detail).
 
 ### Sidebar device filter (opt-in, desktop-v1.37.0–v2.0.0)
 
