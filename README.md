@@ -1,10 +1,10 @@
 # local-patches — Superset desktop patch tooling (orphan branch)
 
-Orphan branch v privátním mirroru `lubosxyz/superset-private-fork`. **Neobsahuje app source** — jen lokální tooling pro patchování shipnuté desktop binárky (`/Applications/Superset.app`). Source-level patch práce (terminal render repair, presety, …) žije ve zdrojových branchích tohohle repa (`agent/fix-*`, `build/*`, `integration/pr-5705-*`, `fix/pr-5705-*`, `port-replay-ack-1.17`).
+Orphan branch v privátním mirroru `lubosxyz/paradev-private-fork` (do 3. 11. 2026 `superset-private-fork`; upstream se přejmenoval na Paradev, GitHub drží redirect). **Neobsahuje app source** — jen lokální tooling pro patchování shipnuté desktop binárky (`/Applications/Superset.app`). Source-level patch práce (terminal render repair, presety, …) žije ve zdrojových branchích tohohle repa (`agent/fix-*`, `build/*`, `integration/pr-5705-*`, `fix/pr-5705-*`, `port-replay-ack-1.17`).
 
 ## Umístění a mirror (rozhodnutí LUBOS-2292, 2026-10-13)
 
-- `main` tohohle repa je mirror veřejného forku (`lubosxyz/superset-public-fork` `main` = `private/main`, ověřeno 2026-10-13 na `a225f5a29`). Synchronizuje se ručně pushem z public forku; žádná automatizace ho nepřepisuje. Do `main` proto nic z tohoto toolingu nepatří, jinak by se mirror rozešel s upstreamem.
+- `main` tohohle repa je mirror veřejného forku (`lubosxyz/paradev-public-fork` `main` = `private/main`, ověřeno 2026-10-13 na `a225f5a29`). Synchronizuje se ručně pushem z public forku; žádná automatizace ho nepřepisuje. Do `main` proto nic z tohoto toolingu nepatří, jinak by se mirror rozešel s upstreamem.
 - Tooling žije na **orphan větvi `local-patches`**. Nesdílí historii s `main`, takže sync mirroru ji nikdy neovlivní a ona nikdy neovlivní mirror. PR pro tooling míří do `local-patches`, ne do `main` ani výchozí větve repa.
 - Worktree této větve může sdílet clone s monorepo větvemi. Jejich ignorované artefakty (`node_modules/`, `apps/`, `packages/`, `superset-dev-data/` včetně lokálního auth tokenu) po checkoutu zůstanou na disku; `.gitignore` je drží mimo commit.
 
@@ -60,8 +60,8 @@ Jako landing bránu ji spouštěj pod host admission (třída shared):
 
 ```sh
 python3 ~/.claude/runtime/dev-setup-dashboard/current/hooks/gate_lock.py run \
-  --sha "$(git rev-parse HEAD)" --toolchain superset-desktop-patches --class shared \
-  --project superset-private-fork -- scripts/gate.sh   # nebo scripts/gate.sh --live
+  --sha "$(git rev-parse HEAD)" --toolchain paradev-desktop-patches --class shared \
+  --project paradev-private-fork -- scripts/gate.sh   # nebo scripts/gate.sh --live
 ```
 
 `.gate.json` deklaruje `remote: never`: live testy patří na hostitele s nainstalovanou aplikací a `origin` tohoto clone je veřejný fork, ne tohle repo.
