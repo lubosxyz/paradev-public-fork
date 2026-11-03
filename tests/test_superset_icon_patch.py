@@ -3164,11 +3164,11 @@ class SupersetSidebarStatusFilter200PatchTest(SupersetSidebarStatusFilter140Patc
 
     # Value: protects=each release is planned with its own layout; fails_when=the 2.0 bundle is planned with 1.40 regions or the other way round; why_new=LUBOS-3343; seam=none
     def test_each_release_selects_its_own_layout(self):
-        self.assertEqual(MODULE.status_filter_layout(self.stock_bundle())[0], "2.0")
+        self.assertEqual(MODULE.status_filter_layout(self.stock_bundle())[0], "2.0.0")
         earlier = SupersetSidebarStatusFilter140PatchTest("test_status_filter_is_idempotent").stock_bundle()
         self.assertEqual(MODULE.status_filter_layout(earlier)[0], "1.40")
         patched, _changes = self.patch(self.stock_bundle())
-        self.assertEqual(MODULE.status_filter_layout(patched)[0], "2.0")
+        self.assertEqual(MODULE.status_filter_layout(patched)[0], "2.0.0")
 
     # Value: protects=a bundle mixing 1.40 and 2.0 region bytes fails closed instead of patching half of each; fails_when=layout selection falls back per region; why_new=REBASE.md mixed-release rule; seam=none
     def test_mixed_release_bundle_fails_closed(self):
@@ -3178,6 +3178,181 @@ class SupersetSidebarStatusFilter200PatchTest(SupersetSidebarStatusFilter140Patc
         self.assertNotEqual(mixed, self.stock_bundle())
         with self.assertRaisesRegex(RuntimeError, "status filter"):
             self.patch(mixed)
+
+
+def _fixture_2_0_3(kind: str, n: int, suffix: str = ".js") -> Path:
+    """The 2.0.3 cut of region n, or the 2.0.0 one (or earlier) it is byte-identical to."""
+    path = FIXTURES / f"superset-2.0.3-{kind}-r{n}{suffix}"
+    return path if path.exists() else _fixture_2_0(kind, n, suffix)
+
+
+class SupersetSidebarStatusFilter203PatchTest(SupersetSidebarStatusFilter200PatchTest):
+    """The same filter on the desktop-v2.0.3 layout (LUBOS-3874): every inherited test runs on the 2.0.3 regions.
+
+    2.0.3 adds the Channels / Devs sections, a pause-notifications submenu and a copy
+    submenu away from the edits. Regions 3, 5, 9, 12 and 13 are cut from desktop-v2.0.3
+    layout-BYRub7cl.js; region 10 keeps its bytes but ends at ChannelContextMenu; regions
+    1, 2, 4, 6-8, 11 and 14 are byte-identical to 2.0.0.
+    """
+
+    REGIONS = MODULE.STATUS_FILTER_REGIONS_2_0_3
+    PALETTE_REGIONS = MODULE.PALETTE_SEARCH_REGIONS_2_0_3
+    PALETTE_FIXTURES = ["superset-1.37.0-palette-r1.js", "superset-2.0.0-palette-r2.js", "superset-2.0.3-palette-r3.js", "superset-2.0.3-palette-r4.js"]
+    REGION_FIXTURES = [_fixture_2_0_3("status-filter", n) for n in range(1, 15)]
+    PATCHED_FIXTURES = [_fixture_2_0_3("status-filter", n, ".patched.js") for n in range(1, 15)]
+
+    # Value: protects=the 2.0.3 regions are pinned on the real 2.0.3 bytes and reuse only the 2.0.0 regions that are byte-identical there; fails_when=a 2.0.3 fixture is missing, a reused 2.0.0 region drifted, or a 2.0.3 region inherits a legacy / upgrade digest that never ran on 2.0.3; why_new=LUBOS-3874 release layout; seam=real 2.0.3 bytes
+    def test_layout_reuses_identical_regions_and_has_no_earlier_generations(self):
+        earlier = MODULE.STATUS_FILTER_REGIONS_2_0
+        self.assertEqual(len(self.REGIONS), 14)
+        rebased = {3, 5, 9, 12, 13}
+        for n, region in enumerate(self.REGIONS, 1):
+            with self.subTest(region=n):
+                self.assertEqual(self.REGION_FIXTURES[n - 1].name.startswith("superset-2.0.3-"), n in rebased)
+                if n in rebased:
+                    self.assertEqual((region.legacy_sha256, region.upgrades), ((), ()))
+                    self.assertEqual((region.start, region.end, region.edits), (earlier[n - 1].start, earlier[n - 1].end, earlier[n - 1].edits))
+                    self.assertNotEqual(region.stock_sha256, earlier[n - 1].stock_sha256)
+                elif n == 10:
+                    # The section header keeps its bytes; only its end anchor moved (it moved up the chunk).
+                    self.assertEqual((region.start, region.length, region.stock_sha256, region.patched_sha256, region.edits),
+                                     (earlier[9].start, earlier[9].length, earlier[9].stock_sha256, earlier[9].patched_sha256, earlier[9].edits))
+                    self.assertEqual(region.end, b"function ChannelContextMenu({\n")
+                    self.assertEqual((region.legacy_sha256, region.upgrades), ((), ()))
+                else:
+                    self.assertIs(region, earlier[n - 1])
+
+    # Value: protects=the chip row stays between the PROJECTS header and the scroller while 2.0.3 mounts its Channels / Devs sections inside the scroller; fails_when=the 2.0.3 region 3 edit lands the chip row inside the scroller or after the new sections; why_new=LUBOS-3874 (2.0.3 adds sections to region 3); seam=real 2.0.3 region 3
+    def test_chip_row_stays_above_the_new_sections(self):
+        stock = self.REGION_FIXTURES[2].read_bytes()
+        patched = self.PATCHED_FIXTURES[2].read_bytes()
+        sections = (b"jsx(DashboardSidebarChannelsSection, {})", b"jsx(DashboardSidebarDevsSection, {})")
+        for name in sections:
+            self.assertEqual((stock.count(name), patched.count(name)), (1, 1), name)
+        chips = patched.index(b"jsxRuntimeExports.jsx(SsfStatusChips, {")
+        self.assertLess(patched.index(b"jsxRuntimeExports.jsx(DashboardSidebarHeader, { isCollapsed })"), chips)
+        scroller = patched.index(b"jsxRuntimeExports.jsxs(OverflowFadeContainer, {")
+        self.assertLess(chips, scroller)
+        self.assertLess(scroller, patched.index(sections[0]))
+
+    # Value: protects=each release is planned with its own layout; fails_when=the 2.0.3 bundle is planned with 2.0.0 regions or the other way round; why_new=LUBOS-3874; seam=none
+    def test_each_release_selects_its_own_layout(self):
+        self.assertEqual(MODULE.status_filter_layout(self.stock_bundle())[0], "2.0.3")
+        earlier = SupersetSidebarStatusFilter200PatchTest("test_status_filter_is_idempotent").stock_bundle()
+        self.assertEqual(MODULE.status_filter_layout(earlier)[0], "2.0.0")
+        patched, _changes = self.patch(self.stock_bundle())
+        self.assertEqual(MODULE.status_filter_layout(patched)[0], "2.0.3")
+
+    # Value: protects=a bundle mixing 2.0.0 and 2.0.3 region bytes (the 2.0.2 shape) fails closed instead of patching half of each; fails_when=layout selection falls back per region; why_new=REBASE.md mixed-release rule; seam=none
+    def test_mixed_release_bundle_fails_closed(self):
+        for n in (3, 5, 9, 12, 13):
+            with self.subTest(region=n):
+                stock_200 = SupersetSidebarStatusFilter200PatchTest.REGION_FIXTURES[n - 1].read_bytes()
+                stock_203 = self.REGION_FIXTURES[n - 1].read_bytes()
+                mixed = self.stock_bundle().replace(stock_203, stock_200)
+                self.assertNotEqual(mixed, self.stock_bundle())
+                with self.assertRaisesRegex(RuntimeError, "status filter"):
+                    self.patch(mixed)
+
+    # Value: protects=every patched 2.0.3 region is valid JavaScript on its own; fails_when=an edit lands mid-expression in the re-cut 2.0.3 bytes; why_new=LUBOS-3874 acceptance (node --check per patched chunk); seam=node
+    def test_patched_fixtures_parse(self):
+        import shutil
+        import subprocess
+
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        for n in (3, 5, 9, 12, 13):
+            path = self.PATCHED_FIXTURES[n - 1]
+            with self.subTest(region=n):
+                result = subprocess.run([node, "--check", str(path)], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class SupersetProjectIconEnvironments203Test(unittest.TestCase):
+    """--custom-project-icons on the 2.0.3 cloud environments page (LUBOS-3874).
+
+    2.0.3 adds one more `projectIconUrl` site (real bytes:
+    superset-2.0.3-environments-project-icon.js) whose GitHub avatar anchor shows up
+    twice: in the JS site and in its source map.
+    """
+
+    SITE = FIXTURES / "superset-2.0.3-environments-project-icon.js"
+
+    def base(self):
+        return SupersetUiPatchTest("test_project_icon_count_is_strict").stock_bundle()
+
+    def bundle(self, sites=1, map_anchors=1):
+        site = self.SITE.read_bytes()
+        return b"|".join([self.base(), *([site] * sites), *([MODULE.PROJECT_ICON_UPSTREAM] * map_anchors)])
+
+    def patch(self, data):
+        return SupersetUiPatchTest("test_project_icon_count_is_strict").patch(data)
+
+    # Value: protects=the fixture is the real environments site, holding the env prefix right before the upstream anchor once; fails_when=the fixture or PROJECT_ICON_ENVIRONMENTS drifts from 2.0.3; why_new=LUBOS-3874; seam=real 2.0.3 bytes
+    def test_fixture_is_one_environments_site(self):
+        site = self.SITE.read_bytes()
+        self.assertEqual(site.count(MODULE.PROJECT_ICON_ENVIRONMENTS + MODULE.PROJECT_ICON_UPSTREAM), 1)
+        self.assertEqual(site.count(MODULE.PROJECT_ICON_UPSTREAM), 1)
+        self.assertEqual(MODULE.PROJECT_ICON_ENVIRONMENTS_COUNT, 2)
+
+    # Value: protects=a 2.0.3 bundle (4 sidebar anchors + the environments site and its map) gets all six anchors swapped, re-runs to nothing and stays length-preserving; fails_when=the count check refuses 2.0.3 ("expected 4 ... found 6") or skips the environments site; why_new=LUBOS-3874 (live run failed with found 6); seam=real 2.0.3 site
+    def test_environments_site_and_map_are_swapped(self):
+        original = self.bundle()
+        patched, _changes = self.patch(original)
+        self.assertEqual(len(patched), len(original))
+        expected = MODULE.EXPECTED_PROJECT_ICON_COUNT + MODULE.PROJECT_ICON_ENVIRONMENTS_COUNT
+        self.assertEqual(patched.count(MODULE.PROJECT_ICON_CUSTOM), expected)
+        self.assertNotIn(MODULE.PROJECT_ICON_UPSTREAM, patched)
+        self.assertEqual(patched.count(MODULE.PROJECT_ICON_ENVIRONMENTS + MODULE.PROJECT_ICON_CUSTOM), 1)
+        twice, changes = self.patch(patched)
+        self.assertEqual((twice, changes), (patched, []))
+
+    # Value: protects=the extra two anchors are admitted only with the environments site; a bundle that grows anchors elsewhere still fails closed; fails_when=the count check allows any 6 anchors, or a site without its map anchor; why_new=LUBOS-3874; seam=none
+    def test_extra_anchors_need_the_environments_site(self):
+        with self.assertRaisesRegex(RuntimeError, "expected 4 project icon anchors, found 6"):
+            self.patch(self.bundle(sites=0, map_anchors=2))
+        with self.assertRaisesRegex(RuntimeError, "expected 6 project icon anchors, found 5"):
+            self.patch(self.bundle(map_anchors=0))
+        with self.assertRaisesRegex(RuntimeError, "expected 6 project icon anchors, found 7"):
+            self.patch(self.bundle(map_anchors=2))
+
+    # Value: protects=two environments sites are refused instead of scaling the expected count; fails_when=the count follows any number of sites; why_new=LUBOS-3874; seam=none
+    def test_two_environments_sites_are_refused(self):
+        with self.assertRaisesRegex(RuntimeError, "at most one environments project icon site, found 2"):
+            self.patch(self.bundle(sites=2, map_anchors=2))
+
+
+class LayoutReleasesTest(unittest.TestCase):
+    """Layout names: 1.x covers minors, 2.x names exact patch releases (LUBOS-3874)."""
+
+    # Value: protects=1.x names keep covering minor releases and ranges; fails_when=the 2.x rule leaks into 1.x names; why_new=LUBOS-3874; seam=none
+    def test_one_x_names_cover_minor_releases(self):
+        self.assertEqual(MODULE._layout_releases("1.39"), frozenset({"1.39"}))
+        self.assertEqual(MODULE._layout_releases("1.40.0"), frozenset({"1.40"}))
+        self.assertEqual(MODULE._layout_releases("1.37-1.39"), frozenset({"1.37", "1.38", "1.39"}))
+        self.assertEqual(MODULE._layout_releases("1.36-1.37"), frozenset({"1.36", "1.37"}))
+
+    # Value: protects=2.x names are exact patch releases, so a 2.0.0 family next to a 2.0.3 one is a mixed bundle; fails_when=2.0.0 and 2.0.3 collapse to one "2.0" release; why_new=LUBOS-3874 (2.0.3 reshaped regions within 2.0); seam=none
+    def test_two_x_names_are_exact_patch_releases(self):
+        self.assertEqual(MODULE._layout_releases("2.0.0"), frozenset({"2.0.0"}))
+        self.assertEqual(MODULE._layout_releases("2.0.0,2.0.3"), frozenset({"2.0.0", "2.0.3"}))
+        self.assertEqual(MODULE._layout_releases("1.40,2.0.0"), frozenset({"1.40", "2.0.0"}))
+        self.assertFalse(MODULE._layout_releases("2.0.0") & MODULE._layout_releases("2.0.3"))
+
+    # Value: protects=a 2.x part without a patch number or with a range is refused at import, not read as a minor release; fails_when="2.0" or "2.0.0-2.0.3" is accepted and silently covers releases it never pinned; why_new=LUBOS-3874; seam=none
+    def test_two_x_names_without_an_exact_release_are_refused(self):
+        for name in ("2.0", "1.40,2.0", "2.0.0-2.0.3", "2.0-2.1", "2.0.0.1"):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, "exact patch release"):
+                    MODULE._layout_releases(name)
+
+    # Value: protects=every layout name the module declares parses under the rule; fails_when=a layout keeps a "2.0" name and only fails when a mixed bundle is checked; why_new=LUBOS-3874; seam=none
+    def test_every_declared_layout_name_parses(self):
+        for family, layouts in MODULE.RELEASE_PROBES:
+            for layout in layouts:
+                with self.subTest(family=family, layout=layout[0]):
+                    self.assertTrue(MODULE._layout_releases(layout[0]))
 
 
 class SupersetHideNavButtonsPatchTest(unittest.TestCase):
@@ -4157,7 +4332,7 @@ class SupersetStatusFilterCollapse140Test(SupersetStatusFilterCollapseTest):
             (13, MODULE.STATUS_FILTER_FIRST_JS + MODULE.STATUS_FILTER_CLEAR_JS),
             (14, MODULE.STATUS_FILTER_COUNTS_JS),
         ):
-            room = _fixture_1_40("status-filter", n, ".patched.js").read_text()
+            room = self.PATCHED[(1, 2, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14).index(n)].read_text()
             self.assertEqual(room.count(injected.decode()), 1, n)
             self.assertEqual(harness.count(room), 1, n)
             harness = harness.replace(room, injected.decode())
@@ -4189,6 +4364,14 @@ class SupersetStatusFilterCollapse200Test(SupersetStatusFilterCollapse140Test):
             'useLayoutEffect: (effect) => { if (String(effect).includes("selectableWorkspaceIdsRef")) return effect(); '
             "layoutCleanup?.(); layoutCleanup = effect(); },",
         )
+
+
+
+class SupersetStatusFilterCollapse203Test(SupersetStatusFilterCollapse200Test):
+    """The v5 collapse behaviour on the desktop-v2.0.3 regions (LUBOS-3874)."""
+
+    PATCHED = [_fixture_2_0_3("status-filter", n, ".patched.js") for n in (1, 2, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14)]
+    HOTKEYS_REGION = _fixture_2_0_3("status-filter", 9, ".patched.js")
 
 
 class SupersetStatusFilterGenerationsTest(unittest.TestCase):
@@ -4570,6 +4753,22 @@ class SupersetStatusFilterNames200Test(SupersetStatusFilterNamesTest):
 
     REGIONS = SupersetSidebarStatusFilter200PatchTest.REGIONS
     REGION_FIXTURES = SupersetSidebarStatusFilter200PatchTest.REGION_FIXTURES
+
+
+
+class SupersetStatusFilterHotkeys203PatchTest(SupersetStatusFilterHotkeys138PatchTest):
+    """--status-filter-hotkeys on the 2.0.3 regions (LUBOS-3874); the 2.0.3 registry is byte-identical to 2.0.0 (useRecordHotkeys-Bo9Os_7g.js)."""
+
+    REGIONS = SupersetSidebarStatusFilter203PatchTest.REGIONS
+    REGION_FIXTURES = SupersetSidebarStatusFilter203PatchTest.REGION_FIXTURES
+    HOTKEYS = FIXTURES / "superset-2.0.0-hotkeys-registry.js"
+
+
+class SupersetStatusFilterNames203Test(SupersetStatusFilterNamesTest):
+    """The name check on a 2.0.3 chunk (LUBOS-3874)."""
+
+    REGIONS = SupersetSidebarStatusFilter203PatchTest.REGIONS
+    REGION_FIXTURES = SupersetSidebarStatusFilter203PatchTest.REGION_FIXTURES
 
 
 class SupersetAsarIntegrityFuseTest(unittest.TestCase):

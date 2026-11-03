@@ -12,7 +12,8 @@ const read = (name) => readFileSync(new URL(name, FIXTURES), "utf8");
 // injected JS in region 2 and the two room regions that replace the deleted v1 sidebar regions 3-7;
 // palette_search_1_39.test.mjs on desktop-v1.39.0 (LUBOS-2797), whose region 3 is byte-identical to 1.38.0;
 // palette_search_1_40.test.mjs on desktop-v1.40.0 (LUBOS-3122), which re-pins only region 2;
-// palette_search_2_0.test.mjs on desktop-v2.0.0 (LUBOS-3343), which re-pins regions 2 and 3.
+// palette_search_2_0.test.mjs on desktop-v2.0.0 (LUBOS-3343), which re-pins regions 2 and 3;
+// palette_search_2_0_3.test.mjs on desktop-v2.0.3 (LUBOS-3874), which re-pins regions 3 and 4.
 const RELEASE = globalThis.SSP_PALETTE_RELEASE ?? "1.37.0";
 const LAYOUT_FIXTURES = {
   "1.37.0": ["r2.v5-", "r3.", "r4.", "r5.", "r6.", "r7."].map((region) => `superset-1.37.0-palette-${region}patched.js`),
@@ -20,9 +21,11 @@ const LAYOUT_FIXTURES = {
   "1.39.0": ["1.39.0-palette-r2.", "1.38.0-palette-r3.", "1.39.0-palette-r4."].map((region) => `superset-${region}patched.js`),
   "1.40.0": ["1.40.0-palette-r2.", "1.38.0-palette-r3.", "1.39.0-palette-r4."].map((region) => `superset-${region}patched.js`),
   "2.0.0": ["2.0.0-palette-r2.", "2.0.0-palette-r3.", "1.39.0-palette-r4."].map((region) => `superset-${region}patched.js`),
+  "2.0.3": ["2.0.0-palette-r2.", "2.0.3-palette-r3.", "2.0.3-palette-r4."].map((region) => `superset-${region}patched.js`),
 }[RELEASE];
-// The hotkey registry is byte-identical in 1.38.0 and 1.39.0; 1.40.0 adds NEW_CHAT, 2.0.0 TOGGLE_RIGHT_PANE_FULL_SCREEN.
-const HOTKEYS_RELEASE = RELEASE === "1.39.0" ? "1.38.0" : RELEASE;
+// The hotkey registry is byte-identical in 1.38.0 and 1.39.0 and in 2.0.0 and 2.0.3; 1.40.0 adds NEW_CHAT,
+// 2.0.0 TOGGLE_RIGHT_PANE_FULL_SCREEN.
+const HOTKEYS_RELEASE = { "1.39.0": "1.38.0", "2.0.3": "2.0.0" }[RELEASE] ?? RELEASE;
 
 // Any value: callable, constructible and indexable, so module-scope code of a region that the
 // test does not exercise (icons, stores, providers) loads without its real imports.

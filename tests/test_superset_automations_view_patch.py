@@ -1,4 +1,4 @@
-"""Tests for --automations-view (desktop-v2.0.0, on top of --automations-header).
+"""Tests for --automations-view (desktop-v2.0.0 and v2.0.3, on top of --automations-header).
 
 Byte-level safety lives here (pinned regions, the in-place upgrade from the header page, sticky
 re-runs, fail-closed flags, layouts and names, apply / re-run / revert); the rendered behaviour of
@@ -34,7 +34,7 @@ isolate(MODULE)
 
 HEADER = MODULE.AUTOMATIONS_HEADER_REGIONS_1_40
 PAGE, ROOM, DETAIL = MODULE.AUTOMATIONS_VIEW_REGIONS
-# The 2.0 page region is byte-identical to 1.40 (the header family's "1.40,2.0" layout), so its stock
+# The 2.0 page region is byte-identical to 1.40 (the header family's "1.40,2.0.0" layout), so its stock
 # and header rewrite are the 1.40 fixtures; room and detail are cut from the real 2.0.0
 # page-CI8CMJeF.js (automations list) and page-C3nqaxqb.js (automation detail).
 FEATURE_STOCK = (FIXTURES / "superset-1.38.0-automations-header-r1.js").read_bytes()
@@ -47,6 +47,15 @@ ROOM_VIEW = (FIXTURES / "superset-2.0.0-automations-view-r2.patched.js").read_by
 DETAIL_STOCK = (FIXTURES / "superset-2.0.0-automations-view-r3.js").read_bytes()
 DETAIL_VIEW = (FIXTURES / "superset-2.0.0-automations-view-r3.patched.js").read_bytes()
 VIEW_LABELS = [PAGE.label, ROOM.label, DETAIL.label]
+# desktop-v2.0.3 (LUBOS-3874): the page is the 2.0.3 header page (groups, own-row selection) plus the 2.0.3 delta,
+# the chip room is cut from the real 2.0.3 page chunk, the detail page is byte-identical to 2.0.0.
+HEADER_203 = MODULE.AUTOMATIONS_HEADER_REGIONS_2_0_3
+PAGE_203, ROOM_203, DETAIL_203 = MODULE.AUTOMATIONS_VIEW_REGIONS_2_0_3
+PAGE_STOCK_203 = (FIXTURES / "superset-2.0.3-automations-header-r2.js").read_bytes()
+PAGE_HEADER_203 = (FIXTURES / "superset-2.0.3-automations-header-r2.patched.js").read_bytes()
+PAGE_VIEW_203 = (FIXTURES / "superset-2.0.3-automations-view-r1.patched.js").read_bytes()
+ROOM_STOCK_203 = (FIXTURES / "superset-2.0.3-automations-view-r2.js").read_bytes()
+ROOM_VIEW_203 = (FIXTURES / "superset-2.0.3-automations-view-r2.patched.js").read_bytes()
 
 
 def imports(names) -> bytes:
@@ -184,6 +193,90 @@ class AutomationsViewApplyTest(unittest.TestCase):
         with mock.patch.object(MODULE, "patch_file", return_value=(None, [])) as patch_file:
             self.assertEqual(MODULE.main(["--asar", "/tmp/x.asar", "--automations-header", "--automations-view"]), 0)
         self.assertTrue(patch_file.call_args.kwargs["automations_view"])
+
+
+def bundle_203(page=PAGE_STOCK_203, room=ROOM_STOCK_203, **kwargs):
+    return bundle(page=page, room=room, **kwargs)
+
+
+class AutomationsView203Test(unittest.TestCase):
+    """--automations-view on the desktop-v2.0.3 layout: pins, the in-place upgrade, sticky re-runs, apply / re-run / revert."""
+
+    # Value: protects=the 2.0.3 view regions are exactly the reviewed fixtures, keep their length, re-run to nothing and parse, and only the detail region is reused from 2.0.0; fails_when=a 2.0.3 digest, edit or injected JS changes without its fixture; why_new=LUBOS-3874; seam=real 2.0.3 bytes
+    def test_regions_are_pinned_idempotent_and_parseable(self):
+        self.assertEqual([name for name, *_rest in MODULE.AUTOMATIONS_VIEW_LAYOUTS], ["2.0.0", "2.0.3"])
+        self.assertIs(DETAIL_203, DETAIL)
+        self.assertEqual((ROOM_203.start, ROOM_203.end, ROOM_203.edits), (ROOM.start, ROOM.end, ROOM.edits))
+        self.assertEqual((ROOM_203.legacy_sha256, ROOM_203.upgrades), ((), ()))
+        for region, stock, patched in ((PAGE_203, PAGE_STOCK_203, PAGE_VIEW_203), (ROOM_203, ROOM_STOCK_203, ROOM_VIEW_203), (DETAIL_203, DETAIL_STOCK, DETAIL_VIEW)):
+            with self.subTest(region=region.label):
+                self.assertEqual(len(stock), region.length)
+                self.assertEqual(len(patched), region.length)
+                self.assertEqual(hashlib.sha256(stock).hexdigest(), region.stock_sha256)
+                self.assertEqual(hashlib.sha256(patched).hexdigest(), region.patched_sha256)
+                self.assertEqual(MODULE._plan_region_rewrite(stock + region.end, region), [(0, stock, patched, region.label)])
+                self.assertEqual(MODULE._plan_region_rewrite(patched + region.end, region), [])
+                node_check(self, patched)
+
+    # Value: protects=the 2.0.3 view page is the 2.0.3 header page plus the delta (own-row edits included), the floating bulk-action bar stays a child of the page root, and a live 2.0.3 header page upgrades in place to the same bytes; fails_when=the view drops a header or own-row edit, the delta wraps the bulk bar into the scroller, or the upgrade diverges from a fresh rewrite; why_new=LUBOS-3874; seam=real 2.0.3 bytes
+    def test_page_builds_on_the_header_rewrite_and_upgrades_it(self):
+        self.assertEqual((PAGE_203.start, PAGE_203.end, PAGE_203.length, PAGE_203.stock_sha256),
+                         (HEADER_203[1].start, HEADER_203[1].end, HEADER_203[1].length, HEADER_203[1].stock_sha256))
+        self.assertEqual(PAGE_203.edits, HEADER_203[1].edits + MODULE.AUTOMATIONS_VIEW_PAGE_DELTA_2_0_3)
+        self.assertEqual(PAGE_203.upgrades, ((HEADER_203[1].patched_sha256, MODULE.AUTOMATIONS_VIEW_PAGE_DELTA_2_0_3),))
+        self.assertEqual(len(MODULE.AUTOMATIONS_VIEW_PAGE_DELTA_2_0_3), len(MODULE.AUTOMATIONS_VIEW_PAGE_DELTA))
+        self.assertEqual(MODULE._plan_region_rewrite(PAGE_HEADER_203 + PAGE_203.end, PAGE_203), [(0, PAGE_HEADER_203, PAGE_VIEW_203, PAGE_203.label)])
+        for _anchor, replacement in MODULE.AUTOMATIONS_PAGE_OWN_ROWS_2_0_3:
+            self.assertEqual(PAGE_VIEW_203.count(replacement), 1)
+        self.assertNotIn(b"DropdownMenu", PAGE_VIEW_203)
+        self.assertNotIn(b"max-w-5xl", PAGE_VIEW_203)
+        self.assertIn(b"jsxRuntimeExports.jsx(SahHeader, { search, onSearch: setSearch })", PAGE_VIEW_203)
+        self.assertEqual(PAGE_VIEW_203.count(b"function SahProjects("), 1)
+        self.assertEqual(ROOM_VIEW_203.count(b"function SahChips("), 1)
+        self.assertIn(b"    ] }) })] }),\n    selectable && selectionActive && ", PAGE_VIEW_203)
+
+    # Value: protects=a stock 2.0.3 bundle takes header and view in one run, re-runs to nothing and reverts byte for byte; fails_when=the 2.0.0 view layout is picked for 2.0.3 bytes, the flags plan two writes for the page, or a write is not length-preserving; why_new=LUBOS-3874; seam=temp ASAR
+    def test_stock_bundle_applies_reruns_and_reverts(self):
+        original = bundle_203()
+        self.assertEqual(MODULE._select_layout(original, MODULE.AUTOMATIONS_VIEW_LAYOUTS, "automations view")[0], "2.0.3")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target, backups = root / "app.asar", root / "backups"
+            target.write_bytes(original)
+            options = dict(size=6, hide_tray=False, custom_project_icons=False, keep_icon_on_hover=False,
+                           automations_header=True, automations_view=True)
+            _backup, changes = MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options)
+            self.assertEqual(sorted(changes), sorted([HEADER[0].label, *VIEW_LABELS]))
+            patched = target.read_bytes()
+            self.assertEqual(len(patched), len(original))
+            for new in (FEATURE_PATCHED, PAGE_VIEW_203, ROOM_VIEW_203, DETAIL_VIEW):
+                self.assertEqual(patched.count(new), 1)
+            self.assertEqual(MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options), (None, []))
+            MODULE.revert(target, backups)
+            self.assertEqual(target.read_bytes(), original)
+
+    # Value: protects=a 2.0.3 bundle with the header family applied upgrades to the same bytes as a fresh apply; fails_when=the 2.0.3 header page is refused as unknown or upgraded differently; why_new=LUBOS-3874; seam=none
+    def test_header_bundle_upgrades_to_the_view(self):
+        fresh, _changes = patch(bundle_203())
+        header_only, changes = patch(bundle_203(), view=False)
+        self.assertEqual(sorted(changes), sorted(region.label for region in HEADER_203))
+        self.assertEqual(header_only.count(PAGE_HEADER_203), 1)
+        upgraded, changes = patch(header_only)
+        self.assertEqual(sorted(changes), sorted(VIEW_LABELS))
+        self.assertEqual(upgraded, fresh)
+
+    # Value: protects=the view is sticky on 2.0.3: a later run with --automations-header alone keeps it and plans nothing, no flag plans nothing; fails_when=the header family recognises only the 2.0.0 view digest and reports the 2.0.3 view page as unknown bytes (or writes it back); why_new=LUBOS-3874; seam=none
+    def test_view_is_sticky(self):
+        viewed, _changes = patch(bundle_203())
+        self.assertEqual(patch(viewed, view=False)[1], [])
+        self.assertEqual(patch(viewed, header=False, view=False)[1], [])
+
+    # Value: protects=a 2.0.3 page next to the 2.0.0 chip room (or the reverse) is refused before a write; fails_when=layout selection falls back per region; why_new=REBASE.md mixed-release rule (LUBOS-3874); seam=real 2.0.0 / 2.0.3 bytes
+    def test_mixed_2_0_0_2_0_3_view_regions_fail_closed(self):
+        for name, data in (("2.0.3 page, 2.0.0 room", bundle_203(room=ROOM_STOCK)), ("2.0.0 page, 2.0.3 room", bundle(room=ROOM_STOCK_203))):
+            with self.subTest(name):
+                with self.assertRaisesRegex(RuntimeError, "automations"):
+                    patch(data)
 
 
 @live_host_only("anchors, names, classes and chunk syntax are checked against the Superset.app bundle installed on this host")

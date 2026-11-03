@@ -597,6 +597,60 @@ and rebranded strings to Paradev.
   this patcher reports `current` / `applied`, 0 writes needed, no optional
   patch incompatible; the full set still plans on stock 1.40.0.
 
+## Worked example: 2.0.0 → 2.0.3 (2026-11-02, LUBOS-3874)
+
+A restart installed 2.0.2 over the patched 2.0.0 and the patcher refused it
+(`mixed release layouts ... status filter`); the next quit installed the
+staged 2.0.3 unpatched. Its stock `app.asar` (`932e150c…`) was copied
+read-only into the scratchpad; every apply ran on copies there. Mapping every flag on a copy with
+the release probe off: size, tray, hover, compact sidebar, nav buttons, pinned
+icon, sound, footer, Cmd+K, PINNED sort and sort / pin projects plan as on
+2.0.0; icons find six anchors instead of four; the status filter (and its
+hotkeys), palette search and both automations flags miss an end at the pinned
+length; the device filter misses its cloud swap anchor (a fallback layout).
+Upstream added Channels and Devs sidebar sections (`ChannelContextMenu`
+moved the section header up the chunk), pause-notification and copy
+submenus, an environments settings page that draws project icons, and
+automation groups with selection, bulk actions and drag into groups (Mine
+tab only).
+
+- `_layout_releases`: 2.x layout names are exact patch versions. The 2.0.0
+  layouts are renamed `2.0.0` (header `1.40,2.0.0`, project order
+  `2.0.0,2.0.3`, PINNED sort lists both in the 1.38 group). 2.0.2 matches
+  neither shape (automations page 25,003 B, device region 1 67,246 B), so it
+  stays unsupported and fails closed.
+- Status filter (`STATUS_FILTER_REGIONS_2_0_3`): regions 3, 5, 9, 12 and 13
+  re-pinned with the 2.0.0 edits (99, 177, 24, 393, 723 B left); region 10
+  keeps its bytes and ends at `ChannelContextMenu`.
+- Palette search: regions 3 and 4 re-pinned (499, 37 B left); the hotkey
+  registry keeps every mac default, so Cmd+K and the chip moves are unchanged.
+- Project icons: the environments page (`projectIconUrl`, chunk and source map)
+  is a fourth swap site; the plan accepts at most one such page
+  (`PROJECT_ICON_ENVIRONMENTS`).
+- Device filter: region 1 (29 B left) and the device-list room (122 B)
+  re-pinned; the drag guard keeps its bytes and ends at `RenameBranchDialog`;
+  only the title-bar swap.
+- Automations header: `FeatureHeader` byte-identical; the page is re-pinned
+  (1,794 B left). The tab removal also drops `clearSelection()` from the
+  scope handler, the create anchor gained `disabled: creatingAutomation`, and
+  `AUTOMATIONS_PAGE_OWN_ROWS_2_0_3` keeps upstream's groups for the merged
+  list: selection, drag and a group's select-all apply to the current user's
+  own rows (all rows without a known user), and Delete group ungroups only own
+  automations.
+- Automations view: the page carries the 2.0.3 header edits plus the delta
+  (470 B left); the full-width edit closes the new bulk bar's wrapper; the
+  chip room is re-pinned (373 B); the detail region is byte-identical.
+- Pin / preset export: still no 2.0.x layout.
+- Fixtures are cut from the real stock 2.0.3 bundle
+  (`tests/fixtures/superset-2.0.3-*`; byte-identical regions reuse the 2.0.0
+  fixtures).
+- Proof on the copy: the approved set plus both automations flags writes 57
+  times (273,478 B) to `0694ef87…`, all 19 flags of the approved and optional
+  set 76 times (568,342 B rewritten, length unchanged) to `f91bc085…`; each
+  re-run is `already patched`, `--revert` restores the stock SHA-256; every
+  touched JS chunk (9 and 11) passes `node --check`. Pin and preset sync
+  refuse 2.0.3 (`unsupported desktop version`) without a write.
+
 ## Desktop pin export (LUBOS-2944, 1.39.0 and 1.40.0)
 
 `DESKTOP_PIN_REGIONS` touches three disjoint files. The index chunk's Zod helper

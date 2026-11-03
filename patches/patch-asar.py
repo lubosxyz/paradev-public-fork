@@ -50,6 +50,16 @@ CHEVRON_HIDDEN_TEMPLATE = (
 PROJECT_ICON_UPSTREAM = b"https://github.com/${project.repoOwner}.png?size=64"
 PROJECT_ICON_CUSTOM = b"superset-icon://projects/${project.projectKey}?v=64"
 EXPECTED_PROJECT_ICON_COUNT = 4
+# 2.0.3 adds the cloud environments page, whose project picker resolves the same
+# GitHub avatar for host projects (they carry projectKey, like every other site).
+# Its JS site plus its source map add two anchors; the count follows the site,
+# so any other extra anchor still fails closed.
+PROJECT_ICON_ENVIRONMENTS = (
+    b"function projectIconUrl(project) {\n"
+    b"  if (project.icon) return project.icon;\n"
+    b"  return project.repoOwner ? `"
+)
+PROJECT_ICON_ENVIRONMENTS_COUNT = 2
 
 
 def _pad_variant(source: bytes, replacement: bytes) -> bytes:
@@ -1789,13 +1799,39 @@ STATUS_FILTER_REGIONS_2_0 = (
     _rebased(STATUS_FILTER_REGIONS_1_40[4], 10535, "8adf6ff70b8c9d58c47bdef6ca60bf5b07af4d89fb7782d94dc7ca6361381c32", "11d6b2e88e558a740960760db90bf9b4193ec6beb7d61b73c69fd405db31f1fa"),
     *STATUS_FILTER_REGIONS_1_40[5:],
 )
+# 2.0.3 adds Channels / Devs sections (behind the channels feature flag) and a
+# pause-notifications submenu, and nests the workspace copy actions in a
+# submenu, all away from the edits. Region 3 mounts the two sections inside the
+# scroller (the chip row stays between the header and the scroller), region 5
+# holds the new context menu, region 9 the new collapse keys and the active
+# plan label; rooms 12 and 13 gained the host glyph and the save-as-environment
+# dialog. Region 10 keeps its bytes but now ends at ChannelContextMenu (the
+# section header moved up the chunk). Regions 1, 2, 4, 6-8, 11 and 14 are
+# byte-identical to 2.0.0.
+STATUS_FILTER_REGIONS_2_0_3 = (
+    *STATUS_FILTER_REGIONS_2_0[:2],
+    _rebased(STATUS_FILTER_REGIONS_2_0[2], 16927, "f01a6dd3b15b1ed76b98cd24e422572e623ec035a3e06754842f822b9a63a91e", "8c8c56d65f8c12d4d2c44321a89c33314dec309e62357e7b543bdf83d880947b"),
+    STATUS_FILTER_REGIONS_2_0[3],
+    _rebased(STATUS_FILTER_REGIONS_2_0[4], 11325, "65c119496a95754c3b71bafa64fa165670fd57decef09d9b30539201f5bb2be7", "6a0e6485a5ea6696b4d85feaf5e9d826587f329da9f886627652914542ebe95e"),
+    *STATUS_FILTER_REGIONS_2_0[5:8],
+    _rebased(STATUS_FILTER_REGIONS_2_0[8], 8870, "c869837f4a58932230c459a69162e635a1b2e937486ede8a0a81a7055f1d96c8", "c020a898727d20947830e9c472ef62aea28e914fc1e27bb6aec609f00de298d7"),
+    _rebased(
+        STATUS_FILTER_REGIONS_2_0[9], 1593, STATUS_FILTER_REGIONS_2_0[9].stock_sha256, STATUS_FILTER_REGIONS_2_0[9].patched_sha256,
+        end=b"function ChannelContextMenu({\n",
+    ),
+    STATUS_FILTER_REGIONS_2_0[10],
+    _rebased(STATUS_FILTER_REGIONS_2_0[11], 22628, "9870f64accaaa033e2dc5f32270e45b108a62622cf1dfc6e129b157a7ccbba1c", "837655d78e57c0372975236ea6361f6d683969518ddd6e6732609d665875700c"),
+    _rebased(STATUS_FILTER_REGIONS_2_0[12], 19770, "37330cda38b315ea5de2fb456efe844959385a29aa3c0c029210c15b436b72de", "37c6a0790bdd35b2129c0bd05dded8df4daa7e9ced194de9a8661e1c8e5686c8"),
+    STATUS_FILTER_REGIONS_2_0[13],
+)
 # (name, regions, sibling variants): every supported release layout of the filter.
 STATUS_FILTER_LAYOUTS = (
     ("1.36-1.37", STATUS_FILTER_REGIONS, STATUS_FILTER_REGION_VARIANTS),
     ("1.38", STATUS_FILTER_REGIONS_1_38, ()),
     ("1.39", STATUS_FILTER_REGIONS_1_39, ()),
     ("1.40", STATUS_FILTER_REGIONS_1_40, ()),
-    ("2.0", STATUS_FILTER_REGIONS_2_0, ()),
+    ("2.0.0", STATUS_FILTER_REGIONS_2_0, ()),
+    ("2.0.3", STATUS_FILTER_REGIONS_2_0_3, ()),
 )
 
 # Names the injected filter JS reads from upstream code outside the pinned
@@ -1897,11 +1933,23 @@ _LAYOUT_PICKS = None
 
 
 def _layout_releases(name: str) -> frozenset:
-    """Minor releases a layout name covers: "1.39", "1.40.0", "1.37-1.39", "1.40,2.0" (a list across majors)."""
+    """Releases a layout name covers: "1.39", "1.40.0", "1.37-1.39", "1.40,2.0.0" (a list across majors).
+
+    1.x names cover minor releases. From 2.0 on upstream reshapes the sidebar in
+    patch releases (2.0.3 moved regions 2.0.0 pinned), so a 2.x part must name
+    its exact patch release ("2.0.0", "2.0.0,2.0.3"); a 2.0.0 family next to a
+    2.0.3 one is then a mixed bundle.
+    """
     releases = set()
     for part in name.split(","):
         first, _, last = part.strip().partition("-")
-        major, low = (int(piece) for piece in first.split(".")[:2])
+        pieces = first.split(".")
+        major, low = (int(piece) for piece in pieces[:2])
+        if major >= 2:
+            if last or len(pieces) != 3:
+                raise ValueError(f"layout {name!r}: a {major}.x part names one exact patch release")
+            releases.add(first)
+            continue
         high = int(last.split(".")[1]) if last else low
         releases.update(f"{major}.{minor}" for minor in range(low, high + 1))
     return frozenset(releases)
@@ -2813,6 +2861,19 @@ PALETTE_SEARCH_CHUNKS_2_0 = (
     (PALETTE_SEARCH_REGIONS_2_0[:1], *PALETTE_SEARCH_CHUNKS[0][1:]),
     (PALETTE_SEARCH_REGIONS_2_0[1:], *PALETTE_SEARCH_CHUNKS[1][1:]),
 )
+# 2.0.3: regions 1 and 2 are byte-identical to 2.0.0. Room 3 gained the
+# pause-notifications submenu; room 4 lost the workspace host glyph (it moved
+# next to the cloud host glyph, status filter room 12). Both re-pinned with the
+# same edits.
+PALETTE_SEARCH_REGIONS_2_0_3 = (
+    *PALETTE_SEARCH_REGIONS_2_0[:2],
+    _rebased(PALETTE_SEARCH_REGIONS_2_0[2], 29780, "3fa228ba61d3c4c88745fbc5fa02442b34d3a172c6f91a39edcf814d0c274b35", "cf9ee75df502817c79550f84ebf98e606d00d9af496c91c8b0adde774d6c70fb"),
+    _rebased(PALETTE_SEARCH_REGIONS_2_0[3], 10201, "435c982bc2ed38c39aae90164495dce39a5e953936ca1bbc62186fd03222feb7", "a0b4447e29744f0aac9b671aa6125eff9567ec3ed1b149c8c82b56b50801c648"),
+)
+PALETTE_SEARCH_CHUNKS_2_0_3 = (
+    (PALETTE_SEARCH_REGIONS_2_0_3[:1], *PALETTE_SEARCH_CHUNKS[0][1:]),
+    (PALETTE_SEARCH_REGIONS_2_0_3[1:], *PALETTE_SEARCH_CHUNKS[1][1:]),
+)
 # (name, regions, variants, chunks, generations): every supported release layout.
 PALETTE_SEARCH_LAYOUTS = (
     ("1.37", PALETTE_SEARCH_REGIONS, (), PALETTE_SEARCH_CHUNKS, PALETTE_SEARCH_GENERATIONS),
@@ -2838,10 +2899,17 @@ PALETTE_SEARCH_LAYOUTS = (
         },
     ),
     (
-        "2.0", PALETTE_SEARCH_REGIONS_2_0, (), PALETTE_SEARCH_CHUNKS_2_0,
+        "2.0.0", PALETTE_SEARCH_REGIONS_2_0, (), PALETTE_SEARCH_CHUNKS_2_0,
         {
             "stock": tuple(region.stock_sha256 for region in PALETTE_SEARCH_REGIONS_2_0),
             "generation 6": tuple(region.patched_sha256 for region in PALETTE_SEARCH_REGIONS_2_0),
+        },
+    ),
+    (
+        "2.0.3", PALETTE_SEARCH_REGIONS_2_0_3, (), PALETTE_SEARCH_CHUNKS_2_0_3,
+        {
+            "stock": tuple(region.stock_sha256 for region in PALETTE_SEARCH_REGIONS_2_0_3),
+            "generation 6": tuple(region.patched_sha256 for region in PALETTE_SEARCH_REGIONS_2_0_3),
         },
     ),
 )
@@ -3111,12 +3179,77 @@ AUTOMATIONS_HEADER_REGIONS_1_40 = (
         "dedc796490a4c05dcdbf3b91b856c09e5068cee3c8263527e7c5b756817c0061",
     ),
 )
-# (release, regions, variants, chunks); both regions are byte-identical in 2.0.
+# 2.0.3: FeatureHeader is byte-identical. AutomationsPage gained automation
+# groups (sections with collapsible headers), row selection with bulk pause /
+# resume / delete / move, and dragging rows onto a group, all offered on the Mine
+# tab only (`selectable = scope === "mine"`); creating moved into
+# useCreateAutomation. Two header anchors are re-cut (the scope handler also
+# clears the selection; the create action's busy flag is creatingAutomation).
+# The merged list keeps every one of these features for the user's own
+# automations, also next to teammates' ones: selection is on while the list holds
+# an own automation (or no user is known, as upstream's Mine), and the selectable
+# order (select all, Cmd+A, Shift ranges, bulk actions), the row checkbox and the
+# row drag cover own rows only, exactly the rows upstream's Mine tab listed. A
+# group's select-all toggles its own rows and Delete group ungroups only them
+# (both hidden when the group holds none). Teammates' rows keep upstream's Team
+# behaviour (no checkbox, no drag, the row menu as upstream).
+AUTOMATIONS_PAGE_OWN_ROWS_2_0_3 = (
+    (
+        b'  const selectable = scope === "mine";\n',
+        b"  const selectable = !currentUserId || mineCount > 0;\n"
+        b"  const sahOwn = (a) => !currentUserId || a.ownerUserId === currentUserId;\n",
+    ),
+    (
+        b"    return rows.map((row) => row.id);\n  }, [selectable, sections, sortedVisible, collapsedGroups]);\n",
+        b"    return rows.filter(sahOwn).map((row) => row.id);\n"
+        b"  }, [selectable, sections, sortedVisible, collapsedGroups, currentUserId]);\n",
+    ),
+    (b"indented: indentRows, drag: canDrag ? {", b"indented: indentRows, drag: canDrag && sahOwn(automation) ? {"),
+    (b"  } : void 0, selection: selectable ? {", b"  } : void 0, selection: selectable && sahOwn(automation) ? {"),
+    (
+        b"onSelectAll: selectable && !collapsed ? () => setSelectedMany(items.map((a) => a.id), "
+        b"!items.every((a) => selected.has(a.id))) : void 0, "
+        b"onDeleteGroup: selectable && group !== null ? () => setPendingGroupDelete({\n"
+        b"                  group,\n                  ids: items.map((a) => a.id)\n",
+        b"onSelectAll: selectable && !collapsed && items.some(sahOwn) ? () => setSelectedMany("
+        b"items.filter(sahOwn).map((a) => a.id), !items.filter(sahOwn).every((a) => selected.has(a.id))) : void 0, "
+        b"onDeleteGroup: selectable && group !== null && items.some(sahOwn) ? () => setPendingGroupDelete({\n"
+        b"                  group,\n                  ids: items.filter(sahOwn).map((a) => a.id)\n",
+    ),
+)
+AUTOMATIONS_HEADER_PAGE_2_0_3 = _rebased(
+    AUTOMATIONS_HEADER_REGIONS_1_40[1], 36902,
+    "6339acce43ef9c90993e70567a3f0735ac9119824a105534c877160c704a779a",
+    "0da5074293b27d60c6a2afa82a7e8004f754a866c5be19598a0737d4dc047e3d",
+    edits=(
+        *AUTOMATIONS_HEADER_REGIONS_1_40[1].edits[:2],
+        (
+            b"  const handleScopeChange = (value) => {\n    if (!value) return;\n    const next = value;\n"
+            b'    setScope(next);\n    clearSelection();\n    if (next !== "team" && sortField === "owner") setSortField(null);\n  };\n',
+            b"",
+        ),
+        (
+            b"        onSelect: handleCreateManually,\n        disabled: creatingAutomation\n      } }),\n",
+            b"        onSelect: handleCreateManually,\n        disabled: creatingAutomation\n"
+            b"      }, extra: !orgEmpty && jsxRuntimeExports.jsx(SahHeader, "
+            b"{ options: sahProjects, value: sahKey, onValue: setSahProject, search, onSearch: setSearch }) }),\n",
+        ),
+        *AUTOMATIONS_HEADER_REGIONS_1_40[1].edits[4:7],
+        *AUTOMATIONS_PAGE_OWN_ROWS_2_0_3,
+        AUTOMATIONS_HEADER_REGIONS_1_40[1].edits[7],
+    ),
+)
+AUTOMATIONS_HEADER_REGIONS_2_0_3 = (AUTOMATIONS_HEADER_REGIONS_1_40[0], AUTOMATIONS_HEADER_PAGE_2_0_3)
+# (release, regions, variants, chunks); both regions are byte-identical in 2.0.0.
 AUTOMATIONS_HEADER_LAYOUTS = (
     ("1.37-1.39", AUTOMATIONS_HEADER_REGIONS, (), AUTOMATIONS_HEADER_CHUNKS),
     (
-        "1.40,2.0", AUTOMATIONS_HEADER_REGIONS_1_40, (),
+        "1.40,2.0.0", AUTOMATIONS_HEADER_REGIONS_1_40, (),
         tuple((AUTOMATIONS_HEADER_REGIONS_1_40[i : i + 1], *chunk[1:]) for i, chunk in enumerate(AUTOMATIONS_HEADER_CHUNKS)),
+    ),
+    (
+        "2.0.3", AUTOMATIONS_HEADER_REGIONS_2_0_3, (),
+        tuple((AUTOMATIONS_HEADER_REGIONS_2_0_3[i : i + 1], *chunk[1:]) for i, chunk in enumerate(AUTOMATIONS_HEADER_CHUNKS)),
     ),
 )
 
@@ -3132,7 +3265,7 @@ def _plan_automations_header(data, view: bool = False) -> list[tuple[int, bytes,
     _require_family_chunks(data, chunks, "automations header")
     replacements = []
     for region in regions:
-        if view and region.start == AUTOMATIONS_VIEW_PAGE.start:
+        if view and region.start in {layout[1][0].start for layout in AUTOMATIONS_VIEW_LAYOUTS}:
             continue
         replacements.extend(_plan_region_rewrite(data, region))
     if view:
@@ -3355,7 +3488,37 @@ AUTOMATIONS_VIEW_CHUNKS = (
     ),
     (AUTOMATIONS_VIEW_REGIONS[2:], ("jsxRuntimeExports", "cn"), ()),
 )
-AUTOMATIONS_VIEW_LAYOUTS = (("2.0", AUTOMATIONS_VIEW_REGIONS, (), AUTOMATIONS_VIEW_CHUNKS),)
+# 2.0.3: the page is the 2.0.3 header page (own-row selection, groups) plus the
+# delta, whose wrapper now closes before upstream's floating bulk-action bar (it
+# stays a child of the page root, centred across the page). The chip room gained
+# the group dialogs and is re-pinned; the detail page is byte-identical.
+AUTOMATIONS_VIEW_PAGE_DELTA_2_0_3 = tuple(
+    (
+        b"    ] }) }),\n    selectable && selectionActive && ",
+        b"    ] }) })] }),\n    selectable && selectionActive && ",
+    ) if anchor.endswith(b"HostOfflineRunDialog, ") else (anchor, replacement)
+    for anchor, replacement in AUTOMATIONS_VIEW_PAGE_DELTA
+)
+AUTOMATIONS_VIEW_PAGE_2_0_3 = replace(
+    AUTOMATIONS_HEADER_PAGE_2_0_3,
+    label=AUTOMATIONS_VIEW_PAGE.label,
+    patched_sha256="991589f50af2a6784c9d793bab682653c05f07f84b3c0dee219e162bdea1c28e",
+    edits=AUTOMATIONS_HEADER_PAGE_2_0_3.edits + AUTOMATIONS_VIEW_PAGE_DELTA_2_0_3,
+    upgrades=((AUTOMATIONS_HEADER_PAGE_2_0_3.patched_sha256, AUTOMATIONS_VIEW_PAGE_DELTA_2_0_3),),
+)
+AUTOMATIONS_VIEW_REGIONS_2_0_3 = (
+    AUTOMATIONS_VIEW_PAGE_2_0_3,
+    _rebased(AUTOMATIONS_VIEW_ROOM, 20206, "829f16c4d4b454688910517ce4c27faaeb6c58cbb51db38674ee63d5a4281b1c", "6e6fffe88ef578146ed2e62a37420235682f5a249dbb187c4b6f5ba71335bf29"),
+    AUTOMATIONS_VIEW_DETAIL,
+)
+AUTOMATIONS_VIEW_CHUNKS_2_0_3 = (
+    (AUTOMATIONS_VIEW_REGIONS_2_0_3[:2], *AUTOMATIONS_VIEW_CHUNKS[0][1:]),
+    (AUTOMATIONS_VIEW_REGIONS_2_0_3[2:], *AUTOMATIONS_VIEW_CHUNKS[1][1:]),
+)
+AUTOMATIONS_VIEW_LAYOUTS = (
+    ("2.0.0", AUTOMATIONS_VIEW_REGIONS, (), AUTOMATIONS_VIEW_CHUNKS),
+    ("2.0.3", AUTOMATIONS_VIEW_REGIONS_2_0_3, (), AUTOMATIONS_VIEW_CHUNKS_2_0_3),
+)
 
 
 def _region_digest(data, region: RegionRewrite) -> str | None:
@@ -3367,7 +3530,11 @@ def _region_digest(data, region: RegionRewrite) -> str | None:
 
 
 def _automations_view_applied(data) -> bool:
-    return _region_digest(data, AUTOMATIONS_VIEW_PAGE) == AUTOMATIONS_VIEW_PAGE.patched_sha256
+    """True when the view's page region of any release layout is at its patched digest."""
+    return any(
+        _region_digest(data, regions[0]) == regions[0].patched_sha256
+        for _release, regions, _variants, _chunks in AUTOMATIONS_VIEW_LAYOUTS
+    )
 
 
 def _plan_automations_view(data) -> list[tuple[int, bytes, bytes, str]]:
@@ -3710,6 +3877,20 @@ SIDEBAR_DEVICE_REGIONS_2_0 = (
     _rebased(SIDEBAR_DEVICE_REGIONS_1_40[3], 6984, "ddbb9dd90c1e98fbcd576c00c9f23f8cc965129dc0a03d76f9476f5f86bdf44f", "2e1cc422e420e9a866dea679fb9435800cdd760318aa28517f9667860b1aaf27"),
     SIDEBAR_DEVICE_REGIONS_1_40[4],
 )
+# 2.0.3: the data region reads a null online state while a host connects and
+# the room before the memoized sidebar gained the active-workspace ref, both away
+# from the edits; the drag guard region keeps its bytes but ends at
+# RenameBranchDialog again (the section header moved up the chunk). Regions 4
+# and 5 and the mount swap are byte-identical to 2.0.0.
+SIDEBAR_DEVICE_REGIONS_2_0_3 = (
+    _rebased(SIDEBAR_DEVICE_REGIONS_2_0[0], 67358, "1283c33c22451f3b5e62545435c2db2fb2898c41ad36e0e08c4b710c16083f92", "0b5c8e60070b6743139f4bbb5f01697276a016aa8ee8d7296e71e929f930dc52"),
+    _rebased(SIDEBAR_DEVICE_REGIONS_2_0[1], 32113, "8051d86e786d266b815a1553a4917038268da68ac80b136923f4176da0ba4c47", "ee936d37dcde92a2b5464004dfbff32f6d9f41fe0a52fea20b1e812d1178391c"),
+    _rebased(
+        SIDEBAR_DEVICE_REGIONS_2_0[2], 32608, SIDEBAR_DEVICE_REGIONS_2_0[2].stock_sha256, SIDEBAR_DEVICE_REGIONS_2_0[2].patched_sha256,
+        end=b"function RenameBranchDialog({\n",
+    ),
+    *SIDEBAR_DEVICE_REGIONS_2_0[3:],
+)
 # (name, stock, filtered, label) of the two anchor swaps outside the regions.
 SIDEBAR_DEVICE_SWAPS = (
     ("sidebar device filter mount", SIDEBAR_DEVICE_MOUNT, SIDEBAR_DEVICE_MOUNT_FILTER, "sidebar device filter: title-bar dropdown"),
@@ -3721,7 +3902,8 @@ SIDEBAR_DEVICE_LAYOUTS = (
     ("1.38", SIDEBAR_DEVICE_REGIONS, (), SIDEBAR_DEVICE_SWAPS),
     ("1.39", SIDEBAR_DEVICE_REGIONS_1_39, (), SIDEBAR_DEVICE_SWAPS),
     ("1.40", SIDEBAR_DEVICE_REGIONS_1_40, (), SIDEBAR_DEVICE_SWAPS[:1]),
-    ("2.0", SIDEBAR_DEVICE_REGIONS_2_0, (), SIDEBAR_DEVICE_SWAPS[:1]),
+    ("2.0.0", SIDEBAR_DEVICE_REGIONS_2_0, (), SIDEBAR_DEVICE_SWAPS[:1]),
+    ("2.0.3", SIDEBAR_DEVICE_REGIONS_2_0_3, (), SIDEBAR_DEVICE_SWAPS[:1]),
 )
 SIDEBAR_DEVICE_CHUNK_NAMES = (
     (
@@ -4489,7 +4671,7 @@ PROJECT_ORDER_LAYOUTS = (
         (PROJECT_ORDER_SWAPS_1_39, SORT_PROJECTS_SWAPS_1_39, PIN_PROJECTS_SWAPS_1_39),
     ),
     (
-        "2.0", (*PROJECT_ORDER_REGIONS_2_0, *SORT_PROJECTS_REGIONS_2_0, *PIN_PROJECTS_REGIONS_1_40), (),
+        "2.0.0,2.0.3", (*PROJECT_ORDER_REGIONS_2_0, *SORT_PROJECTS_REGIONS_2_0, *PIN_PROJECTS_REGIONS_1_40), (),
         (PROJECT_ORDER_REGIONS_2_0, SORT_PROJECTS_REGIONS_2_0, PIN_PROJECTS_REGIONS_1_40),
         (PROJECT_ORDER_SWAPS_1_39, SORT_PROJECTS_SWAPS_1_39, PIN_PROJECTS_SWAPS_1_39),
     ),
@@ -4740,7 +4922,7 @@ RELEASE_PROBES = (
 # without one the family is unsupported and its own flag refuses it.
 RELEASE_BANNER_PROBES = ("desktop pin sync", "desktop preset sync")
 # The releases of each PINNED_SORT_RELEASES entry.
-PINNED_SORT_RELEASE_NAMES = (("1.37", "1.38", "1.40", "2.0"), ("1.39",))
+PINNED_SORT_RELEASE_NAMES = (("1.37", "1.38", "1.40", "2.0.0", "2.0.3"), ("1.39",))
 
 
 def _probe_releases(data) -> None:
@@ -4871,9 +5053,15 @@ def plan_replacements(
         upstream = _find_all(data, PROJECT_ICON_UPSTREAM)
         custom = _find_all(data, PROJECT_ICON_CUSTOM)
         total = len(upstream) + len(custom)
-        if total != EXPECTED_PROJECT_ICON_COUNT:
+        environments = sum(
+            len(_find_all(data, PROJECT_ICON_ENVIRONMENTS + anchor)) for anchor in (PROJECT_ICON_UPSTREAM, PROJECT_ICON_CUSTOM)
+        )
+        if environments > 1:
+            raise RuntimeError(f"expected at most one environments project icon site, found {environments}; bundle structure may have changed")
+        expected = EXPECTED_PROJECT_ICON_COUNT + environments * PROJECT_ICON_ENVIRONMENTS_COUNT
+        if total != expected:
             raise RuntimeError(
-                f"expected {EXPECTED_PROJECT_ICON_COUNT} project icon anchors, found {total}; "
+                f"expected {expected} project icon anchors, found {total}; "
                 "bundle structure may have changed"
             )
         replacements.extend(

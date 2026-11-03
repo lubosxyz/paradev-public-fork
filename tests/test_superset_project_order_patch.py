@@ -115,8 +115,13 @@ PARTS = {
                  data=(DATA, DATA_SORTED), menu=(MENU, MENU_ITEM), context=(CONTEXT, CONTEXT_ITEM)),
     "1.39": dict(rooms=ROOMS_139, data=(DATA_139, DATA_SORTED_139), menu=ANCHORS_139["sort"], context=ANCHORS_139["pin"]),
     "1.40": dict(rooms=ROOMS_140, data=(DATA_139, DATA_SORTED_139), menu=ANCHORS_139["sort"], context=ANCHORS_139["pin"]),
-    "2.0": dict(rooms=ROOMS_200, data=(DATA_139, DATA_SORTED_139), menu=ANCHORS_139["sort"], context=ANCHORS_139["pin"]),
+    "2.0.0": dict(rooms=ROOMS_200, data=(DATA_139, DATA_SORTED_139), menu=ANCHORS_139["sort"], context=ANCHORS_139["pin"]),
+    # desktop-v2.0.3 (LUBOS-3874): every room and swap is byte-identical to 2.0.0 (one "2.0.0,2.0.3" layout).
+    "2.0.3": dict(rooms=ROOMS_200, data=(DATA_139, DATA_SORTED_139), menu=ANCHORS_139["sort"], context=ANCHORS_139["pin"]),
 }
+# The project order layout each release selects.
+LAYOUT_OF = {"1.37": "1.37-1.38", "1.38": "1.37-1.38", "1.39": "1.39", "1.40": "1.40", "2.0.0": "2.0.0,2.0.3", "2.0.3": "2.0.0,2.0.3"}
+RELEASES = tuple(LAYOUT_OF)
 # Labels each flag selection writes on a stock bundle.
 CORE = [HOOK.label, STORE.label, MODULE.PROJECT_ORDER_SWAPS[0][3]]
 SORT_LABELS = [SORT.label, MODULE.SORT_PROJECTS_SWAPS[0][3]]
@@ -141,6 +146,8 @@ STATUS = (
     (MODULE.STATUS_FILTER_REGIONS_1_40[2], "superset-1.40.0-status-filter-r3.js", (DATA_139, DATA_SORTED_139)),
     # 2.0 re-pins region 3 again (DashboardSidebarContent); the order line is the 1.39 one.
     (MODULE.STATUS_FILTER_REGIONS_2_0[2], "superset-2.0.0-status-filter-r3.js", (DATA_139, DATA_SORTED_139)),
+    # 2.0.3 re-pins region 3 once more (Channels / Devs sections); the order line is still the 1.39 one.
+    (MODULE.STATUS_FILTER_REGIONS_2_0_3[2], "superset-2.0.3-status-filter-r3.js", (DATA_139, DATA_SORTED_139)),
 )
 
 IMPORTED = sorted({name for names in (MODULE.PROJECT_ORDER_CHUNK_NAMES, MODULE.SORT_PROJECTS_CHUNK_NAMES, MODULE.PIN_PROJECTS_CHUNK_NAMES) for name in names[0]})
@@ -628,6 +635,8 @@ class Release140Test(unittest.TestCase):
 
     # The release under test, the one before it (its rooms make a mixed chunk) and its rooms.
     RELEASE, EARLIER, ROOMS = "1.40", "1.39", ROOMS_140
+    # The name of the layout the release selects.
+    LAYOUT = "1.40"
 
     # Value: protects=the 1.40 hook, store and pin rooms are exactly the reviewed fixtures, keep their length, re-run to nothing, parse, carry the 1.39 edits, change nothing but no-op comments and gain their JS once; fails_when=a 1.40 digest or the injected JS changes without its fixture, a 1.40 room inherits a 1.39 digest, or a 1.40 room rewrites upstream code; why_new=LUBOS-3122; seam=real 1.40.0 bytes
     def test_new_rooms_are_pinned_and_only_lose_comments(self):
@@ -669,7 +678,7 @@ class Release140Test(unittest.TestCase):
         for selection, (flags, labels) in SELECTIONS.items():
             with self.subTest(selection=selection), tempfile.TemporaryDirectory() as tmp:
                 original = bundle(layout_chunk(release=self.RELEASE))
-                self.assertEqual(MODULE._select_layout(original, MODULE.PROJECT_ORDER_LAYOUTS, "project order")[0], self.RELEASE)
+                self.assertEqual(MODULE._select_layout(original, MODULE.PROJECT_ORDER_LAYOUTS, "project order")[0], self.LAYOUT)
                 target, backups = Path(tmp) / "app.asar", Path(tmp) / "backups"
                 target.write_bytes(original)
                 options = dict(size=6, hide_tray=False, custom_project_icons=False, keep_icon_on_hover=False,
@@ -704,7 +713,7 @@ class Release140Test(unittest.TestCase):
             for selection, (flags, _labels) in SELECTIONS.items():
                 with self.subTest(extra_swap=key, selection=selection):
                     extra = layout_chunk(release=self.RELEASE) + b"\nfunction staleShape() {\n" + stale + b"\n}\n"
-                    with self.assertRaisesRegex(RuntimeError, f"anchor of another release next to the {self.RELEASE} layout"):
+                    with self.assertRaisesRegex(RuntimeError, f"anchor of another release next to the {self.LAYOUT} layout"):
                         patch(bundle(extra), **flags)
 
     # Value: protects=both flags stay opt-in, sticky and additive on 1.40; fails_when=the 1.40 core is rewritten by the second flag or a run without a flag fails on its bytes; why_new=LUBOS-3122; seam=none
@@ -721,14 +730,19 @@ class Release140Test(unittest.TestCase):
         self.assertEqual(patch(both), (both, []))
 
 class Release200Test(Release140Test):
-    """desktop-v2.0.0 (LUBOS-3343): the re-pinned hook, store and sort rooms on the 1.39 swaps."""
+    """desktop-v2.0.0 (LUBOS-3343): the re-pinned hook, store and sort rooms on the 1.39 swaps.
 
-    RELEASE, EARLIER, ROOMS = "2.0", "1.40", ROOMS_200
+    desktop-v2.0.3 (LUBOS-3874) keeps every room and swap byte for byte, so one "2.0.0,2.0.3" layout covers both.
+    """
+
+    RELEASE, EARLIER, ROOMS = "2.0.0", "1.40", ROOMS_200
+    LAYOUT = "2.0.0,2.0.3"
 
     # Value: protects=the 2.0 hook, store and sort rooms are exactly the reviewed fixtures, keep their length, re-run to nothing, parse, carry the 1.40 edits, change nothing but no-op comments and gain their JS once; the pin room and the swaps are the 1.40 ones; fails_when=a 2.0 digest or the injected JS changes without its fixture, a 2.0 room inherits a 1.40 digest, or a 2.0 room rewrites upstream code; why_new=LUBOS-3343; seam=real 2.0.0 bytes
     def test_new_rooms_are_pinned_and_only_lose_comments(self):
         layout = MODULE.PROJECT_ORDER_LAYOUTS[3]
-        self.assertEqual(layout[0], "2.0")
+        self.assertEqual(layout[0], "2.0.0,2.0.3")
+        self.assertEqual(len(MODULE.PROJECT_ORDER_LAYOUTS), 4)
         self.assertEqual(layout[3], (MODULE.PROJECT_ORDER_REGIONS_2_0, MODULE.SORT_PROJECTS_REGIONS_2_0, MODULE.PIN_PROJECTS_REGIONS_1_40))
         self.assertEqual(layout[4], MODULE.PROJECT_ORDER_LAYOUTS[2][4])
         earlier = {**ROOMS_140, "sort": ROOMS["sort"]}
@@ -762,9 +776,19 @@ class Release200Test(Release140Test):
         self.assertEqual(fixture("superset-2.0.0-status-filter-r3.js").count(DATA_139), 1)
         self.assertNotIn(DATA, fixture("superset-2.0.0-status-filter-r3.js"))
 
+    # Value: protects=2.0.3 keeps the swap anchors where 2.0.0 has them: status regions 2 and 6 are the 2.0.0 (1.39) ones and the re-pinned 2.0.3 region 3 holds the 1.39 order line once, so one layout serves both releases; fails_when=2.0.3 reshapes the order line, the sort hint or the project menu, or a room drifts so that "2.0.0,2.0.3" no longer fits 2.0.3; why_new=LUBOS-3874; seam=real 2.0.3 bytes
+    def test_2_0_3_keeps_the_2_0_0_rooms_and_swaps(self):
+        self.assertIs(MODULE.STATUS_FILTER_REGIONS_2_0_3[1], MODULE.STATUS_FILTER_REGIONS_2_0[1])
+        self.assertIs(MODULE.STATUS_FILTER_REGIONS_2_0_3[5], MODULE.STATUS_FILTER_REGIONS_2_0[5])
+        r3 = fixture("superset-2.0.3-status-filter-r3.js")
+        self.assertEqual(r3.count(DATA_139), 1)
+        self.assertNotIn(DATA, r3)
+        self.assertEqual(MODULE._layout_releases(self.LAYOUT), {"2.0.0", "2.0.3"})
+        self.assertEqual(PARTS["2.0.3"], PARTS["2.0.0"])
+
 
 class CompositionTest(unittest.TestCase):
-    """--sort-projects / --pin-projects with every other family, in either order, on 1.37 through 2.0.
+    """--sort-projects / --pin-projects with every other family, in either order, on 1.37 through 2.0.3.
 
     The synthetic bundle per release is the pinned sort one (real stock regions of the status filter,
     the device filter, the palette search and the pinned sort room, chained as in the real chunk) plus
@@ -785,7 +809,7 @@ class CompositionTest(unittest.TestCase):
 
     # Value: protects=both flags compose with each named family in either order: the same bytes whichever runs first, both orders equal the joint run, a later run of either is a no-op, and neither undoes the other; fails_when=a swap inside a status region is not a declared shared pair, a room region overlaps another family, or a family's plan depends on the other's state; why_new=contract composition rule; seam=real 1.36-1.38 status, device, palette and pinned sort regions
     def test_each_family_in_either_order_yields_the_same_bytes(self):
-        for release in ("1.37", "1.38", "1.39", "1.40", "2.0"):
+        for release in RELEASES:
             stock = self.stock(release)
             parts = PARTS[release]
             for anchor, _patched in (parts["data"], parts["menu"], parts["context"]):
@@ -807,7 +831,7 @@ class CompositionTest(unittest.TestCase):
     # Value: protects=the full production set (every named family at once) plus either flag or both gives the same bytes in both orders and re-runs to nothing; with the status filter the swaps are folded into the status region rewrites; fails_when=two families' writes overlap or a fold is lost; why_new=contract composition rule; seam=real fixtures as above
     def test_all_families_at_once_in_either_order(self):
         everything = list(self.FAMILIES)
-        for release in ("1.37", "1.38", "1.39", "1.40", "2.0"):
+        for release in RELEASES:
             stock = self.stock(release)
             parts = PARTS[release]
             pinned_sorted = MODULE.PINNED_SORT_DATA_SORTED_1_39 if release == "1.39" else MODULE.PINNED_SORT_DATA_SORTED
@@ -817,7 +841,7 @@ class CompositionTest(unittest.TestCase):
                     self.assertTrue({HOOK.label, STORE.label} <= set(changes))
                     for _name, _stock, _patched, label in SWAPS:
                         self.assertNotIn(label, changes)  # folded into the status filter region rewrites
-                    self.assertEqual(MODULE._select_layout(stock, MODULE.PROJECT_ORDER_LAYOUTS, "project order")[0], release if release in ("1.39", "1.40", "2.0") else "1.37-1.38")
+                    self.assertEqual(MODULE._select_layout(stock, MODULE.PROJECT_ORDER_LAYOUTS, "project order")[0], LAYOUT_OF[release])
                     self.assertEqual(self.patch(self.patch(stock, *everything, sort=False, pin=False)[0], *everything, **flags)[0], together)
                     self.assertEqual(self.patch(self.patch(stock, **flags)[0], *everything, **flags)[0], together)
                     self.assertEqual(self.patch(together, *everything, **flags), (together, []))
@@ -833,12 +857,19 @@ class CompositionTest(unittest.TestCase):
             self.assertEqual(sorted(changes), sorted(PIN_LABELS))
             self.assertEqual(both, self.patch(stock, *everything)[0])
 
-    # Value: protects=a bundle holding families of different releases (here the palette's 1.39 region 2 in a 1.40 bundle and back) is refused before any write whatever runs: all families, two, each one alone, only the base flags, so applying them one run at a time cannot slip past either; fails_when=each family picks its layout alone, or the plan compares only the flagged families; why_new=opposition review rounds 1 and 2 (LUBOS-3122); seam=real 1.39 / 1.40 palette and status regions
+    # Value: protects=a bundle holding families of different releases (here the palette's 1.39 region 2 in a 1.40 bundle and back, and its 2.0.0 region 3 in a 2.0.3 bundle and back) is refused before any write whatever runs: all families, two, each one alone, only the base flags, so applying them one run at a time cannot slip past either; fails_when=each family picks its layout alone, or the plan compares only the flagged families; why_new=opposition review rounds 1 and 2 (LUBOS-3122); seam=real 1.39 / 1.40 palette and status regions
     def test_families_of_different_releases_fail_before_any_write(self):
         everything = list(self.FAMILIES)
-        for release, other in (("1.40", palette_tests.STOCK_139), ("1.39", palette_tests.STOCK_140)):
-            own = palette_tests.STOCK_140 if release == "1.40" else palette_tests.STOCK_139
-            mixed = self.stock(release).replace(own[1], other[1])
+        # (release, its palette region, the other release's cut of it): 1.39 / 1.40 region 2 and 2.0.0 / 2.0.3
+        # region 3 (the 2.0.2 shape mixes 2.0.0 and 2.0.3 regions).
+        cases = (
+            ("1.40", palette_tests.STOCK_140[1], palette_tests.STOCK_139[1]),
+            ("1.39", palette_tests.STOCK_139[1], palette_tests.STOCK_140[1]),
+            ("2.0.3", palette_tests.STOCK_203[2], palette_tests.STOCK_200[2]),
+            ("2.0.0", palette_tests.STOCK_200[2], palette_tests.STOCK_203[2]),
+        )
+        for release, own, other in cases:
+            mixed = self.stock(release).replace(own, other)
             self.assertNotEqual(mixed, self.stock(release))
             selections = [everything, ["status filter v5", "palette workspace search"], *([family] for family in everything), []]
             for families in selections:
@@ -854,16 +885,29 @@ class CompositionTest(unittest.TestCase):
     def test_layout_names_cover_their_releases(self):
         self.assertEqual(MODULE._layout_releases("1.37-1.39"), {"1.37", "1.38", "1.39"})
         self.assertEqual(MODULE._layout_releases("1.40.0"), {"1.40"})
-        self.assertEqual(MODULE._layout_releases("1.40,2.0"), {"1.40", "2.0"})
+        self.assertEqual(MODULE._layout_releases("1.40,2.0.0"), {"1.40", "2.0.0"})
+        self.assertEqual(MODULE._layout_releases("2.0.0,2.0.3"), {"2.0.0", "2.0.3"})
+        # From 2.0 on a part names one exact patch release: no minor-level name, no range.
+        for name in ("2.0", "1.40,2.0", "2.0.0-2.0.3", "2.0-2.1"):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "names one exact patch release"):
+                MODULE._layout_releases(name)
         self.assertEqual(MODULE._layout_releases("1.25-1.35"), {f"1.{minor}" for minor in range(25, 36)})
         for table in (MODULE.STATUS_FILTER_LAYOUTS, MODULE.PALETTE_SEARCH_LAYOUTS, MODULE.AUTOMATIONS_HEADER_LAYOUTS,
                       MODULE.SIDEBAR_DEVICE_LAYOUTS, MODULE.DESKTOP_PIN_LAYOUTS, MODULE.DESKTOP_PRESET_LAYOUTS,
                       MODULE.PROJECT_ORDER_LAYOUTS):
             self.assertIn("1.40", set().union(*(MODULE._layout_releases(layout[0]) for layout in table)))
-        # 2.0 ships every family but desktop pin / preset sync, which stay on 1.40 (no 2.0 layout).
-        for table in (MODULE.STATUS_FILTER_LAYOUTS, MODULE.PALETTE_SEARCH_LAYOUTS, MODULE.AUTOMATIONS_HEADER_LAYOUTS,
-                      MODULE.SIDEBAR_DEVICE_LAYOUTS, MODULE.PROJECT_ORDER_LAYOUTS):
-            self.assertIn("2.0", set().union(*(MODULE._layout_releases(layout[0]) for layout in table)))
+        # 2.0.0 and 2.0.3 ship every family but desktop pin / preset sync, which stay on 1.40 (no 2.x layout).
+        for release in ("2.0.0", "2.0.3"):
+            for table in (MODULE.STATUS_FILTER_LAYOUTS, MODULE.PALETTE_SEARCH_LAYOUTS, MODULE.AUTOMATIONS_HEADER_LAYOUTS,
+                          MODULE.AUTOMATIONS_VIEW_LAYOUTS, MODULE.SIDEBAR_DEVICE_LAYOUTS, MODULE.PROJECT_ORDER_LAYOUTS):
+                with self.subTest(release=release, layouts=[layout[0] for layout in table]):
+                    self.assertIn(release, set().union(*(MODULE._layout_releases(layout[0]) for layout in table)))
+            for table in (MODULE.DESKTOP_PIN_LAYOUTS, MODULE.DESKTOP_PRESET_LAYOUTS):
+                self.assertNotIn(release, set().union(*(MODULE._layout_releases(layout[0]) for layout in table)))
+        self.assertIn(("2.0.0", "2.0.3"), [names[-2:] for names in MODULE.PINNED_SORT_RELEASE_NAMES])
+        # 2.0.2 (a mix of 2.0.0 and 2.0.3 shapes) has no layout in any family.
+        for table in (layouts for _label, layouts in MODULE.RELEASE_PROBES):
+            self.assertNotIn("2.0.2", set().union(*(MODULE._layout_releases(layout[0]) for layout in table)))
 
 
 @live_host_only("anchors, names and chunk syntax are checked against the Superset.app bundle installed on this host")
