@@ -26,11 +26,13 @@ SPEC.loader.exec_module(MODULE)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from isolated_locks import isolate  # noqa: E402  (tests/isolated_locks.py)
 from live_host import live_host_only  # noqa: E402  (LIVE_HOST_ONLY, tests/live_host.py)
+from live_bundle import bundle_map, share_scans  # noqa: E402  (one bundle scan per process, tests/live_bundle.py)
 from test_superset_icon_patch import installed_stock_snapshot, node_check  # noqa: E402
 from test_superset_palette_patch import BASE, asar  # noqa: E402
 import test_superset_icon_patch as icon_tests  # noqa: E402  (module, so its TestCases are not collected twice)
 
 isolate(MODULE)
+share_scans(MODULE)
 
 # Every region of both families is byte-identical in desktop-v1.37.0 and v1.38.0; the fixtures are
 # cut from the real 1.38.0 FeatureHeader-js7vLfg4.js, page-BrmkiX2_.js and layout-LF5A5mOm.js.
@@ -858,7 +860,7 @@ class InstalledTest(unittest.TestCase):
     def test_stock_snapshot_plans_and_patched_chunks_parse(self):
         import mmap
 
-        with self.stock.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+        with self.stock.open("rb") as stream, bundle_map(stream, mmap.ACCESS_READ) as data:
             writes = MODULE._plan_automations_header(data) + MODULE._plan_sidebar_device_filter(data)
             # 1.40 deleted the cloud guard: the installed release's layout lists the swaps it still has.
             swaps = MODULE._select_layout(data, MODULE.SIDEBAR_DEVICE_LAYOUTS, "sidebar device filter")[3]
@@ -884,7 +886,7 @@ class InstalledTest(unittest.TestCase):
 
         options = json.loads(APPROVED_FLAGS.read_text())["patch_options"]
         options.update(command_palette_cmd_k=True, command_palette_workspace_search=True, status_filter_hotkeys=True)
-        with MODULE.DEFAULT_ASAR.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_COPY) as data:
+        with MODULE.DEFAULT_ASAR.open("rb") as stream, bundle_map(stream, mmap.ACCESS_COPY) as data:
             try:
                 others = MODULE.plan_replacements(data, **options)
             except RuntimeError as exc:
@@ -910,7 +912,7 @@ class InstalledTest(unittest.TestCase):
     def test_installed_css_has_every_injected_class(self):
         import mmap
 
-        with self.stock.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+        with self.stock.open("rb") as stream, bundle_map(stream, mmap.ACCESS_READ) as data:
             css = b"".join(bytes(data[start : start + size]) for path, start, size in MODULE._asar_entries(data) if re.search(r"/index-[^/]+\.css$", path))
         injected = b"".join((
             MODULE.AUTOMATIONS_HEADER_WRAP_JS, MODULE.AUTOMATIONS_HEADER_JS, MODULE.SIDEBAR_DEVICE_MENU_JS, MODULE.SIDEBAR_DEVICE_ITEMS_JS,

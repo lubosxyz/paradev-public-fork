@@ -26,9 +26,11 @@ SPEC.loader.exec_module(MODULE)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from isolated_locks import isolate  # noqa: E402  (tests/isolated_locks.py)
 from live_host import live_host_only  # noqa: E402  (LIVE_HOST_ONLY, tests/live_host.py)
+from live_bundle import bundle_map, share_scans  # noqa: E402  (one bundle scan per process, tests/live_bundle.py)
 from test_superset_icon_patch import installed_stock_snapshot, node_check  # noqa: E402
 
 isolate(MODULE)
+share_scans(MODULE)
 
 REGIONS = MODULE.PALETTE_SEARCH_REGIONS
 STOCK = [(FIXTURES / f"superset-1.37.0-palette-r{n}.js").read_bytes() for n in range(1, 8)]
@@ -965,7 +967,7 @@ class InstalledPaletteTest(unittest.TestCase):
     def test_stock_snapshot_plans_and_patched_chunks_parse(self):
         import mmap
 
-        with self.stock.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+        with self.stock.open("rb") as stream, bundle_map(stream, mmap.ACCESS_READ) as data:
             writes = MODULE._plan_command_palette_cmd_k(data) + MODULE._plan_command_palette_workspace_search(data)
             labels = [r.label for r in MODULE._select_layout(data, MODULE.PALETTE_SEARCH_LAYOUTS, "command palette")[1]]
             self.assertEqual(sorted(w[3] for w in writes), sorted(labels + SWAP_LABELS))
@@ -986,7 +988,7 @@ class InstalledPaletteTest(unittest.TestCase):
         import mmap
 
         options = json.loads(APPROVED_FLAGS.read_text())["patch_options"]
-        with MODULE.DEFAULT_ASAR.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_COPY) as data:
+        with MODULE.DEFAULT_ASAR.open("rb") as stream, bundle_map(stream, mmap.ACCESS_COPY) as data:
             try:
                 approved = MODULE.plan_replacements(data, **options)
             except RuntimeError as exc:
@@ -1002,7 +1004,7 @@ class InstalledPaletteTest(unittest.TestCase):
         import mmap
 
         row = rb'ProjectThumbnail, \{ projectName, iconUrl, color: projectColor, className: "(size-\d+) group-hover:!block" \}'
-        with MODULE.DEFAULT_ASAR.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_COPY) as data:
+        with MODULE.DEFAULT_ASAR.open("rb") as stream, bundle_map(stream, mmap.ACCESS_COPY) as data:
             entries = MODULE._asar_entries(data)
             chunk = next((start, size) for path, start, size in entries if re.search(r"/layout-[^/]+\.js$", path) and b"function DashboardSidebarProjectSection" in data[start : start + size])
             if not re.search(row, data[chunk[0] : chunk[0] + chunk[1]]):
@@ -1023,7 +1025,7 @@ class InstalledPaletteTest(unittest.TestCase):
     def test_installed_css_has_the_plus_button_classes(self):
         import mmap
 
-        with MODULE.DEFAULT_ASAR.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+        with MODULE.DEFAULT_ASAR.open("rb") as stream, bundle_map(stream, mmap.ACCESS_READ) as data:
             css = b"".join(bytes(data[start : start + size]) for path, start, size in MODULE._asar_entries(data) if re.search(r"/index-[^/]+\.css$", path))
         classes = re.search(rb'className: "ssp-plus ([^"]+)"', MODULE.PALETTE_NEW_WORKSPACE_PLUS_JS).group(1).split()
         classes += re.findall(rb'HiMiniPlus, \{ className: "([^"]+)" \}', MODULE.PALETTE_NEW_WORKSPACE_PLUS_JS)
@@ -1038,7 +1040,7 @@ class InstalledPaletteTest(unittest.TestCase):
     def test_installed_bundle_rerun_parses(self):
         import mmap
 
-        with MODULE.DEFAULT_ASAR.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_COPY) as data:
+        with MODULE.DEFAULT_ASAR.open("rb") as stream, bundle_map(stream, mmap.ACCESS_COPY) as data:
             writes = MODULE._plan_command_palette_workspace_search(data)
             if not writes:
                 self.skipTest("installed bundle already carries the current generation")

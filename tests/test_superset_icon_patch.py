@@ -24,8 +24,10 @@ import sys  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from isolated_locks import TEST_HOME, isolate  # noqa: E402  (tests/isolated_locks.py)
 from live_host import live_host_only  # noqa: E402  (LIVE_HOST_ONLY, tests/live_host.py)
+from live_bundle import bundle_map, share_scans  # noqa: E402  (one bundle scan per process, tests/live_bundle.py)
 
 isolate(MODULE)
+share_scans(MODULE)
 
 
 @functools.lru_cache(maxsize=1)
@@ -205,7 +207,7 @@ class SupersetUiPatchTest(unittest.TestCase):
         if asar is None:
             self.skipTest("no installed Superset bundle on this machine")
         with asar.open("rb") as stream:
-            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            with bundle_map(stream, mmap.ACCESS_READ) as data:
                 MODULE.plan_replacements(
                     data,
                     size=6,
@@ -229,7 +231,7 @@ class SupersetUiPatchTest(unittest.TestCase):
         # The approved set is the production set the re-apply paths pass.
         options = json.loads(APPROVED_FLAGS.read_text())["patch_options"]
         with asar.open("rb") as stream:
-            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_COPY) as data:
+            with bundle_map(stream, mmap.ACCESS_COPY) as data:
                 writes = MODULE.plan_replacements(data, **options)
                 self.assertTrue(writes)
                 for offset, _old, new, _label in writes:
@@ -1476,7 +1478,7 @@ class SupersetPinnedIconOnlyPatchTest(unittest.TestCase):
         if asar is None:
             self.skipTest("no installed Superset bundle on this machine")
         with asar.open("rb") as stream:
-            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            with bundle_map(stream, mmap.ACCESS_READ) as data:
                 MODULE._plan_pinned_icon_only(data)
 
     def test_cli_forwards_pinned_icon_only_to_patch_file(self):
@@ -2795,7 +2797,7 @@ assert.equal(element.props.children[0].props.onExpandedChange(false), undefined)
         if asar is None:
             self.skipTest("no installed Superset bundle on this machine")
         with asar.open("rb") as stream:
-            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            with bundle_map(stream, mmap.ACCESS_READ) as data:
                 _name, regions, variants = MODULE.status_filter_layout(data)
                 for region in regions:
                     with self.subTest(region=region.label):
@@ -2833,7 +2835,7 @@ assert.equal(element.props.children[0].props.onExpandedChange(false), undefined)
                         yield path, base + int(child["offset"]), child["size"]
 
             entries = list(files(header))
-            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            with bundle_map(stream, mmap.ACCESS_READ) as data:
                 containing = set()
                 for region in MODULE.status_filter_layout(data)[1]:
                     offsets = MODULE._find_all(data, region.start)
@@ -3735,7 +3737,7 @@ console.log(JSON.stringify(result));
         if asar is None:
             self.skipTest("no installed Superset bundle on this machine")
         with asar.open("rb") as stream:
-            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            with bundle_map(stream, mmap.ACCESS_READ) as data:
                 MODULE._plan_sound_only_when_waiting(data)
 
 

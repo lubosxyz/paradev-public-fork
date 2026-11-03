@@ -7,6 +7,7 @@ import subprocess
 import unittest
 from test_superset_icon_patch import MODULE, installed_stock_snapshot, node_check
 from live_host import live_host_only
+from live_bundle import bundle_map
 
 FIXTURES = Path(__file__).parent / 'fixtures'
 FILES = ['index.js', 'renderer.js', 'host-service.js']
@@ -51,7 +52,7 @@ class InstalledTest(unittest.TestCase):
             self.skipTest('no installed bundle')
         flags = json.loads(Path('patches/approved-flags.json').read_text())
         options = flags['patch_options'] | {key: True for key in flags['opt_in_flags']}
-        with stock.open('rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_COPY) as data:
+        with stock.open('rb') as f, bundle_map(f, mmap.ACCESS_COPY) as data:
             if not any(data.find(MODULE._release_banner(layout[0])) >= 0 for layout in MODULE.DESKTOP_PIN_LAYOUTS):
                 # A release without a layout (2.0.0, LUBOS-3343): the flag refuses before a write, every other flag plans.
                 with self.assertRaisesRegex(RuntimeError, 'desktop pin sync: unsupported desktop version'):

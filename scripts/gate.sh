@@ -3,7 +3,8 @@
 # stdlib unittest suite of the bundle patch tooling. No network, no package install, no writes
 # outside a temp dir; the live-bundle tests only read /Applications/Superset.app.
 # Usage: scripts/gate.sh [--live]   (run from anywhere; exits non-zero on the first failing step)
-#   default  fast gate: LIVE_HOST_ONLY tests skipped (they take minutes: each maps the 1 GB bundle)
+#   default  fast gate: LIVE_HOST_ONLY tests skipped (they scan the 1 GB bundle; tests/live_bundle.py
+#            shares one scan per bundle file and process, so a re-plan of the same bytes is free)
 #   --live   also run the LIVE_HOST_ONLY tests against the installed bundle; required when a change
 #            touches anchors, regions, digests or flags of patches/*.py (README.md "Brána")
 set -euo pipefail
@@ -26,7 +27,7 @@ start=$(date +%s)
 # Every scanned directory must exist: a missing one would otherwise shrink a step to 0 files.
 SCANNED_DIRS="patches tests tests/fixtures tools"
 # The suite must load each of these modules; a rename or import error must not pass as "Ran 0 tests".
-REQUIRED_TEST_MODULES="test_superset_icon_patch test_superset_tray_patch test_prune_asar_backups test_superset_palette_patch test_superset_device_automations_patch test_superset_automations_view_patch test_superset_pinned_sort_patch test_superset_project_order_patch test_superset_desktop_pin_sync test_superset_desktop_preset_sync"
+REQUIRED_TEST_MODULES="test_live_bundle test_superset_icon_patch test_superset_tray_patch test_prune_asar_backups test_superset_palette_patch test_superset_device_automations_patch test_superset_automations_view_patch test_superset_pinned_sort_patch test_superset_project_order_patch test_superset_desktop_pin_sync test_superset_desktop_preset_sync"
 for dir in $SCANNED_DIRS; do [ -d "$dir" ] || fail "missing directory: $dir"; done
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

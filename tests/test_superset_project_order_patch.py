@@ -27,6 +27,7 @@ SPEC.loader.exec_module(MODULE)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from isolated_locks import isolate  # noqa: E402  (tests/isolated_locks.py)
 from live_host import live_host_only  # noqa: E402  (LIVE_HOST_ONLY, tests/live_host.py)
+from live_bundle import bundle_map, share_scans  # noqa: E402  (one bundle scan per process, tests/live_bundle.py)
 from test_superset_icon_patch import installed_stock_snapshot, node_check  # noqa: E402
 from test_superset_palette_patch import BASE, asar  # noqa: E402
 import test_superset_device_automations_patch as device_tests  # noqa: E402  (modules, so their TestCases are not collected twice)
@@ -34,6 +35,7 @@ import test_superset_pinned_sort_patch as pinned_tests  # noqa: E402
 import test_superset_palette_patch as palette_tests  # noqa: E402
 
 isolate(MODULE)
+share_scans(MODULE)
 
 
 def fixture(name: str) -> bytes:
@@ -923,7 +925,7 @@ class InstalledTest(unittest.TestCase):
     def test_stock_snapshot_plans_and_patched_chunk_parses(self):
         import mmap
 
-        with self.stock.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+        with self.stock.open("rb") as stream, bundle_map(stream, mmap.ACCESS_READ) as data:
             writes = MODULE._plan_project_order(data, True, True)
             self.assertEqual(sorted(w[3] for w in writes), sorted(SELECTIONS["both"][1]))
             touched_paths = []
@@ -948,7 +950,7 @@ class InstalledTest(unittest.TestCase):
         options.update({name: True for name in json.loads(APPROVED_FLAGS.read_text())["opt_in_flags"]})
         options.update(sort_projects=False, pin_projects=False)
         # A banner-bound family the installed release has no layout for (2.0 has no pin / preset sync) stays off.
-        with self.stock.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+        with self.stock.open("rb") as stream, bundle_map(stream, mmap.ACCESS_READ) as data:
             for flag, layouts in (("desktop_pin_sync", MODULE.DESKTOP_PIN_LAYOUTS), ("desktop_preset_sync", MODULE.DESKTOP_PRESET_LAYOUTS)):
                 if not any(data.find(MODULE._release_banner(layout[0])) >= 0 for layout in layouts):
                     options[flag] = False
@@ -960,7 +962,7 @@ class InstalledTest(unittest.TestCase):
             results = []
             for first, second in ((options, order_only), (order_only, options), (everything, None)):
                 stream.seek(0)
-                with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_COPY) as data:
+                with bundle_map(stream, mmap.ACCESS_COPY) as data:
                     for flags in (first, second):
                         if flags is None:
                             continue

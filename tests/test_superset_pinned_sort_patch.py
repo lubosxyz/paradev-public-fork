@@ -26,6 +26,7 @@ SPEC.loader.exec_module(MODULE)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from isolated_locks import isolate  # noqa: E402  (tests/isolated_locks.py)
 from live_host import live_host_only  # noqa: E402  (LIVE_HOST_ONLY, tests/live_host.py)
+from live_bundle import bundle_map, share_scans  # noqa: E402  (one bundle scan per process, tests/live_bundle.py)
 from test_superset_icon_patch import installed_stock_snapshot, node_check  # noqa: E402
 from test_superset_palette_patch import BASE, asar  # noqa: E402
 import test_superset_icon_patch as icon_tests  # noqa: E402  (modules, so their TestCases are not collected twice)
@@ -33,6 +34,7 @@ import test_superset_palette_patch as palette_tests  # noqa: E402
 import test_superset_device_automations_patch as device_tests  # noqa: E402
 
 isolate(MODULE)
+share_scans(MODULE)
 
 # The room region and the data line are byte-identical in desktop-v1.37.0 layout-D7FqonPn.js and
 # v1.38.0 layout-LF5A5mOm.js (checked against the M5 stock backup when the family was written); the
@@ -533,7 +535,7 @@ class InstalledTest(unittest.TestCase):
     def test_stock_snapshot_plans_and_patched_chunk_parses(self):
         import mmap
 
-        with self.stock.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+        with self.stock.open("rb") as stream, bundle_map(stream, mmap.ACCESS_READ) as data:
             writes = MODULE._plan_pinned_activity_sort(data)
             self.assertEqual(sorted(w[3] for w in writes), sorted(LABELS))
             touched_paths = []
@@ -564,7 +566,7 @@ class InstalledTest(unittest.TestCase):
             results = []
             for first, second in ((options, sort_only), (sort_only, options), ({**options, "pinned_activity_sort": True}, None)):
                 stream.seek(0)
-                with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_COPY) as data:
+                with bundle_map(stream, mmap.ACCESS_COPY) as data:
                     for flags in (first, second):
                         if flags is None:
                             continue
