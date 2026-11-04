@@ -827,6 +827,7 @@ class SupersetUiPatchTest(unittest.TestCase):
             automations_header=False,
             automations_view=False,
             sidebar_device_filter=False,
+            sidebar_one_row=False,
             desktop_pin_sync=False,
             desktop_preset_sync=False,
             pinned_activity_sort=False,

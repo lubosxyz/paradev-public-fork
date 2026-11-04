@@ -95,6 +95,17 @@ TOP_NAV_GRID_1_36 = _pad_variant(
     b'className:"grid gap-1 p-2",style:{gridTemplateColumns:"repeat(4,1fr)",'
     b'paddingTop:WINDOW_CONTROLS_ROW_TOP/(isMac?zoomFactor:1)},',
 )
+# --sidebar-one-row (desktop 2.0.3, on top of the grid): the titlebar and the icons
+# share one row, starting at the arrows. Inline tracks because index-*.css ships no
+# col-span-4: the "grid" titlebar only ever filled column 1, so the fourth icon fell
+# off the row. The first track takes the titlebar, the icons keep their own width and
+# sit at the right edge, level with the search row below. A fifth icon (Usage, when
+# enabled) wraps to a second row instead of being clipped.
+TOP_NAV_ONE_ROW = _pad_variant(
+    TOP_NAV_STACK_1_36,
+    b'className:"grid items-center gap-1 p-2",style:{gridTemplateColumns:"1fr repeat(4,auto)",'
+    b'paddingTop:WINDOW_CONTROLS_ROW_TOP/(isMac?zoomFactor:1)},',
+)
 # Header generations are release-coupled across the layout, the failure badge
 # and the Automations label: a bundle must present all three from one side.
 HEADER_RELEASE_1_36 = "1.36.0+"
@@ -104,6 +115,13 @@ TOP_NAV_TITLEBAR_GRID = _pad_variant(
     TOP_NAV_TITLEBAR_STACK,
     b'className: "col-span-4 mx-0 flex h-8 items-center"',
 )
+TOP_NAV_TITLEBAR_ONE_ROW = _pad_variant(TOP_NAV_TITLEBAR_STACK, b'className: "mx-0 flex h-8 items-center"')
+# The expanded titlebar's toggle (16-space indent); WindowChrome (6) and TopBar (12)
+# keep theirs, so a collapsed sidebar still shows the way back, and Cmd+B is unchanged.
+TITLEBAR_SIDEBAR_TOGGLE = b"                /* @__PURE__ */ jsxRuntimeExports.jsx(SidebarToggle, {}),\n"
+TITLEBAR_SIDEBAR_TOGGLE_HIDDEN = _pad_variant(
+    TITLEBAR_SIDEBAR_TOGGLE[:-1], b"                /* --sidebar-one-row: no toggle */"
+) + b"\n"
 # Deeper child-workspace indentation was adopted upstream in desktop-v1.25.x.
 # Desktop 1.26.0 added a distinct top-level mode, retained by 1.27.0, while
 # preserving grouped and workspace indentation. The local patch stays retired;
@@ -1799,6 +1817,30 @@ STATUS_FILTER_REGIONS_2_0 = (
     _rebased(STATUS_FILTER_REGIONS_1_40[4], 10535, "8adf6ff70b8c9d58c47bdef6ca60bf5b07af4d89fb7782d94dc7ca6361381c32", "11d6b2e88e558a740960760db90bf9b4193ec6beb7d61b73c69fd405db31f1fa"),
     *STATUS_FILTER_REGIONS_1_40[5:],
 )
+# --sidebar-one-row: the device dropdown joins the sticky search row, right of the
+# input and left of the two fold buttons. Same length as the stock return of
+# SsfSearch (STATUS_FILTER_SEARCH_JS): it is a `shared` pair of the 2.0.3 search
+# region, so the region digest still reads as patched and a run without the flag
+# keeps it (sticky). SdfDevices comes from --sidebar-device-filter, a prerequisite.
+SIDEBAR_ONE_ROW_SEARCH = (
+    b'''  return jsxRuntimeExports.jsxs("div", { className: "flex shrink-0 gap-1 px-2 pb-2", children: [jsxRuntimeExports.jsx(DashboardSidebarProjectsFilterInput, { query, isExpanded: true, onExpandedChange: () => {
+  }, onQueryChange: (value) => {
+    const sections = useSidebarSectionsCollapseStore.getState();
+    if (value.trim() && sections.collapsed.workspaces) sections.toggle("workspaces");
+    onQueryChange(value);
+  } }), jsxRuntimeExports.jsx(SsfFold, { ssfF, g: 1 }), jsxRuntimeExports.jsx(SsfFold, { ssfF })] });
+'''
+)
+SIDEBAR_ONE_ROW_SEARCH_MOUNT = _pad_variant(
+    SIDEBAR_ONE_ROW_SEARCH[:-1],
+    b'''  const jsx = jsxRuntimeExports.jsx;
+  return jsxRuntimeExports.jsxs("div", { className: "flex shrink-0 gap-1 px-2 pb-2", children: [jsx(DashboardSidebarProjectsFilterInput, { query, isExpanded: true, onExpandedChange: () => {
+  }, onQueryChange: (value) => {
+    const s = useSidebarSectionsCollapseStore.getState();
+    if (value.trim() && s.collapsed.workspaces) s.toggle("workspaces");
+    onQueryChange(value);
+  } }), jsx(SdfDevices, { row: 1 }), jsx(SsfFold, { ssfF, g: 1 }), jsx(SsfFold, { ssfF })] });''',
+) + b"\n"
 # 2.0.3 adds Channels / Devs sections (behind the channels feature flag) and a
 # pause-notifications submenu, and nests the workspace copy actions in a
 # submenu, all away from the edits. Region 3 mounts the two sections inside the
@@ -1808,7 +1850,7 @@ STATUS_FILTER_REGIONS_2_0 = (
 # dialog. Region 10 keeps its bytes but now ends at ChannelContextMenu (the
 # section header moved up the chunk). Regions 1, 2, 4, 6-8, 11 and 14 are
 # byte-identical to 2.0.0.
-STATUS_FILTER_REGIONS_2_0_3 = (
+STATUS_FILTER_REGIONS_2_0_3 = tuple(replace(region, shared=(*region.shared, (SIDEBAR_ONE_ROW_SEARCH, SIDEBAR_ONE_ROW_SEARCH_MOUNT))) if region.label == "status filter: search" else region for region in (
     *STATUS_FILTER_REGIONS_2_0[:2],
     _rebased(STATUS_FILTER_REGIONS_2_0[2], 16927, "f01a6dd3b15b1ed76b98cd24e422572e623ec035a3e06754842f822b9a63a91e", "8c8c56d65f8c12d4d2c44321a89c33314dec309e62357e7b543bdf83d880947b"),
     STATUS_FILTER_REGIONS_2_0[3],
@@ -1823,7 +1865,7 @@ STATUS_FILTER_REGIONS_2_0_3 = (
     _rebased(STATUS_FILTER_REGIONS_2_0[11], 22628, "9870f64accaaa033e2dc5f32270e45b108a62622cf1dfc6e129b157a7ccbba1c", "837655d78e57c0372975236ea6361f6d683969518ddd6e6732609d665875700c"),
     _rebased(STATUS_FILTER_REGIONS_2_0[12], 19770, "37330cda38b315ea5de2fb456efe844959385a29aa3c0c029210c15b436b72de", "37c6a0790bdd35b2129c0bd05dded8df4daa7e9ced194de9a8661e1c8e5686c8"),
     STATUS_FILTER_REGIONS_2_0[13],
-)
+))
 # (name, regions, sibling variants): every supported release layout of the filter.
 STATUS_FILTER_LAYOUTS = (
     ("1.36-1.37", STATUS_FILTER_REGIONS, STATUS_FILTER_REGION_VARIANTS),
@@ -3633,6 +3675,27 @@ SIDEBAR_DEVICE_MENU_JS = b'''function SdfDevices(props) {
   ] }), jsxRuntimeExports.jsx(PortsDropdown, props)] });
 }
 '''
+# --sidebar-one-row: the titlebar mount renders only the ports button; the search row
+# mount (`row`) renders the dropdown as a size-6 icon button like its two neighbours.
+# The icon is the selected device's, the highlight says a device is selected and the
+# tooltip names it. A `shared` pair of the 2.0.3 data region, see SIDEBAR_ONE_ROW_SEARCH.
+SIDEBAR_ONE_ROW_MENU = _pad_variant(
+    SIDEBAR_DEVICE_MENU_JS[:-3],
+    b'''function SdfDevices({ row, ...props }) {
+  const { jsx, jsxs } = jsxRuntimeExports;
+  const host = sdfUseHost();
+  const devices = sdfUseDevices(host);
+  const current = devices.find(([id]) => id === host);
+  const Icon = current?.[2] ?? LuLayers;
+  const label = current?.[1] ?? "Filter by device";
+  return row ? jsxs(DropdownMenu, { children: [
+    jsxs(Tooltip, { delayDuration: 700, children: [
+      jsx(TooltipTrigger, { asChild: true, children: jsx(DropdownMenuTrigger, { asChild: true, children: jsx("button", { type: "button", "aria-label": label, className: cn("flex size-6 shrink-0 items-center justify-center rounded-md hover:bg-fill-hover hover:text-foreground", current ? "bg-fill-selected text-foreground" : "text-muted-foreground"), children: jsx(Icon, { className: "size-3.5" }) }) }) }),
+      jsx(TooltipContent, { side: "bottom", children: label })
+    ] }),
+    jsx(DropdownMenuContent, { align: "end", className: "w-56", children: jsx(SdfDeviceItems, { host, devices }) })
+  ] }) : jsx(PortsDropdown, props);''',
+) + SIDEBAR_DEVICE_MENU_JS[-3:]
 SIDEBAR_DEVICE_LIST_JS = b'''function sdfUseList(list, keep) {
   const host = sdfUseHost();
   return reactExports.useMemo(() => host === null ? list : keep(list), [list, host, keep]);
@@ -3891,6 +3954,10 @@ SIDEBAR_DEVICE_REGIONS_2_0_3 = (
     ),
     *SIDEBAR_DEVICE_REGIONS_2_0[3:],
 )
+SIDEBAR_DEVICE_REGIONS_2_0_3 = (
+    replace(SIDEBAR_DEVICE_REGIONS_2_0_3[0], shared=((SIDEBAR_DEVICE_MENU_JS, SIDEBAR_ONE_ROW_MENU),)),
+    *SIDEBAR_DEVICE_REGIONS_2_0_3[1:],
+)
 # (name, stock, filtered, label) of the two anchor swaps outside the regions.
 SIDEBAR_DEVICE_SWAPS = (
     ("sidebar device filter mount", SIDEBAR_DEVICE_MOUNT, SIDEBAR_DEVICE_MOUNT_FILTER, "sidebar device filter: title-bar dropdown"),
@@ -3932,6 +3999,8 @@ def _plan_sidebar_device_filter(data) -> list[tuple[int, bytes, bytes, str]]:
     _require_family_chunks(
         data, ((regions, *SIDEBAR_DEVICE_CHUNK_NAMES),), "sidebar device filter",
         [pair for _name, *pair, _label in swaps],
+        # --sidebar-one-row mounts SdfDevices in the status filter's search row, outside these regions.
+        others=((), (SIDEBAR_ONE_ROW_SEARCH_MOUNT,)),
     )
     replacements = []
     for region in regions:
@@ -3942,6 +4011,38 @@ def _plan_sidebar_device_filter(data) -> list[tuple[int, bytes, bytes, str]]:
             replacements.append((offset, stock, filtered, label))
     return replacements
 
+
+
+def _plan_sidebar_one_row(data, replacements) -> list[tuple[int, bytes, bytes, str]]:
+    """Add the writes the header row still needs; the two JS pairs join a planned region rewrite when there is one."""
+    layout, device_regions, *_rest = _select_layout(data, SIDEBAR_DEVICE_LAYOUTS, "sidebar device filter")
+    if layout != "2.0.3":
+        raise RuntimeError(f"--sidebar-one-row needs desktop 2.0.3, this bundle is {layout}")
+    search = next(region for region in status_filter_layout(data)[1] if region.label == "status filter: search")
+    found = _region_chunk(data, (search, *device_regions[:1]), "sidebar one row")
+    if found is not None:
+        path, _start, chunk = found
+        _require_chunk_names(path, chunk, ("Tooltip", "TooltipTrigger", "TooltipContent"), (), "sidebar one row")
+    planned = list(replacements)
+    offset, old = _single_variant(data, "titlebar sidebar toggle", [TITLEBAR_SIDEBAR_TOGGLE, TITLEBAR_SIDEBAR_TOGGLE_HIDDEN])
+    if old == TITLEBAR_SIDEBAR_TOGGLE:
+        planned.append((offset, old, TITLEBAR_SIDEBAR_TOGGLE_HIDDEN, "sidebar one row: titlebar toggle"))
+    for label, stock, row in (
+        ("sidebar one row: device dropdown in the search row", SIDEBAR_ONE_ROW_SEARCH, SIDEBAR_ONE_ROW_SEARCH_MOUNT),
+        ("sidebar one row: device icon button", SIDEBAR_DEVICE_MENU_JS, SIDEBAR_ONE_ROW_MENU),
+    ):
+        hosts = [index for index, write in enumerate(planned) if stock in write[2] or row in write[2]]
+        if len(hosts) > 1:
+            raise RuntimeError(f"{label}: found in {len(hosts)} planned writes")
+        if hosts:
+            offset, old, new, host_label = planned[hosts[0]]
+            if stock in new:
+                planned[hosts[0]] = (offset, old, _replace_once(new, stock, row, label), host_label)
+            continue
+        offset, old = _single_variant(data, label, [stock, row])
+        if old == stock:
+            planned.append((offset, stock, row, label))
+    return planned
 
 
 # --desktop-pin-sync: exact desktop 1.39.0 and 1.40.0 regions (DESKTOP_PIN_LAYOUTS); renderer exports only, no storage writes.
@@ -4991,6 +5092,7 @@ def plan_replacements(
     automations_header: bool = False,
     automations_view: bool = False,
     sidebar_device_filter: bool = False,
+    sidebar_one_row: bool = False,
     desktop_pin_sync: bool = False,
     desktop_preset_sync: bool = False,
     pinned_activity_sort: bool = False,
@@ -5009,6 +5111,8 @@ def plan_replacements(
         raise ValueError("--status-filter-hotkeys needs --sidebar-status-filter")
     if automations_view and not automations_header:
         raise ValueError("--automations-view needs --automations-header")
+    if sidebar_one_row and not (compact_sidebar and hide_nav_buttons and sidebar_status_filter and sidebar_device_filter):
+        raise ValueError("--sidebar-one-row needs --compact-sidebar, --hide-nav-buttons, --sidebar-status-filter and --sidebar-device-filter")
 
     replacements = []
 
@@ -5088,20 +5192,24 @@ def plan_replacements(
         offset, old = _single_variant(
             data,
             "top navigation layout",
-            [TOP_NAV_STACK, TOP_NAV_GRID, TOP_NAV_STACK_1_36, TOP_NAV_GRID_1_36],
+            [TOP_NAV_STACK, TOP_NAV_GRID, TOP_NAV_STACK_1_36, TOP_NAV_GRID_1_36, TOP_NAV_ONE_ROW],
         )
-        layout_1_36 = old in (TOP_NAV_STACK_1_36, TOP_NAV_GRID_1_36)
+        layout_1_36 = old in (TOP_NAV_STACK_1_36, TOP_NAV_GRID_1_36, TOP_NAV_ONE_ROW)
         header_generations.add(HEADER_RELEASE_1_36 if layout_1_36 else HEADER_RELEASE_PRE_1_36)
         target = TOP_NAV_GRID_1_36 if layout_1_36 else TOP_NAV_GRID
+        # Sticky like --hide-nav-buttons: a run without the flag keeps the one row.
+        one_row = sidebar_one_row or old == TOP_NAV_ONE_ROW
+        if one_row:
+            target = TOP_NAV_ONE_ROW
         if old != target:
-            replacements.append((offset, old, target, "sidebar: four-column icon grid"))
+            replacements.append((offset, old, target, "sidebar: one header row" if one_row else "sidebar: four-column icon grid"))
+        offset, old = _single_variant(
+            data, "top navigation titlebar", [TOP_NAV_TITLEBAR_STACK, TOP_NAV_TITLEBAR_GRID, TOP_NAV_TITLEBAR_ONE_ROW]
+        )
+        titlebar = TOP_NAV_TITLEBAR_ONE_ROW if sidebar_one_row or old == TOP_NAV_TITLEBAR_ONE_ROW else TOP_NAV_TITLEBAR_GRID
+        if old != titlebar:
+            replacements.append((offset, old, titlebar, "sidebar: titlebar spans icon grid"))
         sidebar_variants = [
-            (
-                "top navigation titlebar",
-                TOP_NAV_TITLEBAR_STACK,
-                TOP_NAV_TITLEBAR_GRID,
-                "sidebar: titlebar spans icon grid",
-            ),
             (
                 "shared shortcut hint renderer",
                 SHORTCUT_HINT_HIDDEN,
@@ -5303,6 +5411,10 @@ def plan_replacements(
 
     if sort_projects or pin_projects:
         replacements.extend(_plan_project_order(data, sort_projects, pin_projects))
+
+    # Last: it edits the region rewrites the flags above planned.
+    if sidebar_one_row:
+        replacements = _plan_sidebar_one_row(data, replacements)
 
     picks, _LAYOUT_PICKS = _LAYOUT_PICKS, None
     _require_one_release(picks)
@@ -5669,6 +5781,13 @@ def main(argv=None):
         action="store_true",
         help="device dropdown next to the sidebar back / forward arrows: show only the workspaces of one host",
     )
+    parser.add_argument(
+        "--sidebar-one-row",
+        action="store_true",
+        help="desktop 2.0.3, with --compact-sidebar, --hide-nav-buttons, --sidebar-status-filter and --sidebar-device-filter: "
+        "the header is one row from the arrows to the icons (no sidebar toggle, Cmd+B stays) and the device filter "
+        "is an icon button in the search row",
+    )
     parser.add_argument("--desktop-pin-sync", action="store_true", help="export desktop workspace pins to mobile over the authenticated host relay (1.39.0, 1.40.0)")
     parser.add_argument("--desktop-preset-sync", action="store_true", help="export the desktop terminal presets (presets bar shortcuts) to mobile over the authenticated host relay (1.39.0, 1.40.0)")
     parser.add_argument(
@@ -5720,6 +5839,7 @@ def main(argv=None):
             automations_header=args.automations_header,
             automations_view=args.automations_view,
             sidebar_device_filter=args.sidebar_device_filter,
+            sidebar_one_row=args.sidebar_one_row,
             desktop_pin_sync=args.desktop_pin_sync,
             desktop_preset_sync=args.desktop_preset_sync,
             pinned_activity_sort=args.pinned_activity_sort,

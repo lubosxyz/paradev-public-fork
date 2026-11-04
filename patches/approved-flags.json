@@ -20,6 +20,7 @@
     "automations_header",
     "automations_view",
     "sidebar_device_filter",
+    "sidebar_one_row",
     "pinned_activity_sort",
     "sort_projects",
     "pin_projects",

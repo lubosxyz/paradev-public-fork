@@ -93,7 +93,7 @@ function device({ stored = null, cloud = [], regions = DEVICE_REGIONS } = {}) {
     LuLaptop: "LuLaptop", LuMonitor: "LuMonitor", LuCloud: "LuCloud", LuLayers: "LuLayers", LuChevronDown: "LuChevronDown",
     DropdownMenu: "DropdownMenu", DropdownMenuTrigger: "DropdownMenuTrigger", DropdownMenuContent: "DropdownMenuContent",
     DropdownMenuRadioGroup: "DropdownMenuRadioGroup", DropdownMenuRadioItem: "DropdownMenuRadioItem", DropdownMenuSeparator: "DropdownMenuSeparator",
-    PortsDropdown: "PortsDropdown",
+    PortsDropdown: "PortsDropdown", Tooltip: "Tooltip", TooltipTrigger: "TooltipTrigger", TooltipContent: "TooltipContent",
     useLocalHostService: () => ({ machineId: LOCAL }),
     useKnownHosts: () => ({ hosts: ROSTER }),
     useCloudWorkspaces: () => ({ workspaces: cloud }),
@@ -217,6 +217,76 @@ test("the title-bar dropdown: a layers icon under All devices or the device name
   assert.equal(selected.props["aria-label"], "M5");
   assert.equal(find(selected, (node) => node.type === "LuLayers").length, 0);
   assert.match(selected.props.className, /bg-fill-selected/);
+});
+
+// --sidebar-one-row (desktop 2.0.3): region 1 with the row dropdown, regions 2-5 as the 2.0.3 bundle holds them.
+const DEVICE_REGIONS_ONE_ROW = [
+  read("superset-2.0.3-device-filter-r1.one-row.patched.js"), read("superset-2.0.3-device-filter-r2.patched.js"), ...DEVICE_REGIONS_2_0.slice(2),
+];
+const oneRow = () => {
+  const api = device({ regions: DEVICE_REGIONS_ONE_ROW });
+  api.sdfUseRows(ROWS, new Map());
+  return api;
+};
+
+test("--sidebar-one-row: the title-bar mount is only the ports button", () => {
+  const props = { align: "start" };
+  assert.deepEqual(oneRow().SdfDevices(props), { type: "PortsDropdown", props, key: undefined });
+});
+
+test("--sidebar-one-row: the row mount is a size-6 icon button that opens the device list, sized like its neighbours", () => {
+  const api = oneRow();
+  const menu = api.SdfDevices({ row: 1 });
+  assert.equal(find(menu, (node) => node.type === "PortsDropdown").length, 0);
+  assert.equal(find(menu, (node) => node.type === "LuChevronDown").length, 0);
+  const [trigger] = find(menu, (node) => node.type === "button");
+  assert.match(trigger.props.className, /\bsize-6\b/);
+  assert.match(trigger.props.className, /\bshrink-0\b/);
+  assert.match(trigger.props.className, /text-muted-foreground/);
+  assert.doesNotMatch(trigger.props.className, /bg-fill-selected/);
+  assert.equal(trigger.props["aria-label"], "Filter by device");
+  assert.equal(text(trigger), "");
+  const [icon] = find(trigger, (node) => node.type === "LuLayers");
+  assert.equal(icon.props.className, "size-3.5");
+  const [content] = find(menu, (node) => node.type === "DropdownMenuContent");
+  assert.equal(content.props.align, "end");
+  const [list] = find(menu, (node) => node.type === api.SdfDeviceItems);
+  const items = find(api.SdfDeviceItems(list.props), (node) => node.type === "DropdownMenuRadioItem");
+  assert.deepEqual(items.map((item) => [item.props.value, text(item)]), [["", "All devices"], [LOCAL, "M1 MacBook Air"], [M5, "M5"]]);
+});
+
+test("--sidebar-one-row: a selected device stays one icon: its own icon, highlighted, named by the tooltip", () => {
+  const api = oneRow();
+  api.sdfSet(M5);
+  const menu = api.SdfDevices({ row: 1 });
+  const [selected] = find(menu, (node) => node.type === "button");
+  assert.equal(text(selected), "");
+  assert.equal(selected.props["aria-label"], "M5");
+  assert.match(selected.props.className, /bg-fill-selected text-foreground/);
+  assert.match(selected.props.className, /\bsize-6\b/);
+  assert.equal(find(selected, (node) => node.type === "LuLayers").length, 0);
+  assert.equal(find(selected, (node) => node.type === "LuMonitor").length, 1);
+  const [tooltip] = find(menu, (node) => node.type === "TooltipContent");
+  assert.equal(text(tooltip), "M5");
+});
+
+test("--sidebar-one-row: the search row reads input, device dropdown, then the two fold buttons", () => {
+  const collapse = { collapsed: { workspaces: true }, toggle: (key) => toggled.push(key) };
+  const toggled = [];
+  const queries = [];
+  const { SsfSearch } = load([read("superset-2.0.3-status-filter-search.one-row.patched.js")], {
+    jsxRuntimeExports, reactExports: { useLayoutEffect: () => {} },
+    useSidebarSectionsCollapseStore: { getState: () => collapse },
+    DashboardSidebarProjectsFilterInput: "Input", SdfDevices: "SdfDevices", SsfFold: "SsfFold",
+  }, ["SsfSearch"]);
+  const row = SsfSearch({ query: "", onQueryChange: (value) => queries.push(value), pinnedWorkspaces: [], sessionWorkspaces: [], groups: [], ssfF: "folds" });
+  assert.equal(row.type, "div");
+  assert.deepEqual(row.props.children.map((child) => [child.type, child.props.row, child.props.g]), [
+    ["Input", undefined, undefined], ["SdfDevices", 1, undefined], ["SsfFold", undefined, 1], ["SsfFold", undefined, undefined],
+  ]);
+  // The shortened collapse-store lines still open the Workspaces section for a query.
+  row.props.children[0].props.onQueryChange("x");
+  assert.deepEqual([toggled, queries], [["workspaces"], ["x"]]);
 });
 
 test("the cloud section shows under All devices and Cloud, and hides under a host", () => {

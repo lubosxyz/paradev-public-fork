@@ -1014,6 +1014,36 @@ order on both releases, the installed bundle) and
 `tests/device_automations.test.mjs` (the real sidebar pipeline per device, the
 dropdown, the project filter, FeatureHeader without `extra`).
 
+### One header row (opt-in, desktop-v2.0.3)
+
+`--sidebar-one-row` puts the expanded sidebar's header on one line:
+**traffic lights, back, forward, Automations, Tasks, Pull requests, Plugins**, the
+icons level with the arrows and flush with the right end of the search row. It
+needs `--compact-sidebar`, `--hide-nav-buttons`, `--sidebar-status-filter` and
+`--sidebar-device-filter`, and refuses any release but 2.0.3 before a write.
+
+- **No sidebar toggle in the expanded header.** Cmd+B still toggles; a collapsed
+  sidebar keeps its own toggle (`WindowChrome`, `TopBar`), so the way back stays.
+- **The device filter moves to the search row**, between the input and the two
+  fold buttons, as a `size-6` icon button like them. A selected device shows its
+  own icon (laptop, monitor, cloud) on a highlight, and the tooltip names it. The
+  menu and the filtering are unchanged. The ports button stays in the title bar.
+- **Why the row needs its own tracks:** `index-*.css` ships no `col-span-4`, so the
+  grid's title bar only ever filled column 1. That pushed the third icon off the
+  sidebar's right edge and dropped the fourth to a second line. The row sets
+  `grid-template-columns: 1fr repeat(4,auto)` inline and drops the dead class.
+- **Limits:** the row needs 268 px. Below that (the sidebar drags down to 225 px)
+  the rightmost icons clip. A fifth icon (Usage, when enabled) wraps to a second
+  line.
+
+Five writes: the header layout, the title bar class and the toggle (three anchor
+swaps), and two equal-length JS pairs that the 2.0.3 search and device data regions
+declare as `shared`. The pairs edit a planned region rewrite on a stock bundle and
+write in place on a patched one, so one run on stock and an upgrade give the same
+bytes. Sticky like `--hide-nav-buttons`: a run without the flag plans nothing;
+`--revert` restores the backup. Tests: `tests/test_superset_sidebar_one_row_patch.py`
+and `tests/device_automations.test.mjs`.
+
 ### PINNED follows the sort mode (opt-in, desktop-v1.37.0–v2.0.3)
 
 `--pinned-activity-sort` (LUBOS-2717) makes the **PINNED** section follow the
