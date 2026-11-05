@@ -76,6 +76,12 @@ AH_PATCHED_203 = [AH_PATCHED[0], (FIXTURES / "superset-2.0.3-automations-header-
 DF_REGIONS_203 = MODULE.SIDEBAR_DEVICE_REGIONS_2_0_3
 DF_STOCK_203 = [(FIXTURES / f"superset-2.0.3-device-filter-r{n}.js").read_bytes() for n in (1, 2)] + DF_STOCK_200[2:]
 DF_PATCHED_203 = [(FIXTURES / f"superset-2.0.3-device-filter-r{n}.patched.js").read_bytes() for n in (1, 2)] + DF_PATCHED_200[2:]
+# desktop-v2.0.4 (LUBOS-4029): device region 1 is cut from the real 2.0.4 bundle; region 2 keeps its 2.0.3 bytes but
+# its injected device list reads TbCloud (2.0.4 imports TbCloud, not LuCloud), so only its patched digest moves;
+# regions 3-5 are 2.0.3's. The automations families have no 2.0.4 layout (manual rebase required, LUBOS-4029).
+DF_REGIONS_204 = MODULE.SIDEBAR_DEVICE_REGIONS_2_0_4
+DF_STOCK_204 = [(FIXTURES / "superset-2.0.4-device-filter-r1.js").read_bytes(), *DF_STOCK_203[1:]]
+DF_PATCHED_204 = [(FIXTURES / f"superset-2.0.4-device-filter-r{n}.patched.js").read_bytes() for n in (1, 2)] + DF_PATCHED_203[2:]
 AH_LABELS = [region.label for region in AH_REGIONS]
 DF_SWAP_LABELS = [label for *_rest, label in MODULE.SIDEBAR_DEVICE_SWAPS]
 DF_LABELS = [region.label for region in DF_REGIONS] + DF_SWAP_LABELS
@@ -132,6 +138,15 @@ def bundle_203(layout=None, page=None):
     """The 2.0.3 bundle: the 2.0.3 automations page next to the 2.0.3 device regions."""
     layout = layout_chunk(layout=DF_REGIONS_203, regions=DF_STOCK_203, cloud=None) if layout is None else layout
     return bundle(page=page_chunk(region=AH_STOCK_203[1]) if page is None else page, layout=layout)
+
+
+LAYOUT_NAMES_204 = imports(MODULE._sidebar_device_chunk_names("2.0.4")[0])
+
+
+def bundle_204(layout=None, page=None):
+    """The 2.0.4 device regions next to an automations page no layout fits (2.0.4 rebuilt it)."""
+    layout = layout_chunk(names=LAYOUT_NAMES_204, layout=DF_REGIONS_204, regions=DF_STOCK_204, cloud=None) if layout is None else layout
+    return bundle(page=page_chunk(region=AH_STOCK_203[1] + b"\n") if page is None else page, layout=layout)
 
 
 def bundle(feature=None, page=None, layout=None):
@@ -242,7 +257,7 @@ class RegionTest(unittest.TestCase):
 
     # Value: protects=the 2.0.3 device regions are exactly the reviewed fixtures, keep their length, re-run to nothing and parse, carry the 2.0.0 edits, and reuse only the byte-identical 2.0.0 regions (region 3 keeps its bytes, ends at RenameBranchDialog); fails_when=a 2.0.3 digest or edit changes without its fixture, a reused region drifted, or region 3 keeps the 2.0.0 end anchor; why_new=LUBOS-3874; seam=real 2.0.3 bytes
     def test_2_0_3_device_regions_are_pinned_idempotent_and_parseable(self):
-        self.assertEqual([name for name, *_rest in MODULE.SIDEBAR_DEVICE_LAYOUTS][-2:], ["2.0.0", "2.0.3"])
+        self.assertEqual([name for name, *_rest in MODULE.SIDEBAR_DEVICE_LAYOUTS][-3:], ["2.0.0", "2.0.3", "2.0.4"])
         for n, (region, old, stock, patched) in enumerate(zip(DF_REGIONS_203, DF_REGIONS_200, DF_STOCK_203, DF_PATCHED_203, strict=True), 1):
             with self.subTest(region=region.label):
                 self.assertEqual(region is old, n in (4, 5))
@@ -277,6 +292,73 @@ class RegionTest(unittest.TestCase):
                 self.assertEqual(MODULE._plan_region_rewrite(stock + region.end, region), [(0, stock, patched, region.label)])
                 self.assertEqual(MODULE._plan_region_rewrite(patched + region.end, region), [])
                 node_check(self, patched)
+
+
+class Device204Test(unittest.TestCase):
+    """--sidebar-device-filter on desktop 2.0.4 (LUBOS-4029)."""
+
+    # Value: protects=the 2.0.4 device regions are exactly the reviewed fixtures, keep their length, re-run to nothing and parse; region 2 keeps the 2.0.3 stock bytes and differs only in the cloud icon its injected list reads; regions 3-5 are the 2.0.3 objects; fails_when=a 2.0.4 digest or edit changes without its fixture, the injected list still reads LuCloud (a ReferenceError at render on 2.0.4), or a reused region drifted; why_new=LUBOS-4029; seam=real 2.0.4 bytes
+    def test_regions_are_pinned_idempotent_and_parseable(self):
+        for n, (region, old) in enumerate(zip(DF_REGIONS_204, DF_REGIONS_203, strict=True), 1):
+            with self.subTest(region=n):
+                self.assertEqual(region is old, n > 2)
+                self.assertEqual((region.label, region.start, region.end), (old.label, old.start, old.end))
+                if n == 1:
+                    self.assertEqual(region.edits, old.edits)
+                    self.assertNotEqual(region.stock_sha256, old.stock_sha256)
+                if n == 2:
+                    self.assertEqual((region.length, region.stock_sha256), (old.length, old.stock_sha256))
+                    self.assertNotEqual(region.patched_sha256, old.patched_sha256)
+                    self.assertEqual([a for a, _r in region.edits], [a for a, _r in old.edits])
+                    self.assertEqual([r.replace(b"TbCloud", b"LuCloud") for _a, r in region.edits], [r for _a, r in old.edits])
+        for region, stock, patched in zip(DF_REGIONS_204, DF_STOCK_204, DF_PATCHED_204, strict=True):
+            with self.subTest(region=region.label):
+                self.assertEqual((region.legacy_sha256, region.upgrades), ((), ()))
+                self.assertEqual(len(stock), region.length)
+                self.assertEqual(len(patched), region.length)
+                self.assertEqual(hashlib.sha256(stock).hexdigest(), region.stock_sha256)
+                self.assertEqual(hashlib.sha256(patched).hexdigest(), region.patched_sha256)
+                self.assertEqual(MODULE._plan_region_rewrite(stock + region.end, region), [(0, stock, patched, region.label)])
+                self.assertEqual(MODULE._plan_region_rewrite(patched + region.end, region), [])
+                node_check(self, patched)
+        self.assertIn(b"TbCloud", DF_PATCHED_204[1])
+        self.assertNotIn(b"LuCloud", DF_PATCHED_204[1])
+        self.assertEqual(MODULE._sidebar_device_chunk_names("2.0.3"), MODULE.SIDEBAR_DEVICE_CHUNK_NAMES)
+
+    # Value: protects=the 2.0.4 bundle selects the 2.0.4 device layout, applies, re-runs to nothing and reverts byte for byte, while --automations-header fails closed on the rebuilt page; fails_when=the 2.0.3 layout is picked, a write is not length-preserving, or the automations family patches a page it was not reviewed for; why_new=LUBOS-4029; seam=temp ASAR
+    def test_bundle_applies_and_reverts_and_automations_fail_closed(self):
+        original = bundle_204()
+        self.assertEqual(MODULE._select_layout(original, MODULE.SIDEBAR_DEVICE_LAYOUTS, "sidebar device filter")[0], "2.0.4")
+        with self.assertRaisesRegex(RuntimeError, "automations header"):
+            patch(original)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target, backups = root / "app.asar", root / "backups"
+            target.write_bytes(original)
+            options = dict(size=6, hide_tray=False, custom_project_icons=False, keep_icon_on_hover=False, sidebar_device_filter=True)
+            _backup, changes = MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options)
+            self.assertEqual(sorted(changes), sorted(DF_LABELS_140))
+            patched = target.read_bytes()
+            self.assertEqual(len(patched), len(original))
+            for new in DF_PATCHED_204 + [MODULE.SIDEBAR_DEVICE_MOUNT_FILTER]:
+                self.assertEqual(patched.count(new), 1)
+            self.assertEqual(MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options), (None, []))
+            MODULE.revert(target, backups)
+            self.assertEqual(target.read_bytes(), original)
+
+    # Value: protects=a 2.0.4 chain whose layout chunk imports LuCloud, a 2.0.3 chain importing TbCloud, a 2.0.3 region 1 in a 2.0.4 chain, or a 2.0.3-patched region 2 next to 2.0.4 stock fail closed before a write; fails_when=the device list's icon is not tied to the layout, or layout selection falls back per region; why_new=LUBOS-4029; seam=real 2.0.3 / 2.0.4 bytes
+    def test_wrong_icon_or_mixed_release_fails_closed(self):
+        cases = {
+            "2.0.4 with LuCloud": bundle_204(layout=layout_chunk(layout=DF_REGIONS_204, regions=DF_STOCK_204, cloud=None)),
+            "2.0.3 with TbCloud": bundle_203(layout=layout_chunk(names=LAYOUT_NAMES_204, layout=DF_REGIONS_203, regions=DF_STOCK_203, cloud=None)),
+            "2.0.3 region 1": bundle_204(layout=layout_chunk(names=LAYOUT_NAMES_204, layout=DF_REGIONS_204,
+                                                             regions=[DF_STOCK_203[0], *DF_STOCK_204[1:]], cloud=None)),
+            "2.0.3-patched region 2": bundle_204(layout=layout_chunk(names=LAYOUT_NAMES_204, layout=DF_REGIONS_204,
+                                                                     regions=[DF_STOCK_204[0], DF_PATCHED_203[1], *DF_STOCK_204[2:]], cloud=None)),
+        }
+        for name, data in cases.items():
+            with self.subTest(name), self.assertRaisesRegex(RuntimeError, "sidebar device filter"):
+                patch(data, header=False)
 
 
 class AutomationsHeaderEditsTest(unittest.TestCase):
@@ -744,7 +826,11 @@ class CompositionTest(unittest.TestCase):
         Three status regions end where a device region starts (status 2 -> device 1, 7 -> 3, 9 -> 2), so
         each region is followed by the one its end anchor opens, as in the real chunk (no anchor twice).
         """
-        if release == "2.0.3":
+        if release == "2.0.4":
+            # desktop-v2.0.4 (LUBOS-4029): the 2.0.4 status test case (its regions and fixtures) and device regions.
+            status = icon_tests.SupersetSidebarStatusFilter204PatchTest("test_each_release_selects_its_own_layout")
+            device, device_stock, cloud = DF_REGIONS_204, DF_STOCK_204, b""
+        elif release == "2.0.3":
             # The 2.0 status test case on the 2.0.3 regions (cut from 2.0.3 where re-pinned, 2.0.0 or earlier otherwise).
             status = icon_tests.SupersetSidebarStatusFilter200PatchTest("test_each_release_selects_its_own_layout")
             status.REGIONS = MODULE.STATUS_FILTER_REGIONS_2_0_3
@@ -794,7 +880,7 @@ class CompositionTest(unittest.TestCase):
 
     # Value: protects=the device filter composes with the status filter and pinned-icon-only in any order: the same bytes whatever order, every later run is a no-op, and neither family undoes the other; fails_when=the cloud guard inside status region 12 is not a declared shared pair (the second run then reads "neither stock nor patched" or the region rewrite restores the stock guard), or a family's planning depends on the other's state; why_new=contract composition rule; seam=real 1.36-1.38 status regions and the real device regions
     def test_any_order_yields_the_same_bytes(self):
-        for release in ("1.37", "1.38", "1.39", "1.40", "2.0", "2.0.3"):
+        for release in ("1.37", "1.38", "1.39", "1.40", "2.0", "2.0.3", "2.0.4"):
             with self.subTest(release=release):
                 stock = self.stock(release)
                 if release.startswith("2.0"):
@@ -802,7 +888,7 @@ class CompositionTest(unittest.TestCase):
                     self.assertEqual(MODULE.status_filter_layout(stock)[0], expected)
                     self.assertEqual(MODULE._select_layout(stock, MODULE.SIDEBAR_DEVICE_LAYOUTS, "sidebar device filter")[0], expected)
                 # 1.40 deletes the cloud section and its guard: no status region holds it, the device filter has no swap for it.
-                cloudless = release in ("1.40", "2.0", "2.0.3")
+                cloudless = release in ("1.40", "2.0", "2.0.3", "2.0.4")
                 if cloudless:
                     self.assertNotIn(MODULE.SIDEBAR_DEVICE_CLOUD, stock)
                 elif release != "1.37":

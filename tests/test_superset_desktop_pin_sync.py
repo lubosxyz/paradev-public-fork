@@ -14,10 +14,16 @@ FIXTURES = Path(__file__).parent / 'fixtures'
 FILES = ['index.js', 'renderer.js', 'host-service.js']
 
 
+RELEASES = ('1.39.0', '1.40.0', '2.0.3', '2.0.4')
+
+
 def pin_stock(file, release):
-    """The release's cut of a pin region, or the 1.39.0 one it is byte-identical to (1.40.0 and 2.0.3 re-cut what changed)."""
-    path = FIXTURES / f'superset-{release}-desktop-pins-{file}'
-    return (path if path.exists() else FIXTURES / f'superset-1.39.0-desktop-pins-{file}').read_bytes()
+    """The newest cut of a pin region at or before the release (1.40.0, 2.0.3 and 2.0.4 re-cut what changed)."""
+    for candidate in reversed(RELEASES[:RELEASES.index(release) + 1]):
+        path = FIXTURES / f'superset-{candidate}-desktop-pins-{file}'
+        if path.exists():
+            return path.read_bytes()
+    raise FileNotFoundError(file)
 
 
 class RegionTest(unittest.TestCase):
@@ -25,6 +31,7 @@ class RegionTest(unittest.TestCase):
         cases = [(region, '1.39.0', file) for region, file in zip(MODULE.DESKTOP_PIN_REGIONS, FILES)]
         cases += [(region, '1.40.0', file) for region, file in zip(MODULE.DESKTOP_PIN_REGIONS_1_40, FILES)]
         cases += [(region, '2.0.3', file) for region, file in zip(MODULE.DESKTOP_PIN_REGIONS_2_0_3, FILES)]
+        cases += [(region, '2.0.4', file) for region, file in zip(MODULE.DESKTOP_PIN_REGIONS_2_0_4, FILES)]
         for region, release, file in cases:
             stock = pin_stock(file, release)
             self.assertEqual(hashlib.sha256(stock).hexdigest(), region.stock_sha256)
@@ -50,6 +57,18 @@ class RegionTest(unittest.TestCase):
     def test_patched_2_0_3_bytes_behave(self):
         chunks = [MODULE._plan_region_rewrite(pin_stock(file, '2.0.3') + region.end, region)[0][2]
                   for region, file in zip(MODULE.DESKTOP_PIN_REGIONS_2_0_3, FILES, strict=True)]
+        run_harness(self, 'pin', chunks)
+
+
+    # Value: protects=the code the 2.0.4 rewrite leaves in the real 2.0.4 region bytes serves publish then list, refuses a relayed publish and errors on a stopped renderer, and both call sites survive; the renderer regions are the 2.0.3 objects and only the host router is re-pinned, with the 2.0.3 edits; fails_when=a rewrite drops the router, the exporter or a mount, the 2.0.4 re-pin changes the bridge code, or an edit breaks the code the constants still hold; why_new=LUBOS-4029 (acceptance 2: behavior on patched 2.0.4 bytes); seam=real 2.0.4 bytes with the patched regions cut from them
+    def test_patched_2_0_4_bytes_behave(self):
+        regions, earlier = MODULE.DESKTOP_PIN_REGIONS_2_0_4, MODULE.DESKTOP_PIN_REGIONS_2_0_3
+        self.assertEqual([region is old for region, old in zip(regions, earlier, strict=True)], [True, True, False])
+        self.assertEqual((regions[2].label, regions[2].start, regions[2].end, regions[2].edits),
+                         (earlier[2].label, earlier[2].start, earlier[2].end, earlier[2].edits))
+        self.assertNotEqual(regions[2].stock_sha256, earlier[2].stock_sha256)
+        chunks = [MODULE._plan_region_rewrite(pin_stock(file, '2.0.4') + region.end, region)[0][2]
+                  for region, file in zip(regions, FILES, strict=True)]
         run_harness(self, 'pin', chunks)
 
 

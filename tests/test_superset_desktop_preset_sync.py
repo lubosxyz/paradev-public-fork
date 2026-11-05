@@ -24,6 +24,7 @@ REGIONS = {
     '1.39.0': (MODULE.DESKTOP_PRESET_REGIONS, MODULE.DESKTOP_PIN_REGIONS),
     '1.40.0': (MODULE.DESKTOP_PRESET_REGIONS_1_40, MODULE.DESKTOP_PIN_REGIONS_1_40),
     '2.0.3': (MODULE.DESKTOP_PRESET_REGIONS_2_0_3, MODULE.DESKTOP_PIN_REGIONS_2_0_3),
+    '2.0.4': (MODULE.DESKTOP_PRESET_REGIONS_2_0_4, MODULE.DESKTOP_PIN_REGIONS_2_0_4),
 }
 RELEASES = tuple(REGIONS)
 
@@ -347,11 +348,88 @@ class Release203Test(unittest.TestCase):
         self.assertNotEqual(mixed_pin, bundle(release='2.0.3'))
         self.assertNotEqual(mixed_preset, bundle(release='2.0.3'))
         opener = b'const appRouter = router({\n'
-        cases = [('unsupported desktop version', retagged(release), {}) for release in ('2.0.0', '2.0.2', '2.0.4')]
+        cases = [('unsupported desktop version', retagged(release), {}) for release in ('2.0.0', '2.0.2', '2.0.4', '2.0.5')]
         cases += [
             ('desktop pin sync', mixed_pin, dict(desktop_preset_sync=False)),
             ('desktop preset sync', mixed_preset, dict(desktop_pin_sync=False)),
             ('app router changed', bundle(release='2.0.3', app_router=(opener, opener + b'  later: lazy(() => import("./later.js")),\n')),
+             dict(desktop_pin_sync=False)),
+        ]
+        for message, data, off in cases:
+            with self.subTest(message=message):
+                before = bytes(data)
+                with self.assertRaisesRegex(RuntimeError, message):
+                    apply(data, **({'desktop_pin_sync': True, 'desktop_preset_sync': True} | off))
+                self.assertEqual(bytes(data), before)
+
+
+class Release204Test(unittest.TestCase):
+    """desktop-v2.0.4 (LUBOS-4029): the host router and host mount re-pinned (the router region now opens at
+    installProcessSafetyNet), the renderer regions and the app router literal are 2.0.3's; same wire contract."""
+
+    # Value: protects=every 2.0.4 region of both bridges is the pinned real 2.0.4 bytes, rewrites to its pinned digest, re-runs to nothing and parses; unchanged regions are the 2.0.3 objects, the re-pinned ones carry the 2.0.3 edits (the preset host router moves only its start anchor), so the injected JS, routers, caps and auth stay byte-identical; fails_when=a 2.0.4 digest or edit drifts from its fixture, or a re-pin changes the bridge code; why_new=LUBOS-4029; seam=real 2.0.4 bytes
+    def test_regions_are_pinned_with_the_earlier_edits(self):
+        presets, pins = MODULE.DESKTOP_PRESET_REGIONS_2_0_4, MODULE.DESKTOP_PIN_REGIONS_2_0_4
+        cases = (
+            (presets, MODULE.DESKTOP_PRESET_REGIONS_2_0_3, [stock(file, '2.0.4') for file in FILES], {0, 1}),
+            (pins, MODULE.DESKTOP_PIN_REGIONS_2_0_3, [pin_stock(file, '2.0.4') for file in PIN_FILES], {0, 1}),
+        )
+        for regions, earlier, stocks, reused in cases:
+            for n, (region, old, original) in enumerate(zip(regions, earlier, stocks, strict=True)):
+                with self.subTest(region=region.label):
+                    self.assertEqual(region is old, n in reused)
+                    self.assertEqual((region.label, region.end, region.edits), (old.label, old.end, old.edits))
+                    if region.start != old.start:
+                        self.assertEqual((region, region.start), (presets[2], b'function installProcessSafetyNet() {\n'))
+                    self.assertEqual(len(original), region.length)
+                    self.assertEqual(hashlib.sha256(original).hexdigest(), region.stock_sha256)
+                    [(_, _, patched, _)] = MODULE._plan_region_rewrite(original + region.end, region)
+                    self.assertEqual(hashlib.sha256(patched).hexdigest(), region.patched_sha256)
+                    self.assertEqual(MODULE._plan_region_rewrite(patched + region.end, region), [])
+                    node_check(self, patched)
+        self.assertEqual([p.name for p in sorted(FIXTURES.glob('superset-2.0.4-desktop-p*'))], [
+            'superset-2.0.4-desktop-pins-host-service.js', 'superset-2.0.4-desktop-presets-host-mount.js',
+            'superset-2.0.4-desktop-presets-host-router.js'])
+        self.assertEqual(MODULE.DESKTOP_PRESET_LAYOUTS[-1][0], '2.0.4')
+        self.assertEqual(MODULE.DESKTOP_PRESET_LAYOUTS[-1][3], MODULE.DESKTOP_PRESET_APP_ROUTER_SHA256_2_0_3)
+
+    # Value: protects=on a 2.0.4 bundle both bridges select the 2.0.4 layout, compose in any order to the same bytes and re-plan to nothing; fails_when=the 2.0.4 layout is not selected, a 2.0.4 region collides with the other bridge, or the order changes the result; why_new=LUBOS-4029; seam=real 2.0.4 bytes
+    def test_composes_with_pin_sync_in_any_order(self):
+        both = bundle(release='2.0.4')
+        self.assertEqual(MODULE._select_layout(both, MODULE.DESKTOP_PRESET_LAYOUTS, 'desktop preset sync')[0], '2.0.4')
+        self.assertEqual(MODULE._select_layout(both, MODULE.DESKTOP_PIN_LAYOUTS, 'desktop pin sync')[0], '2.0.4')
+        writes = apply(both, desktop_pin_sync=True, desktop_preset_sync=True)
+        self.assertEqual(len(writes), 7)
+        self.assertEqual(MODULE.plan_replacements(both, **BASE, desktop_pin_sync=True, desktop_preset_sync=True), [])
+        for first, second in (('desktop_preset_sync', 'desktop_pin_sync'), ('desktop_pin_sync', 'desktop_preset_sync')):
+            data = bundle(release='2.0.4')
+            apply(data, **{first: True})
+            self.assertEqual(MODULE.plan_replacements(data, **BASE, **{first: True}), [])
+            apply(data, **{second: True})
+            self.assertEqual(data, both, f'{first} then {second}')
+        for region in (*MODULE.DESKTOP_PRESET_REGIONS_2_0_4, *MODULE.DESKTOP_PIN_REGIONS_2_0_4):
+            at = bytes(both).index(region.start)
+            self.assertEqual(hashlib.sha256(both[at:at+region.length]).hexdigest(), region.patched_sha256, region.label)
+
+    # Value: protects=the code the 2.0.4 rewrite leaves in the real 2.0.4 region bytes (not the constants) serves publish then list, refuses a relayed publish and errors on a stopped renderer, and the renderer and host call sites survive; fails_when=a rewrite drops the router, the exporter or a mount, or the edit corrupts the code; why_new=LUBOS-4029 (acceptance 2: behavior on patched 2.0.4 bytes); seam=real 2.0.4 bytes with the patched regions cut from them
+    def test_patched_bytes_behave(self):
+        chunks = [MODULE._plan_region_rewrite(stock(file, '2.0.4') + region.end, region)[0][2]
+                  for region, file in zip(MODULE.DESKTOP_PRESET_REGIONS_2_0_4, FILES, strict=True)]
+        run_harness(self, 'preset', chunks)
+
+    # Value: protects=2.0.4 bytes under the 2.0.3 banner (or another unreviewed 2.x), 2.0.3 host bytes in a 2.0.4 bundle, or a 2.0.4 app router with a lazy entry fail before any write; fails_when=the banner check accepts the wrong release, layout selection falls back per region, or the router digest is not checked; why_new=LUBOS-4029 (acceptance 3); seam=real 2.0.3 / 2.0.4 bytes
+    def test_unknown_or_mixed_shapes_fail_before_any_write(self):
+        retagged = lambda release: bytearray(bytes(bundle(release='2.0.4')).replace(b'"2.0.4"', f'"{release}"'.encode()))
+        mixed_pin = bytearray(bytes(bundle(release='2.0.4')).replace(pin_stock('host-service.js', '2.0.4'), pin_stock('host-service.js', '2.0.3')))
+        mixed_preset = bytearray(bytes(bundle(release='2.0.4')).replace(stock('host-mount', '2.0.4'), stock('host-mount', '2.0.3')))
+        self.assertNotEqual(mixed_pin, bundle(release='2.0.4'))
+        self.assertNotEqual(mixed_preset, bundle(release='2.0.4'))
+        opener = b'const appRouter = router({\n'
+        cases = [('unsupported desktop version', retagged(release), {}) for release in ('2.0.0', '2.0.2', '2.0.3', '2.0.5')]
+        cases += [
+            ('desktop pin sync', mixed_pin, dict(desktop_preset_sync=False)),
+            ('desktop preset sync', mixed_preset, dict(desktop_pin_sync=False)),
+            ('app router changed', bundle(release='2.0.4', app_router=(opener, opener + b'  later: lazy(() => import("./later.js")),\n')),
              dict(desktop_pin_sync=False)),
         ]
         for message, data, off in cases:

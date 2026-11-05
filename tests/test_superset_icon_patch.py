@@ -1764,6 +1764,8 @@ class SupersetSidebarStatusFilterPatchTest(unittest.TestCase):
             # 2.0 reads the ids from a ref inside the memoized click (LUBOS-3343).
             b"orderedWorkspaceIds: selectableWorkspaceIdsRef.current\n",
             b"    !isSectionCollapsed && jsxRuntimeExports.jsx(SortableContext, { items: pinnedItems,",
+            # 2.0.4: the pinned pages fold like the pinned rows (LUBOS-4029).
+            b"!isSectionCollapsed && showsPinnedPages && ",
             b"isCollapsed: section.isCollapsed, isEditing: isRenaming,",
             b"isCollapsed: project.isCollapsed, isRenaming,",
             b"isCollapsed: project.isCollapsed, workspaceShortcutLabels, onWorkspaceHover, onDeleteSection",
@@ -2645,7 +2647,8 @@ assert.equal(element.props.children[0].props.onExpandedChange(false), undefined)
         header = patched.index(b"jsxRuntimeExports.jsx(DashboardSidebarHeader, { isCollapsed }),\n")
         search = patched.index(b"!isCollapsed && jsxRuntimeExports.jsx(SsfSearch, ")
         row = patched.index(b"!isCollapsed && jsxRuntimeExports.jsx(SsfStatusChips, ")
-        scroller = patched.index(b"jsxRuntimeExports.jsxs(OverflowFadeContainer, ")
+        # The classic branch's scroller: 2.0.4 renders the paradev shell branch above it.
+        scroller = patched.index(b"jsxRuntimeExports.jsxs(OverflowFadeContainer, ", header)
         self.assertLess(provider, header)
         self.assertLess(header, search)
         self.assertLess(search, row)
@@ -3270,6 +3273,260 @@ class SupersetSidebarStatusFilter203PatchTest(SupersetSidebarStatusFilter200Patc
             with self.subTest(region=n):
                 result = subprocess.run([node, "--check", str(path)], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
+
+
+def _fixture_2_0_4(kind: str, n: int, suffix: str = ".js") -> Path:
+    """The 2.0.4 cut of region n, or the 2.0.3 one (or earlier) it is byte-identical to."""
+    path = FIXTURES / f"superset-2.0.4-{kind}-r{n}{suffix}"
+    return path if path.exists() else _fixture_2_0_3(kind, n, suffix)
+
+
+class SupersetSidebarStatusFilter204PatchTest(SupersetSidebarStatusFilter203PatchTest):
+    """The same filter on the desktop-v2.0.4 layout (LUBOS-4029): every inherited test runs on the 2.0.4 regions.
+
+    2.0.4 adds pinned pages to the PINNED section (region 1), the paradev shell branch of
+    DashboardSidebarContent (regions 2 and 3), chat-tab hotkeys (region 9) and the shell
+    components (room 13). Regions 1, 2, 3, 9 and 13 are cut from desktop-v2.0.4
+    layout-HmWDGVqx.js; the rest is byte-identical to 2.0.3. Palette region 2 is re-pinned too.
+    """
+
+    REGIONS = MODULE.STATUS_FILTER_REGIONS_2_0_4
+    PALETTE_REGIONS = MODULE.PALETTE_SEARCH_REGIONS_2_0_4
+    PALETTE_FIXTURES = ["superset-1.37.0-palette-r1.js", "superset-2.0.4-palette-r2.js", "superset-2.0.3-palette-r3.js", "superset-2.0.3-palette-r4.js"]
+    REGION_FIXTURES = [_fixture_2_0_4("status-filter", n) for n in range(1, 15)]
+    PATCHED_FIXTURES = [_fixture_2_0_4("status-filter", n, ".patched.js") for n in range(1, 15)]
+    REBASED = (1, 2, 3, 9, 13)
+
+    # Value: protects=the 2.0.4 regions are pinned on the real 2.0.4 bytes and reuse only the 2.0.3 regions that are byte-identical there; only region 1 changes edits; fails_when=a 2.0.4 fixture is missing, a reused 2.0.3 region drifted, or a 2.0.4 region inherits a legacy / upgrade digest that never ran on 2.0.4; why_new=LUBOS-4029 release layout; seam=real 2.0.4 bytes
+    def test_layout_reuses_identical_regions_and_has_no_earlier_generations(self):
+        earlier = MODULE.STATUS_FILTER_REGIONS_2_0_3
+        self.assertEqual(len(self.REGIONS), 14)
+        for n, region in enumerate(self.REGIONS, 1):
+            with self.subTest(region=n):
+                self.assertEqual(self.REGION_FIXTURES[n - 1].name.startswith("superset-2.0.4-"), n in self.REBASED)
+                if n in self.REBASED:
+                    self.assertEqual((region.legacy_sha256, region.upgrades), ((), ()))
+                    self.assertEqual((region.start, region.end, region.shared), (earlier[n - 1].start, earlier[n - 1].end, earlier[n - 1].shared))
+                    self.assertNotEqual(region.stock_sha256, earlier[n - 1].stock_sha256)
+                    if n != 1:
+                        self.assertEqual(region.edits, earlier[n - 1].edits)
+                else:
+                    self.assertIs(region, earlier[n - 1])
+
+    # Value: protects=the PINNED guard runs after every hook of the 2.0.4 section (the page hooks included), so a filter that starts hiding the section keeps React's hook order, and pinned pages fold like the pinned rows; fails_when=the 2.0.3 guard position is kept (a return above usePinnedPages) or the page rows ignore the filter's fold; why_new=LUBOS-4029 (2.0.4 adds pinned pages); seam=real 2.0.4 region 1
+    def test_pinned_guard_follows_the_page_hooks_and_pages_fold(self):
+        stock = self.REGION_FIXTURES[0].read_bytes()
+        patched = self.PATCHED_FIXTURES[0].read_bytes()
+        start = patched.index(b"function DashboardSidebarPinnedSection({")
+        guard = patched.index(b'  const ssfV = ssfUseShow(pinnedWorkspaces, "pinned");\n  if (!ssfV && !isCollapsed) return null;\n', start)
+        for hook in (b"= usePinnedPages();", b"= useMatchRoute();", b"reactExports.useMemo(() => hasPinnedPages, [isDraggingWorkspace])"):
+            self.assertEqual(stock.count(hook), 1, hook)
+            self.assertLess(patched.index(hook, start), guard, hook)
+        self.assertNotIn(b"return", patched[start:guard].replace(b"return /* @__PURE__ */", b"").split(b"const renderPageRows")[0])
+        self.assertLess(guard, patched.index(b"  if (isCollapsed) {", start))
+        self.assertEqual(stock.count(b"!isSectionCollapsed && showsPinnedPages && "), 1)
+        self.assertEqual(patched.count(b"(ssfV > 1 ? ssfV < 3 : !isSectionCollapsed) && showsPinnedPages && "), 1)
+        self.assertEqual(patched.count(b"(ssfV > 1 ? ssfV < 3 : !isSectionCollapsed) && jsxRuntimeExports.jsx(SortableContext"), 1)
+
+    # Value: protects=the chip row and search join the classic branch between DashboardSidebarHeader and its scroller, and the paradev shell branch stays upstream's; fails_when=the region 3 edit lands in the shell branch or after the classic scroller; why_new=LUBOS-4029 (2.0.4 adds the shell branch to region 3); seam=real 2.0.4 region 3
+    def test_chip_row_stays_above_the_new_sections(self):
+        stock = self.REGION_FIXTURES[2].read_bytes()
+        patched = self.PATCHED_FIXTURES[2].read_bytes()
+        sections = (b"jsx(DashboardSidebarChannelsSection, {})", b"jsx(DashboardSidebarDevsSection, {})")
+        for name in sections:
+            self.assertEqual((stock.count(name), patched.count(name)), (2, 2), name)
+        shell = patched.index(b"jsxRuntimeExports.jsx(DashboardSidebarShellHeader, {})")
+        classic = patched.index(b"jsxRuntimeExports.jsx(DashboardSidebarHeader, { isCollapsed })")
+        self.assertLess(shell, classic)
+        self.assertNotIn(b"Ssf", patched[shell:classic])
+        chips = patched.index(b"jsxRuntimeExports.jsx(SsfStatusChips, {")
+        self.assertLess(classic, patched.index(b"jsxRuntimeExports.jsx(SsfSearch, {"))
+        self.assertLess(classic, chips)
+        scroller = patched.index(b"jsxRuntimeExports.jsxs(OverflowFadeContainer, {", classic)
+        self.assertLess(chips, scroller)
+        self.assertLess(scroller, patched.index(sections[0], classic))
+
+    # Value: protects=each release is planned with its own layout; fails_when=the 2.0.4 bundle is planned with 2.0.3 regions or the other way round; why_new=LUBOS-4029; seam=none
+    def test_each_release_selects_its_own_layout(self):
+        self.assertEqual(MODULE.status_filter_layout(self.stock_bundle())[0], "2.0.4")
+        earlier = SupersetSidebarStatusFilter203PatchTest("test_status_filter_is_idempotent").stock_bundle()
+        self.assertEqual(MODULE.status_filter_layout(earlier)[0], "2.0.3")
+        patched, _changes = self.patch(self.stock_bundle())
+        self.assertEqual(MODULE.status_filter_layout(patched)[0], "2.0.4")
+
+    # Value: protects=a bundle mixing 2.0.3 and 2.0.4 region bytes fails closed instead of patching half of each; fails_when=layout selection falls back per region; why_new=REBASE.md mixed-release rule; seam=none
+    def test_mixed_release_bundle_fails_closed(self):
+        for n in self.REBASED:
+            with self.subTest(region=n):
+                stock_203 = SupersetSidebarStatusFilter203PatchTest.REGION_FIXTURES[n - 1].read_bytes()
+                stock_204 = self.REGION_FIXTURES[n - 1].read_bytes()
+                mixed = self.stock_bundle().replace(stock_204, stock_203)
+                self.assertNotEqual(mixed, self.stock_bundle())
+                with self.assertRaisesRegex(RuntimeError, "status filter"):
+                    self.patch(mixed)
+
+    # Value: protects=every patched 2.0.4 region is valid JavaScript on its own; fails_when=an edit lands mid-expression in the re-cut 2.0.4 bytes; why_new=LUBOS-4029 acceptance (node --check per patched chunk); seam=node
+    def test_patched_fixtures_parse(self):
+        import shutil
+        import subprocess
+
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        for n in self.REBASED:
+            path = self.PATCHED_FIXTURES[n - 1]
+            with self.subTest(region=n):
+                result = subprocess.run([node, "--check", str(path)], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class SupersetUiPatch204HeaderTest(unittest.TestCase):
+    """--compact-sidebar, --hide-nav-buttons and --custom-project-icons on desktop 2.0.4 (LUBOS-4029).
+
+    2.0.4 moved New Workspace and Search into their own components (SidebarNewWorkspaceButton,
+    SidebarSearchButton) mounted by the classic DashboardSidebarHeader and by the PostHog-gated
+    DashboardSidebarShellHeader; the nav buttons read a `navigation` object. Real bytes:
+    superset-2.0.4-sidebar-header.js (SidebarKbdHint through DashboardSidebarHeader, then the shell
+    header) and superset-2.0.4-new-workspace-project-icon.js (the new-workspace screen's icon site).
+    """
+
+    HEADER = FIXTURES / "superset-2.0.4-sidebar-header.js"
+    PROJECT2 = FIXTURES / "superset-2.0.4-new-workspace-project-icon.js"
+    ENVIRONMENTS = FIXTURES / "superset-2.0.3-environments-project-icon.js"
+    SHELL = b"function DashboardSidebarShellHeader() {"
+
+    def bundle(self):
+        """Real 2.0.4 header, sidebar and icon sites; 2.0.4 ships no source maps, so each anchor once."""
+        return b"|".join(
+            [
+                self.HEADER.read_bytes(),
+                MODULE.TRAY_ENABLED,
+                MODULE.CONTAINER_TEMPLATE.format(5).encode(),
+                MODULE.THUMBNAIL_VISIBLE_TEMPLATE.format(4).encode(),
+                MODULE.CHEVRON_VISIBLE_TEMPLATE.format(4).encode(),
+                MODULE.PROJECT_ICON_UPSTREAM,
+                self.ENVIRONMENTS.read_bytes(),
+                self.PROJECT2.read_bytes(),
+                MODULE.UPSTREAM_INDENT_ASSERTION,
+                MODULE.PROJECT_ROW_COMPACT,
+                MODULE.WORKSPACE_ROW_COMPACT,
+            ]
+        )
+
+    def patch(self, data, **extra):
+        options = dict(size=6, hide_tray=True, custom_project_icons=True, keep_icon_on_hover=True, compact_sidebar=True)
+        return MODULE.patch_bytes(data, **{**options, **extra})
+
+    def shell(self, data):
+        start = data.index(self.SHELL)
+        return data[start : data.index(b"\n}\n", start)]
+
+    # Value: protects=every 2.0.4 header constant is exact bytes of the real header, once, and no pre-2.0.4 button or hint shape is left in it; fails_when=a 2.0.4 constant drifts from the shipped bundle or the old shape still matches next to the new one; why_new=LUBOS-4029; seam=real 2.0.4 bytes
+    def test_fixture_pins_the_2_0_4_header_shapes(self):
+        header = self.HEADER.read_bytes()
+        for source, _target, title in MODULE.TOP_NAV_BUTTON_VARIANTS_2_0_4:
+            self.assertEqual(header.count(source), 1, title)
+        for source, _target, title in MODULE.TOP_NAV_BUTTON_VARIANTS:
+            self.assertEqual(header.count(source), 0, title)
+        for title, mount, _hidden in MODULE.HIDDEN_NAV_MOUNTS_2_0_4:
+            self.assertEqual(header.count(mount), 1, title)
+        for title, (source, _target, *_rest) in MODULE.TOP_NAV_LABEL_VARIANTS_2_0_4.items():
+            self.assertEqual(header.count(source), 1, title)
+        for hint in (MODULE.DASHBOARD_NEW_SHORTCUT_2_0_4, MODULE.DASHBOARD_SEARCH_SHORTCUT_2_0_4, MODULE.SHORTCUT_HINT_VISIBLE):
+            self.assertEqual(header.count(hint), 1, hint[:60])
+        self.assertNotIn(MODULE.DASHBOARD_NEW_SHORTCUT, header)
+        self.assertNotIn(MODULE.DASHBOARD_SEARCH_SHORTCUT, header)
+        shell = self.shell(header)
+        self.assertIn(b"jsxRuntimeExports.jsx(SidebarNewWorkspaceButton, {})", shell)
+        self.assertIn(b"jsxRuntimeExports.jsx(SidebarSearchButton, {})", shell)
+        site = self.PROJECT2.read_bytes()
+        self.assertEqual(site.count(MODULE.PROJECT_ICON_UPSTREAM_2_0_4), 1)
+        self.assertNotIn(MODULE.PROJECT_ICON_UPSTREAM, site)
+        node_check(self, header)
+        node_check(self, site)
+
+    # Value: protects=the real 2.0.4 header gets icon cells, sr-only labels, hidden dashboard hints and the badge overlay, keeps both mounts without --hide-nav-buttons, re-runs to nothing and parses; fails_when=the planner reads only the pre-2.0.4 shapes (found 0) or rewrites a 2.0.4 header partially; why_new=LUBOS-4029; seam=real 2.0.4 bytes
+    def test_real_2_0_4_header_is_compact_idempotent_and_parses(self):
+        original = self.bundle()
+        patched, changes = self.patch(original)
+        self.assertEqual(len(patched), len(original))
+        for source, target, title in MODULE.TOP_NAV_BUTTON_VARIANTS_2_0_4:
+            self.assertIn(target, patched, title)
+            self.assertNotIn(source, patched, title)
+            self.assertIn(f"sidebar: {title} icon button", changes)
+        for title, (_source, target, *_rest) in MODULE.TOP_NAV_LABEL_VARIANTS_2_0_4.items():
+            self.assertIn(target, patched, title)
+            self.assertIn(f"sidebar: {title} accessible label", changes)
+        self.assertIn(MODULE.DASHBOARD_NEW_SHORTCUT_HIDDEN_2_0_4, patched)
+        self.assertIn(MODULE.DASHBOARD_SEARCH_SHORTCUT_HIDDEN_2_0_4, patched)
+        self.assertIn(MODULE.SHORTCUT_HINT_VISIBLE, patched)
+        self.assertIn(MODULE.AUTOMATION_BADGE_OVERLAY_1_36, patched)
+        for title, mount, _hidden in MODULE.HIDDEN_NAV_MOUNTS_2_0_4:
+            self.assertIn(mount, patched, title)
+        self.assertEqual(self.shell(patched), self.shell(original))
+        self.assertEqual(self.patch(patched), (patched, []))
+        node_check(self, patched[: len(self.HEADER.read_bytes())])
+
+    # Value: protects=--hide-nav-buttons hides New Workspace and Search at their classic mounts and Workspaces and Pages in place, leaves the shell header alone, and stays hidden on a run without the flag; fails_when=the 2.0.4 mounts are not found, the shell mounts are hidden, or a later plain run unhides them; why_new=LUBOS-4029; seam=real 2.0.4 bytes
+    def test_hide_nav_buttons_hides_the_classic_mounts_only(self):
+        original = self.bundle()
+        patched, changes = self.patch(original, hide_nav_buttons=True)
+        self.assertEqual(len(patched), len(original))
+        for title, mount, hidden in MODULE.HIDDEN_NAV_MOUNTS_2_0_4:
+            self.assertNotIn(mount, patched, title)
+            self.assertIn(hidden, patched, title)
+            self.assertIn(f"sidebar: {title} hidden", changes)
+        for title, hidden in MODULE.HIDDEN_NAV_BUTTONS_2_0_4.items():
+            self.assertIn(hidden, patched, title)
+            self.assertIn(f"sidebar: {title} hidden", changes)
+        self.assertEqual(self.shell(patched), self.shell(original))
+        self.assertEqual(self.patch(patched, hide_nav_buttons=True), (patched, []))
+        self.assertEqual(self.patch(patched), (patched, []))
+        node_check(self, patched[: len(self.HEADER.read_bytes())])
+
+    # Value: protects=a header mixing 2.0.4 and older nav button shapes, or a 2.0.4 header that also holds an old dashboard hint, fails closed before a write; fails_when=the planner picks targets per button without one header generation; why_new=LUBOS-4029; seam=real 2.0.4 bytes
+    def test_mixed_nav_generations_fail_closed(self):
+        tasks_2_0_4 = next(v for v in MODULE.TOP_NAV_BUTTON_VARIANTS_2_0_4 if v[2] == "Tasks")
+        tasks_old = next(v for v in MODULE.TOP_NAV_BUTTON_VARIANTS if v[2] == "Tasks")
+        mixed = self.bundle().replace(tasks_2_0_4[0], tasks_old[0])
+        with self.assertRaisesRegex(RuntimeError, "mixed sidebar header nav generations"):
+            self.patch(mixed)
+        with self.assertRaisesRegex(RuntimeError, "dashboard new-workspace shortcut anchor, found 2"):
+            self.patch(self.bundle() + b"|" + MODULE.DASHBOARD_NEW_SHORTCUT_HIDDEN_2_0_4)
+
+    # Value: protects=--custom-project-icons swaps the sidebar, environments and new-workspace sites of a 2.0.4 bundle (no maps) and nothing else; a second new-workspace site, or one without the environments site, fails closed; fails_when=the 2.0.4 count is read as the 2.0.3 one (found 2, expected 6) or the project2 anchor is left upstream; why_new=LUBOS-4029; seam=real 2.0.4 bytes
+    def test_project_icons_cover_the_new_workspace_site(self):
+        original = self.bundle()
+        patched, _changes = self.patch(original)
+        self.assertEqual(patched.count(MODULE.PROJECT_ICON_CUSTOM), MODULE.EXPECTED_PROJECT_ICON_COUNT_2_0_4)
+        self.assertEqual(patched.count(MODULE.PROJECT_ICON_CUSTOM_2_0_4), 1)
+        self.assertNotIn(MODULE.PROJECT_ICON_UPSTREAM, patched)
+        self.assertNotIn(MODULE.PROJECT_ICON_UPSTREAM_2_0_4, patched)
+        site = patched[patched.index(b"  const projects = reactExports.useMemo(") :]
+        node_check(self, site[: len(self.PROJECT2.read_bytes())])
+        with self.assertRaisesRegex(RuntimeError, "new-workspace project icon site"):
+            self.patch(original + b"|" + self.PROJECT2.read_bytes())
+        without_environments = original.replace(self.ENVIRONMENTS.read_bytes(), MODULE.PROJECT_ICON_UPSTREAM)
+        with self.assertRaisesRegex(RuntimeError, "new-workspace project icon site"):
+            self.patch(without_environments)
+        with self.assertRaisesRegex(RuntimeError, "expected 2 project icon anchors, found 3"):
+            self.patch(original + b"|" + MODULE.PROJECT_ICON_UPSTREAM)
+
+    # Value: protects=patch_file on a 2.0.4 bundle backs up, re-runs to "already patched" and reverts byte for byte; fails_when=the 2.0.4 path writes outside the length-preserving rewrite; why_new=LUBOS-4029; seam=real 2.0.4 bytes
+    def test_patch_file_reverts_a_2_0_4_bundle_byte_for_byte(self):
+        original = self.bundle()
+        options = dict(size=6, hide_tray=True, custom_project_icons=True, keep_icon_on_hover=True,
+                       compact_sidebar=True, hide_nav_buttons=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            asar, backups = Path(tmp) / "fixture.asar", Path(tmp) / "backups"
+            asar.write_bytes(original)
+            backup, changes = MODULE.patch_file(asar, backups, acknowledge_invalid_signature=False, **options)
+            self.assertTrue(changes)
+            self.assertEqual(len(asar.read_bytes()), len(original))
+            self.assertEqual(MODULE.patch_file(asar, backups, acknowledge_invalid_signature=False, **options), (None, []))
+            MODULE.revert(asar, backups)
+            self.assertEqual(asar.read_bytes(), original)
+            self.assertEqual(backup.read_bytes(), original)
 
 
 class SupersetProjectIconEnvironments203Test(unittest.TestCase):

@@ -1,4 +1,4 @@
-"""Tests for --sidebar-one-row (desktop-v2.0.3).
+"""Tests for --sidebar-one-row (desktop-v2.0.3 and 2.0.4).
 
 The header is one row from the arrows to the icons and the device dropdown moves to the search row.
 Byte-level safety lives here (prerequisites, fail-closed anchors, sticky runs, apply / re-run in
@@ -42,10 +42,10 @@ NEW_LABELS = {
 }
 
 
-def stock_203() -> bytes:
-    """The synthetic 2.0.3 bundle of the device filter composition test, with the 1.36+ header and the toggle."""
+def stock_203(release="2.0.3") -> bytes:
+    """The synthetic 2.0.3 (or 2.0.4) bundle of the device filter composition test, with the 1.36+ header and the toggle."""
     status = icon_tests.SupersetUiPatchTest("test_selected_patch_is_length_preserving_and_complete")
-    stock = device_tests.CompositionTest("test_any_order_yields_the_same_bytes").stock("2.0.3")
+    stock = device_tests.CompositionTest("test_any_order_yields_the_same_bytes").stock(release)
     new, target, _title = MODULE.TOP_NAV_BUTTON_VARIANTS[0]
     current, _current_target, _title = MODULE.TOP_NAV_NEW_WORKSPACE_1_30
     sources = icon_tests.SupersetUiPatchTest.flagged_sources(status)
@@ -93,6 +93,10 @@ class AnchorTest(unittest.TestCase):
         self.assertEqual(MODULE.SIDEBAR_DEVICE_REGIONS_2_0[0].shared, ())
         pair = (MODULE.SIDEBAR_ONE_ROW_SEARCH, MODULE.SIDEBAR_ONE_ROW_SEARCH_MOUNT)
         self.assertEqual([region.label for region in MODULE.STATUS_FILTER_REGIONS_2_0_3 if pair in region.shared], ["status filter: search"])
+        # desktop-v2.0.4 (LUBOS-4029) keeps both pairs: the search region is 2.0.3's, device region 1 is rebased from it.
+        self.assertEqual([region.label for region in MODULE.STATUS_FILTER_REGIONS_2_0_4 if pair in region.shared], ["status filter: search"])
+        self.assertEqual(MODULE.SIDEBAR_DEVICE_REGIONS_2_0_4[0].shared, MODULE.SIDEBAR_DEVICE_REGIONS_2_0_3[0].shared)
+        self.assertEqual(MODULE.SIDEBAR_ONE_ROW_RELEASES, ("2.0.3", "2.0.4"))
         self.assertFalse([region.label for region in MODULE.STATUS_FILTER_REGIONS_2_0 if pair in region.shared])
 
     # Value: protects=the node fixtures are the bytes the patcher writes; fails_when=a fixture or a pair drifts; why_new=the .mjs test cannot read the Python constants; seam=fixtures
@@ -176,6 +180,20 @@ class PlanTest(unittest.TestCase):
         with mock.patch.object(MODULE, "patch_file", return_value=(None, [])) as patch_file:
             self.assertEqual(MODULE.main(["--asar", "/tmp/x.asar", "--sidebar-one-row"]), 0)
         self.assertTrue(patch_file.call_args.kwargs["sidebar_one_row"])
+
+
+class Plan204Test(PlanTest):
+    """The flag on the synthetic 2.0.4 bundle (LUBOS-4029): the same pairs on the 2.0.4 status and device regions."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.stock = stock_203("2.0.4")
+        cls.patched, cls.changes = patch(cls.stock)
+
+    # Value: protects=the synthetic bundle really is 2.0.4, so the inherited cases run on the 2.0.4 regions; fails_when=a 2.0.3 fixture is wired in and the 2.0.4 path goes untested; why_new=LUBOS-4029; seam=layout selection
+    def test_bundle_is_2_0_4(self):
+        self.assertEqual(MODULE.status_filter_layout(self.stock)[0], "2.0.4")
+        self.assertEqual(MODULE._select_layout(self.stock, MODULE.SIDEBAR_DEVICE_LAYOUTS, "sidebar device filter")[0], "2.0.4")
 
 
 @live_host_only("anchors and chunk syntax are checked against the Superset.app bundle installed on this host")

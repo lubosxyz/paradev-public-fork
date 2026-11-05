@@ -60,6 +60,14 @@ PROJECT_ICON_ENVIRONMENTS = (
     b"  return project.repoOwner ? `"
 )
 PROJECT_ICON_ENVIRONMENTS_COUNT = 2
+# 2.0.4 ships no source maps, so each site is one anchor, and the new-workspace
+# page names its project `project2`. Its three sites are then exactly: the
+# shared resolver and the environments picker (PROJECT_ICON_UPSTREAM) and the
+# new-workspace page (the `project2` pair below, same length). A bundle with a
+# `project2` site and any other count fails closed.
+PROJECT_ICON_UPSTREAM_2_0_4 = b"https://github.com/${project2.repoOwner}.png?size=64"
+PROJECT_ICON_CUSTOM_2_0_4 = b"superset-icon://projects/${project2.projectKey}?v=64"
+EXPECTED_PROJECT_ICON_COUNT_2_0_4 = 2
 
 
 def _pad_variant(source: bytes, replacement: bytes) -> bytes:
@@ -216,6 +224,25 @@ DASHBOARD_SEARCH_SHORTCUT = (
 )
 DASHBOARD_SEARCH_SHORTCUT_HIDDEN = _pad_variant(
     DASHBOARD_SEARCH_SHORTCUT,
+    b"/* compact dashboard search shortcut */ null",
+)
+# Desktop 2.0.4: both hints live in the button components (SidebarNewWorkspaceButton
+# at 4-space indent, SidebarSearchButton reading its own shortcutText). Only a 2.0.4
+# nav generation checks them: before 2.0.4, WorkspaceSidebarHeader rendered the
+# 4-space new-workspace expression too.
+DASHBOARD_NEW_SHORTCUT_2_0_4 = (
+    b"\n    /* @__PURE__ */ jsxRuntimeExports.jsx(SidebarKbdHint, { label: shortcutText })"
+)
+DASHBOARD_NEW_SHORTCUT_HIDDEN_2_0_4 = _pad_variant(
+    DASHBOARD_NEW_SHORTCUT_2_0_4,
+    b"\n    /* compact dashboard new-workspace shortcut */ null",
+)
+DASHBOARD_SEARCH_SHORTCUT_2_0_4 = (
+    b'shortcutText !== "Unassigned" && /* @__PURE__ */ '
+    b"jsxRuntimeExports.jsx(SidebarKbdHint, { label: shortcutText })"
+)
+DASHBOARD_SEARCH_SHORTCUT_HIDDEN_2_0_4 = _pad_variant(
+    DASHBOARD_SEARCH_SHORTCUT_2_0_4,
     b"/* compact dashboard search shortcut */ null",
 )
 AUTOMATION_BADGE_INLINE = (
@@ -380,6 +407,58 @@ HIDDEN_NAV_BUTTONS = {
 }
 
 
+# Desktop 2.0.4 moves New Workspace and Search into their own components
+# (SidebarNewWorkspaceButton, SidebarSearchButton) that the classic header and the
+# PostHog-gated paradev shell header (DashboardSidebarShellHeader) both mount, and
+# the classic header reads the other buttons from useDashboardNavigation
+# (`navigation.*`). Same classes and labels, new prefixes: header nav generation
+# 2.0.4. A bundle mixing both nav generations fails closed. --compact-sidebar
+# turns the two components into icon cells (in both headers: the shell header is
+# not a grid, so there they are icon-only rows); --hide-nav-buttons hides them at
+# the classic header's mount sites (8-space indent; the shell mounts them at 4),
+# so the shell header keeps both buttons.
+HEADER_NAV_PRE_2_0_4 = "pre-2.0.4"
+HEADER_NAV_2_0_4 = "2.0.4"
+TOP_NAV_NEW_WORKSPACE_2_0_4 = _plain_button_variant(
+    "onClick: openNewWorkspace, ", "New Workspace", _TOP_NAV_NEW_CLASS, _TOP_NAV_NEW_ICON_CLASS,
+)
+TOP_NAV_BUTTON_VARIANTS_2_0_4 = [
+    TOP_NAV_NEW_WORKSPACE_2_0_4,
+    _plain_button_variant(
+        "onPointerDown: paletteToggle.onPointerDown, onClick: paletteToggle.onClick, ",
+        "Search",
+        _TOP_NAV_SEARCH_CLASS,
+        _TOP_NAV_SEARCH_ICON_CLASS,
+    ),
+    _cn_button_variant("onClick: navigation.openWorkspaces, ", "Workspaces", "navigation.isWorkspacesOpen"),
+    _cn_button_variant("onClick: navigation.openAutomations, ", "Automations", "navigation.isAutomationsOpen"),
+    *[
+        _cn_button_variant(f'"aria-current": navigation.{state} ? "page" : void 0, ', title, f"navigation.{state}")
+        for title, state in (
+            ("Tasks", "isTasksOpen"),
+            ("Pull requests", "isPullRequestsOpen"),
+            ("Pages", "isPagesOpen"),
+            ("Plugins", "isPluginsOpen"),
+        )
+    ],
+]
+if [title for *_pair, title in TOP_NAV_BUTTON_VARIANTS_2_0_4] != [title for *_pair, title in TOP_NAV_BUTTON_VARIANTS]:
+    raise AssertionError("internal error: 2.0.4 header buttons out of order")
+HIDDEN_NAV_BUTTONS_2_0_4 = {
+    "Workspaces": _hidden_nav_variant(TOP_NAV_BUTTON_VARIANTS_2_0_4[2], "onClick: navigation.openWorkspaces, "),
+    "Pages": _hidden_nav_variant(
+        TOP_NAV_BUTTON_VARIANTS_2_0_4[6], '"aria-current": navigation.isPagesOpen ? "page" : void 0, '
+    ),
+}
+# (title, mount, hidden mount) of the two components in the classic header.
+HIDDEN_NAV_MOUNTS_2_0_4 = tuple(
+    (title, mount, _pad_variant(mount, f"\n        /* hidden {title} */ null,".encode()))
+    for title, mount in (
+        ("New Workspace", b"\n        /* @__PURE__ */ jsxRuntimeExports.jsx(SidebarNewWorkspaceButton, {}),"),
+        ("Search", b"\n        /* @__PURE__ */ jsxRuntimeExports.jsx(SidebarSearchButton, {}),"),
+    )
+)
+
 # --hide-sidebar-footer (desktop-v1.36.0 DashboardSidebar): hide the expanded
 # sidebar's bottom row: OrganizationDropdown (avatar, team name, PRO badge),
 # UpdatesPill and the settings cog. Settings stay on Cmd+, (hotkey OPEN_SETTINGS
@@ -429,6 +508,14 @@ TOP_NAV_LABEL_VARIANTS = [
         )
     ],
 ]
+
+# Desktop 2.0.4: the two component labels render at 4-space indent.
+TOP_NAV_LABEL_VARIANTS_2_0_4 = {
+    "New Workspace": _label_variant(
+        "New Workspace", "VxFQK8", "flex-1 truncate text-left whitespace-nowrap", indent=4
+    ),
+    "Search": _label_variant("Search", "A1taO8", "flex-1 text-left", indent=4),
+}
 
 # Desktop 1.36.0 nests the Automations button in the badge wrapper div, so its
 # label renders two spaces deeper; same message id, header generation 1.36.
@@ -1866,6 +1953,44 @@ STATUS_FILTER_REGIONS_2_0_3 = tuple(replace(region, shared=(*region.shared, (SID
     _rebased(STATUS_FILTER_REGIONS_2_0[12], 19770, "37330cda38b315ea5de2fb456efe844959385a29aa3c0c029210c15b436b72de", "37c6a0790bdd35b2129c0bd05dded8df4daa7e9ced194de9a8661e1c8e5686c8"),
     STATUS_FILTER_REGIONS_2_0[13],
 ))
+# 2.0.4 adds pinned pages to the PINNED section (usePinnedPages, a page row per
+# favorite page) and the paradev shell branch of DashboardSidebarContent. Region 1:
+# the section's row guard moves below the new page hooks (a return above them
+# would change the hook order when the filter starts hiding the section), the
+# page rows fold like the pinned workspaces under a filter, and the drop-zone
+# comment is indented two spaces less. With no filter the pages show as upstream;
+# a filter that hides every pinned workspace hides the section, pages included.
+# Region 2 gained the shell header, region 3 the shell branch (the chip row and
+# search stay in the classic branch), region 9 the chat-tab hotkeys, room 13 the
+# shell components; all away from the edits. The rest is byte-identical to 2.0.3.
+_SF_ROWS_2_0_3 = STATUS_FILTER_REGIONS_2_0_3[0]
+STATUS_FILTER_REGIONS_2_0_4 = (
+    _rebased(
+        _SF_ROWS_2_0_3, 29643, "25f32c4be6cb0832389760ecd2b140f751e618abbf7514cc87895e3b08c4e602", "8f055450565dcb96f5ab2c9945c34fab0c91e40047473ffdfab9d224faf9957c",
+        edits=(
+            *_SF_ROWS_2_0_3.edits[:2],
+            (
+                b"  const showsPinnedPages = isDraggingWorkspace ? pagesAtPickup : hasPinnedPages;\n",
+                b"  const showsPinnedPages = isDraggingWorkspace ? pagesAtPickup : hasPinnedPages;\n"
+                + _SF_ROWS_2_0_3.edits[2][1].split(b"\n", 1)[1],
+            ),
+            *_SF_ROWS_2_0_3.edits[3:9],
+            (_SF_ROWS_2_0_3.edits[9][0].replace(b"\n      // ", b"\n    // ").replace(b"      // -mb-3", b"    // -mb-3"), b""),
+            *_SF_ROWS_2_0_3.edits[10:],
+            (
+                b"!isSectionCollapsed && showsPinnedPages && ",
+                b"(ssfV > 1 ? ssfV < 3 : !isSectionCollapsed) && showsPinnedPages && ",
+            ),
+        ),
+    ),
+    _rebased(STATUS_FILTER_REGIONS_2_0_3[1], 21173, "352ec3492a1e2194e08f407585a596acc1231c959aa5461683eaefc8c36d9923", "b587410bf04cd4c3d9318d843cab309d6add669a438acad296f91ceb3ebf708b"),
+    _rebased(STATUS_FILTER_REGIONS_2_0_3[2], 20070, "766829d059a912462db8724f4f5a966ada3633bc3888ed6ecd7f4706464918b0", "61036846998b36808b9f15ad08480dbec0f43b72897fbde1cebb7ffcdde53282"),
+    *STATUS_FILTER_REGIONS_2_0_3[3:8],
+    _rebased(STATUS_FILTER_REGIONS_2_0_3[8], 14170, "ba4336962e30472267f5e472fafce24e828c51bddf214559bc19039773cf81d0", "dedf83f0265bf3779dce9cadc42fa6e74b6e4beaa8fab2eaf1626d0223adfacd"),
+    *STATUS_FILTER_REGIONS_2_0_3[9:12],
+    _rebased(STATUS_FILTER_REGIONS_2_0_3[12], 37049, "9b3a2948a501ab806b5a0d41eedb81f6c2498c680ea2efd2ef5d812cfbfe1b77", "504b1b91f1a8fd8a49833b58592a828ec45cb2887644a88cbaf128bab39b6364"),
+    STATUS_FILTER_REGIONS_2_0_3[13],
+)
 # (name, regions, sibling variants): every supported release layout of the filter.
 STATUS_FILTER_LAYOUTS = (
     ("1.36-1.37", STATUS_FILTER_REGIONS, STATUS_FILTER_REGION_VARIANTS),
@@ -1874,6 +1999,7 @@ STATUS_FILTER_LAYOUTS = (
     ("1.40", STATUS_FILTER_REGIONS_1_40, ()),
     ("2.0.0", STATUS_FILTER_REGIONS_2_0, ()),
     ("2.0.3", STATUS_FILTER_REGIONS_2_0_3, ()),
+    ("2.0.4", STATUS_FILTER_REGIONS_2_0_4, ()),
 )
 
 # Names the injected filter JS reads from upstream code outside the pinned
@@ -1966,6 +2092,23 @@ def _region_fits(data, region: RegionRewrite, variants: tuple[RegionRewrite, ...
     )
 
 
+def _region_known(data, region: RegionRewrite, variants: tuple[RegionRewrite, ...]) -> bool:
+    """True when a fitting region's bytes are at a digest its shape pins (stock, patched, legacy or upgradable)."""
+    offset = _find_all(data, region.start)[0]
+    for candidate in (region, *variants):
+        stop = offset + candidate.length
+        if candidate.start != region.start or candidate.end != region.end or data[stop : stop + len(candidate.end)] != candidate.end:
+            continue
+        canonical = bytes(data[offset:stop])
+        for stock, variant in candidate.shared:
+            if canonical.count(variant) == 1:
+                canonical = canonical.replace(variant, stock)
+        known = {candidate.stock_sha256, candidate.patched_sha256, *candidate.legacy_sha256, *dict(candidate.upgrades)}
+        if hashlib.sha256(canonical).hexdigest() in known:
+            return True
+    return False
+
+
 # Every family picks its release layout on its own. plan_replacements collects
 # the picks, plus the releases of every family present in the bundle whatever
 # the flags (_probe_releases), and refuses a bundle whose records share no
@@ -2017,6 +2160,11 @@ def _select_layout(data, layouts, label: str):
     """
     fits = [sum(_region_fits(data, region, layout[2]) for region in layout[1]) for layout in layouts]
     whole = [layout for layout, fit in zip(layouts, fits, strict=True) if fit == len(layout[1])]
+    if len(whole) > 1:
+        # Releases with the same region structure (2.0.3 and 2.0.4 palette) differ
+        # only in their digests: the one layout whose every region is at a digest
+        # it pins decides; none or several still fail closed.
+        whole = [layout for layout in whole if all(_region_known(data, region, layout[2]) for region in layout[1])]
     if len(whole) > 1:
         raise RuntimeError(f"{label}: the bundle fits several release layouts; bundle structure may have changed")
     if whole:
@@ -2916,6 +3064,18 @@ PALETTE_SEARCH_CHUNKS_2_0_3 = (
     (PALETTE_SEARCH_REGIONS_2_0_3[:1], *PALETTE_SEARCH_CHUNKS[0][1:]),
     (PALETTE_SEARCH_REGIONS_2_0_3[1:], *PALETTE_SEARCH_CHUNKS[1][1:]),
 )
+# 2.0.4: region 2 swaps the superset.sh links of the preview notices for
+# paradev.com (same length), away from the edits; regions 1, 3 and 4 are
+# byte-identical to 2.0.3.
+PALETTE_SEARCH_REGIONS_2_0_4 = (
+    PALETTE_SEARCH_REGIONS_2_0_3[0],
+    _rebased(PALETTE_SEARCH_REGIONS_2_0_3[1], 60976, "e84c8641b0d3251a80939d1fa67860994cbb054aadd362c3ac43870968baba09", "ed143286a630b17ef5c808869833f05af2a6a1936c2e1d452d75f029b74cc206"),
+    *PALETTE_SEARCH_REGIONS_2_0_3[2:],
+)
+PALETTE_SEARCH_CHUNKS_2_0_4 = (
+    (PALETTE_SEARCH_REGIONS_2_0_4[:1], *PALETTE_SEARCH_CHUNKS[0][1:]),
+    (PALETTE_SEARCH_REGIONS_2_0_4[1:], *PALETTE_SEARCH_CHUNKS[1][1:]),
+)
 # (name, regions, variants, chunks, generations): every supported release layout.
 PALETTE_SEARCH_LAYOUTS = (
     ("1.37", PALETTE_SEARCH_REGIONS, (), PALETTE_SEARCH_CHUNKS, PALETTE_SEARCH_GENERATIONS),
@@ -2952,6 +3112,13 @@ PALETTE_SEARCH_LAYOUTS = (
         {
             "stock": tuple(region.stock_sha256 for region in PALETTE_SEARCH_REGIONS_2_0_3),
             "generation 6": tuple(region.patched_sha256 for region in PALETTE_SEARCH_REGIONS_2_0_3),
+        },
+    ),
+    (
+        "2.0.4", PALETTE_SEARCH_REGIONS_2_0_4, (), PALETTE_SEARCH_CHUNKS_2_0_4,
+        {
+            "stock": tuple(region.stock_sha256 for region in PALETTE_SEARCH_REGIONS_2_0_4),
+            "generation 6": tuple(region.patched_sha256 for region in PALETTE_SEARCH_REGIONS_2_0_4),
         },
     ),
 )
@@ -3958,6 +4125,25 @@ SIDEBAR_DEVICE_REGIONS_2_0_3 = (
     replace(SIDEBAR_DEVICE_REGIONS_2_0_3[0], shared=((SIDEBAR_DEVICE_MENU_JS, SIDEBAR_ONE_ROW_MENU),)),
     *SIDEBAR_DEVICE_REGIONS_2_0_3[1:],
 )
+# 2.0.4: the layout chunk no longer imports LuCloud; upstream draws the cloud
+# host with TbCloud (WorkspaceHostGlyph), which the chunk imports, so the device
+# list does too (same length). The data region gained the attachment prompt
+# text away from the edits; regions 3-5 are byte-identical to 2.0.3.
+SIDEBAR_DEVICE_HOSTS_JS_2_0_4 = SIDEBAR_DEVICE_HOSTS_JS.replace(b'"Cloud", LuCloud]', b'"Cloud", TbCloud]')
+if SIDEBAR_DEVICE_HOSTS_JS_2_0_4.count(b"TbCloud") != 1 or len(SIDEBAR_DEVICE_HOSTS_JS_2_0_4) != len(SIDEBAR_DEVICE_HOSTS_JS):
+    raise AssertionError("internal error: 2.0.4 device list icon")
+SIDEBAR_DEVICE_REGIONS_2_0_4 = (
+    _rebased(SIDEBAR_DEVICE_REGIONS_2_0_3[0], 67543, "c974dfc1d1241b0f89165111e46b08e627f51cbcccb73fc0ae1b19f0492b3ee0", "c96e706360db25c3e3034748b38075017ebb3f177a2d817f7deadfa669ed4f2a"),
+    _rebased(
+        SIDEBAR_DEVICE_REGIONS_2_0_3[1], 32113, SIDEBAR_DEVICE_REGIONS_2_0_3[1].stock_sha256,
+        "de75cb061f46f24f263926c40917350f0e5c6379e7270735d3d36a5226147122",
+        edits=tuple(
+            (anchor, replacement.replace(SIDEBAR_DEVICE_HOSTS_JS, SIDEBAR_DEVICE_HOSTS_JS_2_0_4))
+            for anchor, replacement in SIDEBAR_DEVICE_REGIONS_2_0_3[1].edits
+        ),
+    ),
+    *SIDEBAR_DEVICE_REGIONS_2_0_3[2:],
+)
 # (name, stock, filtered, label) of the two anchor swaps outside the regions.
 SIDEBAR_DEVICE_SWAPS = (
     ("sidebar device filter mount", SIDEBAR_DEVICE_MOUNT, SIDEBAR_DEVICE_MOUNT_FILTER, "sidebar device filter: title-bar dropdown"),
@@ -3971,6 +4157,7 @@ SIDEBAR_DEVICE_LAYOUTS = (
     ("1.40", SIDEBAR_DEVICE_REGIONS_1_40, (), SIDEBAR_DEVICE_SWAPS[:1]),
     ("2.0.0", SIDEBAR_DEVICE_REGIONS_2_0, (), SIDEBAR_DEVICE_SWAPS[:1]),
     ("2.0.3", SIDEBAR_DEVICE_REGIONS_2_0_3, (), SIDEBAR_DEVICE_SWAPS[:1]),
+    ("2.0.4", SIDEBAR_DEVICE_REGIONS_2_0_4, (), SIDEBAR_DEVICE_SWAPS[:1]),
 )
 SIDEBAR_DEVICE_CHUNK_NAMES = (
     (
@@ -3984,6 +4171,14 @@ SIDEBAR_DEVICE_CHUNK_NAMES = (
         "sdfUseRows", "SdfDevices", "sdfUseList", "sdfKids", "sdfGroups", "SdfDeviceItems", "sdfUseCloud",
     ),
 )
+# The cloud icon each layout's device list reads (SIDEBAR_DEVICE_HOSTS_JS_2_0_4).
+SIDEBAR_DEVICE_CLOUD_ICONS = {"2.0.4": "TbCloud"}
+
+
+def _sidebar_device_chunk_names(layout: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    imported, added = SIDEBAR_DEVICE_CHUNK_NAMES
+    icon = SIDEBAR_DEVICE_CLOUD_ICONS.get(layout, "LuCloud")
+    return tuple(icon if name == "LuCloud" else name for name in imported), added
 
 
 def _plan_sidebar_device_filter(data) -> list[tuple[int, bytes, bytes, str]]:
@@ -3997,7 +4192,7 @@ def _plan_sidebar_device_filter(data) -> list[tuple[int, bytes, bytes, str]]:
                 "bundle structure may have changed"
             )
     _require_family_chunks(
-        data, ((regions, *SIDEBAR_DEVICE_CHUNK_NAMES),), "sidebar device filter",
+        data, ((regions, *_sidebar_device_chunk_names(layout)),), "sidebar device filter",
         [pair for _name, *pair, _label in swaps],
         # --sidebar-one-row mounts SdfDevices in the status filter's search row, outside these regions.
         others=((), (SIDEBAR_ONE_ROW_SEARCH_MOUNT,)),
@@ -4013,11 +4208,14 @@ def _plan_sidebar_device_filter(data) -> list[tuple[int, bytes, bytes, str]]:
 
 
 
+SIDEBAR_ONE_ROW_RELEASES = ("2.0.3", "2.0.4")
+
+
 def _plan_sidebar_one_row(data, replacements) -> list[tuple[int, bytes, bytes, str]]:
     """Add the writes the header row still needs; the two JS pairs join a planned region rewrite when there is one."""
     layout, device_regions, *_rest = _select_layout(data, SIDEBAR_DEVICE_LAYOUTS, "sidebar device filter")
-    if layout != "2.0.3":
-        raise RuntimeError(f"--sidebar-one-row needs desktop 2.0.3, this bundle is {layout}")
+    if layout not in SIDEBAR_ONE_ROW_RELEASES:
+        raise RuntimeError(f"--sidebar-one-row needs desktop 2.0.3 or 2.0.4, this bundle is {layout}")
     search = next(region for region in status_filter_layout(data)[1] if region.label == "status filter: search")
     found = _region_chunk(data, (search, *device_regions[:1]), "sidebar one row")
     if found is not None:
@@ -4045,7 +4243,7 @@ def _plan_sidebar_one_row(data, replacements) -> list[tuple[int, bytes, bytes, s
     return planned
 
 
-# --desktop-pin-sync: exact desktop 1.39.0, 1.40.0 and 2.0.3 regions (DESKTOP_PIN_LAYOUTS); renderer exports only, no storage writes.
+# --desktop-pin-sync: exact desktop 1.39.0, 1.40.0, 2.0.3 and 2.0.4 regions (DESKTOP_PIN_LAYOUTS); renderer exports only, no storage writes.
 DESKTOP_PIN_RENDERER_JS = b'useCollections.dps = function(org, connection) {\n  const {v2WorkspaceLocalState: collection} = useCollections();\n  reactExports.useEffect(() => {\n    if (!org || !connection?.port || !connection.secret) return;\n    let stopped = false, timer;\n    const publish = async () => {\n      try {\n        if (collection.status !== "ready") return;\n        const pins = [];\n        for (const row of collection.state.values()) {\n          if (!row || typeof row.workspaceId !== "string" || !row.sidebarState) throw Error("Invalid desktop pins");\n          const at = row.sidebarState.pinnedAt;\n          if (at != null) {\n            if (!Number.isSafeInteger(at) || at < 0) throw Error("Invalid pin time");\n            if (!row.sidebarState.isHidden) pins.push({workspaceId:row.workspaceId,pinnedAt:at});\n          }\n        }\n        await getHostServiceClientByUrl(`http://127.0.0.1:${connection.port}`).desktopPins.publish.mutate({version:1,organizationId:org,observedAt:Date.now(),pins},{signal:AbortSignal.timeout(2000)});\n      } catch {} finally {\n        if (!stopped) timer = setTimeout(publish, 1000);\n      }\n    };\n    void publish();\n    return () => {stopped = true;clearTimeout(timer);};\n  }, [org,connection?.port,connection?.secret,collection]);\n};\n'
 DESKTOP_PIN_HOST_JS = b'const dpsWaiters = new Map();\nfunction dpsRouter() {\n  const fail = (code) => {throw new gitHookTolerance.TRPCError({code,message:"Desktop pins unavailable"});};\n  return router({\n    publish: protectedProcedure.input(value => value).mutation(({ctx,input}) => {\n      if (ctx.isLocalCaller !== true) fail("FORBIDDEN");\n      if (!input || input.version !== 1 || input.organizationId !== ctx.organizationId || !Number.isSafeInteger(input.observedAt) || Math.abs(Date.now()-input.observedAt)>5000 || !Array.isArray(input.pins) || input.pins.length>5000) fail("BAD_REQUEST");\n      const ids = new Set();\n      for (const pin of input.pins) {\n        if (!pin || typeof pin.workspaceId!=="string" || !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(pin.workspaceId) || ids.has(pin.workspaceId) || !Number.isSafeInteger(pin.pinnedAt) || pin.pinnedAt<0) fail("BAD_REQUEST");\n        ids.add(pin.workspaceId);\n      }\n      const snapshot = {version:1,organizationId:ctx.organizationId,sourceHostId:hostServiceUtils.getHostId(),observedAt:input.observedAt,pins:input.pins.map(p=>({workspaceId:p.workspaceId,pinnedAt:p.pinnedAt}))};\n      for (const pending of dpsWaiters.get(ctx.organizationId) ?? []) {\n        if (input.observedAt >= pending.since) pending.resolve(snapshot);\n      }\n      return null;\n    }),\n    list: queryProcedure.query(({ctx}) => new Promise((resolve,reject) => {\n      let pending = dpsWaiters.get(ctx.organizationId);\n      if (!pending) dpsWaiters.set(ctx.organizationId,pending=new Set());\n      if (pending.size>=64) {reject(new gitHookTolerance.TRPCError({code:"TOO_MANY_REQUESTS"}));return;}\n      const finish = () => {clearTimeout(timer);pending.delete(waiter);if (!pending.size) dpsWaiters.delete(ctx.organizationId);};\n      const waiter = {since:Date.now(),resolve: snapshot => {finish();resolve(snapshot);}};\n      const timer = setTimeout(() => {finish();reject(new gitHookTolerance.TRPCError({code:"PRECONDITION_FAILED",message:"Desktop pins unavailable"}));},3500);\n      pending.add(waiter);\n    }))\n  });\n}\n'
 DESKTOP_PIN_REGIONS = (
@@ -4135,11 +4333,22 @@ DESKTOP_PIN_REGIONS_2_0_3 = (
         "1fe18374add0ef67d03df9f341e52aaf69fb720bfe16a2071b287dd32edea3db",
     ),
 )
+# 2.0.4: the renderer helper and provider ranges are byte-identical to 2.0.3. The host router range
+# gained the attachment routes, away from the edit; re-pinned with the same edit.
+DESKTOP_PIN_REGIONS_2_0_4 = (
+    *DESKTOP_PIN_REGIONS_2_0_3[:2],
+    _rebased(
+        DESKTOP_PIN_REGIONS_2_0_3[2], 67577,
+        "5bdfc5cb637563c1fd6250aca993ab73a6d2ffe8cbe3d7f01d480bb3e7c32a73",
+        "d6fd4cc94b0b3ee66fe5f71fb89a6f9551bcca0bc4e22dc225e63c9800cf0573",
+    ),
+)
 # (release, regions, variants): the provider chunk's release banner must name the selected release.
 DESKTOP_PIN_LAYOUTS = (
     ("1.39.0", DESKTOP_PIN_REGIONS, ()),
     ("1.40.0", DESKTOP_PIN_REGIONS_1_40, ()),
     ("2.0.3", DESKTOP_PIN_REGIONS_2_0_3, ()),
+    ("2.0.4", DESKTOP_PIN_REGIONS_2_0_4, ()),
 )
 
 
@@ -4168,7 +4377,7 @@ def _plan_desktop_pin_sync(data):
     return [write for region in regions for write in _plan_region_rewrite(data, region)]
 
 
-# --desktop-preset-sync: exact desktop 1.39.0, 1.40.0 and 2.0.3 regions; the renderer exports the
+# --desktop-preset-sync: exact desktop 1.39.0, 1.40.0, 2.0.3 and 2.0.4 regions; the renderer exports the
 # terminal presets (V2 presets bar shortcuts) read-only, the host serves them.
 DESKTOP_PRESET_RENDERER_JS = b'''function dtsUse(org, collections) {
   reactExports.useEffect(() => {
@@ -4359,11 +4568,32 @@ DESKTOP_PRESET_REGIONS_2_0_3 = (
     ),
 )
 DESKTOP_PRESET_APP_ROUTER_SHA256_2_0_3 = "29781797d52299d9d9585c804123c2f5f0ee63a5952f32c063cc4c98488e4b77"
+# 2.0.4: the renderer helper and renderer mount regions keep their 1.40 bytes. RESCUE_REPORT_INTERVAL_MS
+# moved 1.1 MB up the host chunk, so the host router range now starts at installProcessSafetyNet (the
+# reconnecting-socket class and its comments the rewrite deletes for room stay inside it), re-pinned
+# with the same edits. createApp gained the legacy home move, the api client, the attachment sweep and
+# a body re-buffering middleware for /trpc/*, all away from the edit; re-pinned on the same end.
+DESKTOP_PRESET_REGIONS_2_0_4 = (
+    *DESKTOP_PRESET_REGIONS_2_0_3[:2],
+    _rebased(
+        DESKTOP_PRESET_REGIONS_2_0_3[2], 16982,
+        "bcf7ccfb9062110bd747d731bc91cb2e47913020513c267228c05fe605a6387d",
+        "5added6d47570c9092e9847812ca623ccadf388824eab7337362e8416c752b12",
+        start=b"function installProcessSafetyNet() {\n",
+    ),
+    _rebased(
+        DESKTOP_PRESET_REGIONS_2_0_3[3], 14673,
+        "6c550c2e5da2ec8db857117ca4e7ffdbf414cf348cc0981d7f81ec958af12577",
+        "41ef1df6669ada0b764f036ec3aa632e429618528c0444d41fb0f7fd333ec333",
+    ),
+)
 # (release, regions, variants, appRouter literal digest); both chunks' release banners must name the release.
 DESKTOP_PRESET_LAYOUTS = (
     ("1.39.0", DESKTOP_PRESET_REGIONS, (), DESKTOP_PRESET_APP_ROUTER_SHA256),
     ("1.40.0", DESKTOP_PRESET_REGIONS_1_40, (), DESKTOP_PRESET_APP_ROUTER_SHA256_1_40),
     ("2.0.3", DESKTOP_PRESET_REGIONS_2_0_3, (), DESKTOP_PRESET_APP_ROUTER_SHA256_2_0_3),
+    # The appRouter literal is byte-identical to 2.0.3.
+    ("2.0.4", DESKTOP_PRESET_REGIONS_2_0_4, (), DESKTOP_PRESET_APP_ROUTER_SHA256_2_0_3),
 )
 
 
@@ -4788,6 +5018,27 @@ PROJECT_ORDER_REGIONS_2_0 = (
     _rebased(PROJECT_ORDER_REGIONS_1_40[1], 8625, "c4ffd2b1d7fc638f3fe717a6ff314fbbe4ce94c42209fb7c9bcc5666abaf0e02", "31a3cfde34fde1b359752e1fa2f1ffb96fc811d0abba422b79ff959cf5ffd32c"),
 )
 SORT_PROJECTS_REGIONS_2_0 = (_rebased(SORT_PROJECTS_REGIONS[0], 11438, "c15bf87cac44d8e2714f6041aead81dc89add79b6216b2ca9f777b1f51b2d1c0", "02e6a4d97d32362e7fc9d13d9d16c7a59002578bee1bdbaab90f3e76afef6f29"),)
+# 2.0.4: the hook region (DashboardLayout reads the paradev shell flag and mounts
+# its title bar and chat tabs) is re-pinned; the stale-route comment it deletes
+# for room is indented two spaces less. The store room shrank by 2,316 B and
+# no longer has room, so it now runs on to SidebarCardSlot (the update card
+# helpers; no other family's anchor in between). The sort and pin
+# menu regions and all three swaps are the 2.0.0 shapes.
+_PROJECT_ORDER_HOOK_2_0 = PROJECT_ORDER_REGIONS_2_0[0]
+PROJECT_ORDER_REGIONS_2_0_4 = (
+    _rebased(
+        _PROJECT_ORDER_HOOK_2_0, 8794, "e7dc1cef51a03bee5dfe3226753eb298f96144119fe23566b8b56f098027e61e", "d2278ad34e16fa1b81d9b821beaa425233709f9edef1251cb8551875935f3ea6",
+        edits=(
+            *_PROJECT_ORDER_HOOK_2_0.edits[:2],
+            (_PROJECT_ORDER_HOOK_2_0.edits[2][0].replace(b"              // ", b"    // "), b""),
+            *_PROJECT_ORDER_HOOK_2_0.edits[3:],
+        ),
+    ),
+    _rebased(
+        PROJECT_ORDER_REGIONS_2_0[1], 11411, "62d82f4b26123310aab57c6300901b927e1bc19e075a3393424276ffdfb2bedf", "da293c3647b4b446c1cc7e5b4dfe1680abc7eca2afca335781defea9d0bd5906",
+        end=b"function SidebarCardSlot({\n",
+    ),
+)
 # (name, (core, sort, pin) regions, hook variants, (core, sort, pin) swaps): every
 # supported release layout. _select_layout picks it by the regions; the swaps
 # have to be that release's shapes, so a mixed bundle fails closed.
@@ -4810,6 +5061,11 @@ PROJECT_ORDER_LAYOUTS = (
     (
         "2.0.0,2.0.3", (*PROJECT_ORDER_REGIONS_2_0, *SORT_PROJECTS_REGIONS_2_0, *PIN_PROJECTS_REGIONS_1_40), (),
         (PROJECT_ORDER_REGIONS_2_0, SORT_PROJECTS_REGIONS_2_0, PIN_PROJECTS_REGIONS_1_40),
+        (PROJECT_ORDER_SWAPS_1_39, SORT_PROJECTS_SWAPS_1_39, PIN_PROJECTS_SWAPS_1_39),
+    ),
+    (
+        "2.0.4", (*PROJECT_ORDER_REGIONS_2_0_4, *SORT_PROJECTS_REGIONS_2_0, *PIN_PROJECTS_REGIONS_1_40), (),
+        (PROJECT_ORDER_REGIONS_2_0_4, SORT_PROJECTS_REGIONS_2_0, PIN_PROJECTS_REGIONS_1_40),
         (PROJECT_ORDER_SWAPS_1_39, SORT_PROJECTS_SWAPS_1_39, PIN_PROJECTS_SWAPS_1_39),
     ),
 )
@@ -5059,7 +5315,7 @@ RELEASE_PROBES = (
 # without one the family is unsupported and its own flag refuses it.
 RELEASE_BANNER_PROBES = ("desktop pin sync", "desktop preset sync")
 # The releases of each PINNED_SORT_RELEASES entry.
-PINNED_SORT_RELEASE_NAMES = (("1.37", "1.38", "1.40", "2.0.0", "2.0.3"), ("1.39",))
+PINNED_SORT_RELEASE_NAMES = (("1.37", "1.38", "1.40", "2.0.0", "2.0.3", "2.0.4"), ("1.39",))
 
 
 def _probe_releases(data) -> None:
@@ -5091,9 +5347,16 @@ def _probe_releases(data) -> None:
                 entry[2] |= _layout_releases(name)
         fits = {key for key, (region, variants, _releases) in shapes.items() if _region_fits(data, region, tuple(variants))}
         whole = [
-            layout[0] for layout in layouts
+            layout for layout in layouts
             if all((region.start, region.end, region.length) in fits for region in layout[1])
         ]
+        if len(whole) > 1:
+            # Same-structure releases (2.0.3 and 2.0.4 palette) are told apart by their pinned
+            # digests, as in _select_layout, so an unflagged family still records its own release;
+            # bytes no whole layout pins keep every whole layout (the family's flag refuses them).
+            known = [layout for layout in whole if all(_region_known(data, region, layout[2]) for region in layout[1])]
+            whole = known or whole
+        whole = [layout[0] for layout in whole]
         if whole:
             _record_layout(label, frozenset().union(*map(_layout_releases, whole)))
         elif fits and not frozenset.intersection(*(frozenset(shapes[key][2]) for key in fits)):
@@ -5198,7 +5461,17 @@ def plan_replacements(
         )
         if environments > 1:
             raise RuntimeError(f"expected at most one environments project icon site, found {environments}; bundle structure may have changed")
-        expected = EXPECTED_PROJECT_ICON_COUNT + environments * PROJECT_ICON_ENVIRONMENTS_COUNT
+        upstream_2 = _find_all(data, PROJECT_ICON_UPSTREAM_2_0_4)
+        total_2 = len(upstream_2) + len(_find_all(data, PROJECT_ICON_CUSTOM_2_0_4))
+        if total_2 > 1 or (total_2 and not environments):
+            raise RuntimeError(
+                f"expected at most one new-workspace project icon site next to the environments one, found {total_2}; "
+                "bundle structure may have changed"
+            )
+        if total_2:
+            expected = EXPECTED_PROJECT_ICON_COUNT_2_0_4
+        else:
+            expected = EXPECTED_PROJECT_ICON_COUNT + environments * PROJECT_ICON_ENVIRONMENTS_COUNT
         if total != expected:
             raise RuntimeError(
                 f"expected {expected} project icon anchors, found {total}; "
@@ -5207,6 +5480,10 @@ def plan_replacements(
         replacements.extend(
             (offset, PROJECT_ICON_UPSTREAM, PROJECT_ICON_CUSTOM, "project icon: local protocol")
             for offset in upstream
+        )
+        replacements.extend(
+            (offset, PROJECT_ICON_UPSTREAM_2_0_4, PROJECT_ICON_CUSTOM_2_0_4, "project icon: local protocol")
+            for offset in upstream_2
         )
 
     if compact_sidebar:
@@ -5280,26 +5557,67 @@ def plan_replacements(
         old_new, old_target, _ = TOP_NAV_BUTTON_VARIANTS[0]
         current_new, current_target, _ = TOP_NAV_NEW_WORKSPACE_1_30
         new_hidden = HIDDEN_NAV_BUTTONS["New Workspace"]
+        new_2_0_4 = TOP_NAV_NEW_WORKSPACE_2_0_4[:2]
         new_offset, new_old = _single_variant(
             data, "New Workspace button",
-            [old_new, old_target, current_new, current_target, new_hidden],
+            [old_new, old_target, current_new, current_target, new_hidden, *new_2_0_4],
         )
-        new_target = current_target if new_old in (current_new, current_target, new_hidden) else old_target
-        if hide_nav_buttons and new_target != current_target:
-            raise RuntimeError("--hide-nav-buttons needs desktop 1.30 or newer")
-        if hide_nav_buttons or new_old == new_hidden:
-            new_target = new_hidden
+        # 2.0.4 hides the component at its classic mount (HIDDEN_NAV_MOUNTS_2_0_4), not here.
+        nav_generations = {HEADER_NAV_2_0_4 if new_old in new_2_0_4 else HEADER_NAV_PRE_2_0_4}
+        if new_old in new_2_0_4:
+            new_target = new_2_0_4[1]
+        else:
+            new_target = current_target if new_old in (current_new, current_target, new_hidden) else old_target
+            if hide_nav_buttons and new_target != current_target:
+                raise RuntimeError("--hide-nav-buttons needs desktop 1.30 or newer")
+            if hide_nav_buttons or new_old == new_hidden:
+                new_target = new_hidden
         if new_old != new_target:
             change = "hidden" if new_target == new_hidden else "icon button"
             replacements.append((new_offset, new_old, new_target, f"sidebar: New Workspace {change}"))
-        for source, target, title in TOP_NAV_BUTTON_VARIANTS[1:]:
+        for (source, target, title), (source_2_0_4, target_2_0_4, _title) in zip(
+            TOP_NAV_BUTTON_VARIANTS[1:], TOP_NAV_BUTTON_VARIANTS_2_0_4[1:], strict=True
+        ):
             hidden = HIDDEN_NAV_BUTTONS.get(title)
-            offset, old = _single_variant(data, f"{title} button", [source, target, *([hidden] if hidden else [])])
+            hidden_2_0_4 = HIDDEN_NAV_BUTTONS_2_0_4.get(title)
+            shapes_2_0_4 = [source_2_0_4, target_2_0_4, *([hidden_2_0_4] if hidden_2_0_4 else [])]
+            offset, old = _single_variant(
+                data, f"{title} button", [source, target, *([hidden] if hidden else []), *shapes_2_0_4]
+            )
+            if old in shapes_2_0_4:
+                nav_generations.add(HEADER_NAV_2_0_4)
+                target, hidden = target_2_0_4, hidden_2_0_4
+            else:
+                nav_generations.add(HEADER_NAV_PRE_2_0_4)
             if hidden and (hide_nav_buttons or old == hidden):
                 target = hidden
             if old != target:
                 change = "hidden" if target == hidden else "icon button"
                 replacements.append((offset, old, target, f"sidebar: {title} {change}"))
+        if len(nav_generations) != 1:
+            raise RuntimeError("mixed sidebar header nav generations; bundle structure may have changed")
+        nav_2_0_4 = nav_generations == {HEADER_NAV_2_0_4}
+        if nav_2_0_4:
+            # Hidden is sticky here too: a run without the flag keeps a hidden mount hidden.
+            for title, mount, hidden in HIDDEN_NAV_MOUNTS_2_0_4:
+                offset, old = _single_variant(data, f"{title} classic header mount", [mount, hidden])
+                target = hidden if hide_nav_buttons or old == hidden else mount
+                if old != target:
+                    replacements.append((offset, old, target, f"sidebar: {title} hidden"))
+            sidebar_variants[1:3] = [
+                (
+                    "dashboard new-workspace shortcut",
+                    DASHBOARD_NEW_SHORTCUT_2_0_4,
+                    DASHBOARD_NEW_SHORTCUT_HIDDEN_2_0_4,
+                    "sidebar: hide dashboard new-workspace shortcut",
+                ),
+                (
+                    "dashboard search shortcut",
+                    DASHBOARD_SEARCH_SHORTCUT_2_0_4,
+                    DASHBOARD_SEARCH_SHORTCUT_HIDDEN_2_0_4,
+                    "sidebar: hide dashboard search shortcut",
+                ),
+            ]
         # 1.30.x: inline badge -> overlay. 1.31-1.35: badge removed upstream, so
         # the family is verify-only there. 1.36+: sibling badge -> corner overlay.
         # Exactly one of the five shapes must exist.
@@ -5340,6 +5658,13 @@ def plan_replacements(
             if title != legacy_title:
                 raise RuntimeError("internal error: label variant title mismatch")
             newest = TOP_NAV_LABEL_VARIANTS_1_36.get(title)
+            if nav_2_0_4 and title in TOP_NAV_LABEL_VARIANTS_2_0_4:
+                # Only the 2.0.4 shape counts in a 2.0.4 header; its release family is current.
+                newest = TOP_NAV_LABEL_VARIANTS_2_0_4[title]
+                offset, old = _single_variant(data, f"{title} label", list(newest[:2]))
+                if old != newest[1]:
+                    replacements.append((offset, old, newest[1], f"sidebar: {title} accessible label"))
+                continue
             newest_variants = list(newest[:2]) if newest else []
             offset, old = _single_variant(
                 data,
@@ -5820,12 +6145,12 @@ def main(argv=None):
     parser.add_argument(
         "--sidebar-one-row",
         action="store_true",
-        help="desktop 2.0.3, with --compact-sidebar, --hide-nav-buttons, --sidebar-status-filter and --sidebar-device-filter: "
+        help="desktop 2.0.3 or 2.0.4, with --compact-sidebar, --hide-nav-buttons, --sidebar-status-filter and --sidebar-device-filter: "
         "the header is one row from the arrows to the icons (no sidebar toggle, Cmd+B stays) and the device filter "
         "is an icon button in the search row",
     )
-    parser.add_argument("--desktop-pin-sync", action="store_true", help="export desktop workspace pins to mobile over the authenticated host relay (1.39.0, 1.40.0, 2.0.3)")
-    parser.add_argument("--desktop-preset-sync", action="store_true", help="export the desktop terminal presets (presets bar shortcuts) to mobile over the authenticated host relay (1.39.0, 1.40.0, 2.0.3)")
+    parser.add_argument("--desktop-pin-sync", action="store_true", help="export desktop workspace pins to mobile over the authenticated host relay (1.39.0, 1.40.0, 2.0.3, 2.0.4)")
+    parser.add_argument("--desktop-preset-sync", action="store_true", help="export the desktop terminal presets (presets bar shortcuts) to mobile over the authenticated host relay (1.39.0, 1.40.0, 2.0.3, 2.0.4)")
     parser.add_argument(
         "--pinned-activity-sort",
         action="store_true",

@@ -954,6 +954,95 @@ class PaletteSearch203Test(unittest.TestCase):
         self.assertEqual(patch(half, search=False)[1], SWAP_LABELS)
 
 
+# desktop-v2.0.4 (LUBOS-4029): region 2 (workspace and project results) is re-pinned, cut from the real 2.0.4
+# bundle; it keeps the 2.0.3 length, so 2.0.3 and 2.0.4 share one region structure and only the pinned digests
+# tell them apart (_region_known). Regions 1, 3 and 4 and the Cmd+K swap are the 2.0.3 ones.
+REGIONS_204 = MODULE.PALETTE_SEARCH_REGIONS_2_0_4
+STOCK_204 = [STOCK_203[0], (FIXTURES / "superset-2.0.4-palette-r2.js").read_bytes(), *STOCK_203[2:]]
+PATCHED_204 = [PATCHED_203[0], (FIXTURES / "superset-2.0.4-palette-r2.patched.js").read_bytes(), *PATCHED_203[2:]]
+
+
+def layout_chunk_204(regions=None, names=LAYOUT_NAMES):
+    regions = STOCK_204[1:] if regions is None else regions
+    return names + b"".join(r + spec.end + tail for spec, r, tail in zip(REGIONS_204[1:], regions, TAILS_138, strict=True))
+
+
+def bundle_204(layout=None):
+    return bundle_138(layout=layout_chunk_204() if layout is None else layout, hotkeys=HOTKEYS_200)
+
+
+class PaletteSearch204Test(unittest.TestCase):
+    """The 2.0.4 layout: the same injected JS, region 2 re-pinned at the 2.0.3 length (LUBOS-4029)."""
+
+    # Value: protects=the 2.0.4 rewrite of region 2 is exactly the reviewed fixture, keeps its length, re-runs to nothing and parses, carries the 2.0.3 edits, and the other regions are the 2.0.3 objects; fails_when=an edit, the injected JS or the 2.0.4 digest changes without its fixture, or a reused region drifted on 2.0.4; why_new=LUBOS-4029; seam=real 2.0.4 bytes
+    def test_real_regions_are_pinned_idempotent_and_parseable(self):
+        for n, (region, old) in enumerate(zip(REGIONS_204, REGIONS_203, strict=True), 1):
+            with self.subTest(region=n):
+                self.assertEqual(region is old, n != 2)
+                self.assertEqual((region.label, region.start, region.end, region.length, region.edits),
+                                 (old.label, old.start, old.end, old.length, old.edits))
+                if n == 2:
+                    self.assertNotEqual(region.stock_sha256, old.stock_sha256)
+                    self.assertNotEqual(region.patched_sha256, old.patched_sha256)
+        for region, stock, patched in zip(REGIONS_204, STOCK_204, PATCHED_204, strict=True):
+            with self.subTest(region=region.label):
+                self.assertEqual(len(stock), region.length)
+                self.assertEqual(hashlib.sha256(stock).hexdigest(), region.stock_sha256)
+                self.assertEqual(hashlib.sha256(patched).hexdigest(), region.patched_sha256)
+                self.assertEqual(MODULE._plan_region_rewrite(stock + region.end, region), [(0, stock, patched, region.label)])
+                self.assertEqual(MODULE._plan_region_rewrite(patched + region.end, region), [])
+                self.assertEqual((region.legacy_sha256, region.upgrades), ((), ()))
+                node_check(self, patched)
+
+    # Value: protects=the re-pinned 2.0.4 room only loses no-op comments and gains the injected JS once; fails_when=a 2.0.4 edit anchor matches twice or the rebase rewrites upstream code; why_new=LUBOS-4029; seam=real 2.0.4 bytes
+    def test_re_pinned_room_only_loses_comments(self):
+        region, stock, patched = REGIONS_204[1], STOCK_204[1], PATCHED_204[1]
+        expected = stock
+        for comment in MODULE.JS_NOOP_COMMENTS:
+            expected = expected.replace(comment, b"")
+        for old, new in region.edits:
+            self.assertEqual(expected.count(old), 1, old[:60])
+            expected = expected.replace(old, new)
+        self.assertEqual(patched.rstrip(b" "), expected.rstrip(b" "))
+        self.assertEqual(len(patched), len(stock))
+
+    # Value: protects=2.0.3 and 2.0.4 bundles (same structure) each pick their own layout from the pinned digests, stock or patched, and the 2.0.4 bundle applies, re-runs to nothing and reverts byte-identically; fails_when=the digest tie-break is missing ("fits several release layouts"), picks by order, or revert does not restore; why_new=LUBOS-4029; seam=temp ASAR
+    def test_apply_rerun_and_revert(self):
+        original = bundle_204()
+        pick = lambda data: MODULE._select_layout(data, MODULE.PALETTE_SEARCH_LAYOUTS, "command palette")[0]
+        self.assertEqual(pick(original), "2.0.4")
+        self.assertEqual(pick(bundle_203()), "2.0.3")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target, backups = root / "app.asar", root / "backups"
+            target.write_bytes(original)
+            options = dict(size=6, hide_tray=False, custom_project_icons=False, keep_icon_on_hover=False,
+                           command_palette_cmd_k=True, command_palette_workspace_search=True)
+            _backup, changes = MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options)
+            self.assertEqual(sorted(changes), sorted([r.label for r in REGIONS_204] + SWAP_LABELS))
+            patched = target.read_bytes()
+            self.assertEqual(len(patched), len(original))
+            for region, new in zip(REGIONS_204, PATCHED_204):
+                self.assertEqual(patched.count(new), 1, region.label)
+            self.assertEqual(pick(patched), "2.0.4")
+            self.assertEqual(MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options), (None, []))
+            MODULE.revert(target, backups)
+            self.assertEqual(target.read_bytes(), original)
+        self.assertEqual(pick(patch(bundle_203())[0]), "2.0.3")
+
+    # Value: protects=a region 2 at no pinned digest (same length, one byte changed), a 2.0.3 region 2 next to a patched 2.0.4 room, or half-patched 2.0.4 regions fail closed before a write; fails_when=the tie-break falls back to the first layout that fits, or a partial 2.0.4 state is accepted; why_new=LUBOS-4029 (digest tie-break between same-structure releases); seam=none
+    def test_unknown_digest_or_mixed_generation_fails_closed(self):
+        changed = bytearray(STOCK_204[1])
+        changed[len(changed) // 2] ^= 0x01
+        with self.assertRaisesRegex(RuntimeError, "command palette"):
+            patch(bundle_204(layout=layout_chunk_204([bytes(changed), *STOCK_204[2:]])))
+        with self.assertRaisesRegex(RuntimeError, "command palette"):
+            patch(bundle_204(layout=layout_chunk_204([STOCK_203[1], PATCHED_204[2], STOCK_204[3]])))
+        half = bundle_204(layout=layout_chunk_204([STOCK_204[1], PATCHED_204[2], STOCK_204[3]]))
+        with self.assertRaisesRegex(RuntimeError, "mix generations"):
+            patch(half)
+
+
 @live_host_only("anchors, names and chunk syntax are checked against the Superset.app bundle installed on this host")
 class InstalledPaletteTest(unittest.TestCase):
     """The installed release still has the pinned stock bytes, and the patched chunks parse."""

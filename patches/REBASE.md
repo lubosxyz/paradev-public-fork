@@ -132,7 +132,12 @@ holds (one start anchor, the end anchor at the pinned length). Two layouts
 that both fit whole are refused. A bundle that no layout fits whole (a changed
 or mixed-release bundle) is planned with the layout that fits most of its
 regions, so the error names the region that drifted. Regions that are
-byte-identical in the new release are reused as the same objects. Rebased ones
+byte-identical in the new release are reused as the same objects. Two releases
+with the same region structure (start, end and length of every region; the
+2.0.3 and 2.0.4 palette) both fit whole: then only the layout whose every
+region is at one of its pinned digests (stock, patched, legacy or upgradable)
+counts (`_region_known`), in `_select_layout` and in the release probe alike,
+so an unflagged family still records its own release. Rebased ones
 use `_rebased()`, which keeps the edits and drops `legacy_sha256` and
 `upgrades`, because no earlier generation ever ran on the new bytes. A room
 region of the new layout must hold no anchor of another family. Check the
@@ -702,7 +707,79 @@ against the release's SHA-512) still refuse both flags before a write: 2.0.0
 with `unsupported desktop version`, 2.0.2 earlier, with `mixed release layouts`,
 because its status filter regions match several releases.
 
-## Desktop pin export (LUBOS-2944, 1.39.0, 1.40.0 and 2.0.3)
+## Worked example: 2.0.3 → 2.0.4 (2026-11-05, LUBOS-4029)
+
+ShipIt staged 2.0.4 on M5 (stock `app.asar` `8ca96431…`, 133,722,152 B; no
+source maps any more). The merged patcher refused it for the production set
+alone (`mixed release layouts across families (status filter ...)`). Every
+apply ran on `cp -c` copies in the scratchpad; the ShipIt cache and
+/Applications were only read. Upstream rebranded to Paradev and added a
+PostHog-gated shell sidebar (`FEATURE_FLAGS.PARADEV_SHELL`,
+`DashboardSidebarShellHeader`), pinned pages, chat tabs and a release-notes
+dialog; New Workspace and Search became their own components
+(`SidebarNewWorkspaceButton`, `SidebarSearchButton`) and the nav buttons read a
+`navigation` object.
+
+- Status filter (`STATUS_FILTER_REGIONS_2_0_4`): regions 1, 2, 3, 9 and 13
+  re-pinned (343, 168, 259, 190, 2,239 B left). Region 1 gained the pinned
+  pages section: the pinned-row guard moves after `showsPinnedPages`, the old
+  comment it deleted is re-indented, and one new edit folds the pinned pages
+  with the chip row (`(ssfV > 1 ? ssfV < 3 : !isSectionCollapsed) &&
+  showsPinnedPages`). Region 2 now also holds the shell header, so the chip
+  row test checks the classic branch.
+- Palette search: region 2 re-pinned at the same length (only the release
+  notice links moved to paradev.com, 85 B left). 2.0.3 and 2.0.4 now share one
+  structure; `_region_known` tells them apart (see Release layouts).
+- Compact sidebar / hidden nav buttons: the 2.0.4 header shapes are their own
+  generation (`TOP_NAV_BUTTON_VARIANTS_2_0_4`, `HEADER_NAV_2_0_4`); a header
+  mixing generations fails closed. New Workspace and Search are hidden at their
+  classic header mounts (`HIDDEN_NAV_MOUNTS_2_0_4`); the dashboard hints are the
+  2.0.4 `SidebarKbdHint` calls. Fixture: `superset-2.0.4-sidebar-header.js`
+  (SidebarKbdHint through DashboardSidebarHeader, then the shell header).
+- Project icons: no source maps, so two old-shape anchors (sidebar,
+  environments page) plus one new-workspace site
+  (`project2.repoOwner`, `PROJECT_ICON_UPSTREAM_2_0_4`), which needs the
+  environments site and may occur once.
+- Device filter: region 1 re-pinned (29 B left); the device-list room keeps its
+  stock bytes but 2.0.4 imports `TbCloud` instead of `LuCloud`, so its injected
+  list and patched digest follow the layout (`SIDEBAR_DEVICE_CLOUD_ICONS`).
+- Project order: the hook (bypass comment re-indented, 188 B left) and the store
+  (now ends at `SidebarCardSlot`, 135 B left) re-pinned; sort, pin and swaps are
+  2.0.0's. PINNED sort lists 2.0.4 in the 1.38 group; one-row runs on 2.0.3 and
+  2.0.4.
+- Pin / preset export: the pin host router (972 B left) and the preset host
+  mount (494 B) re-pinned with the same edits. `RESCUE_REPORT_INTERVAL_MS`
+  moved 1.1 MB away, so the preset host router now opens at
+  `installProcessSafetyNet` (320 B left). The renderer regions, the provider
+  region and the `appRouter` literal digest are 2.0.3's. Read outside the
+  regions, unchanged against 2.0.3 (dist JS only): `protectedProcedure`, the
+  `isLocalCaller` marker, `getConnection`, `workspaceLocalStateSchema`,
+  `v2TerminalPresetSchema` and the collections wiring.
+- **Manual rebase required: `--automations-header` and `--automations-view`.**
+  Upstream added an Archived tab and an archive flow inside the tab row the
+  header patch removes, so what the patch should do changed; both stay without
+  a 2.0.4 layout and fail closed (`end anchor not at the pinned length`).
+- Known limit: the paradev shell header (`DashboardSidebarShellHeader`) has no
+  chip row; the compact patch makes its two buttons icon rows, hidden nav
+  buttons hide only the classic header's. A chip filter persisted in the
+  classic sidebar still applies to the lists the shell shows.
+- Fixtures are cut from the real stock 2.0.4 bundle
+  (`tests/fixtures/superset-2.0.4-*`; unchanged regions reuse earlier cuts).
+
+Proof on stock 2.0.4 (sha256 `8ca96431…`, 133,722,152 B), CLI on `cp -c`
+copies: the production set without `--automations-header`, plus one-row, pin
+and preset sync, writes 79 regions; size unchanged, a second run says already
+patched, the reversed flag order reaches the same bytes (`2560fe91…`) and
+`--revert` restores stock. On copy-on-write maps, all at once, others then
+sync, sync then others, pin then preset then others and production then one-row
+all reach `2560fe91…`, each replanning to 0. The patched host-service boots in
+a sandbox: pins and presets answer 401, 403 (relayed publish), 400 and 412
+after 3.5 s, and a relayed list returns the snapshot. Regression on real
+bundles: 1.39.0 (production + sync) and 2.0.3 (production + 4 extras) apply;
+2.0.0 and 2.0.2 fail before any write; on 2.0.4 the full production set fails
+at the automations header.
+
+## Desktop pin export (LUBOS-2944, 1.39.0, 1.40.0, 2.0.3 and 2.0.4)
 
 `DESKTOP_PIN_REGIONS` touches three disjoint files. The index chunk's Zod helper
 range supplies room by removing only PURE/i18n comments; its executable code is
@@ -710,8 +787,8 @@ unchanged apart from attaching `useCollections.dps`. The LocalHostServiceProvide
 range calls that hook before its early return; exact whitespace-only declaration
 edits plus the PURE marker provide room. The host-service createSession..appRouter
 range removes explicitly pinned documentation comments and adds the authenticated
-snapshot router. Fixtures are byte excerpts of the shipped 1.39.0, 1.40.0 and
-2.0.3 bundles, not
+snapshot router. Fixtures are byte excerpts of the shipped 1.39.0, 1.40.0, 2.0.3
+and 2.0.4 bundles, not
 constructed from the constants. Verify complete patched chunks with node --check.
 
 The provider release banner must name the selected release (`DESKTOP_PIN_LAYOUTS`). Verify the collection's ready status,
@@ -721,7 +798,7 @@ must remain an unavailable source, never an empty pin set. Keep the exporter
 read-only and preserve every existing route. Run the bridge behavior harness and
 both patch gates, including all flags together, before applying.
 
-## Desktop preset export (LUBOS-3112, 1.39.0, 1.40.0 and 2.0.3)
+## Desktop preset export (LUBOS-3112, 1.39.0, 1.40.0, 2.0.3 and 2.0.4)
 
 `DESKTOP_PRESET_REGIONS` adds four regions, disjoint from the pin export's:
 
@@ -734,7 +811,8 @@ both patch gates, including all flags together, before applying.
   declaration after a region off column 0, and the pin export name-checks
   `function useCollections` at column 0.
 - host router (host-service, `RESCUE_REPORT_INTERVAL_MS` .. `PING_INTERVAL_MS`): the
-  RELAY_CLOSE and partysocket JSDoc blocks make room for `dtsRouter` (364 B left).
+  RELAY_CLOSE and partysocket JSDoc blocks make room for `dtsRouter` (364 B left);
+  on 2.0.4 the range opens at `installProcessSafetyNet`.
   `const RELAY_CLOSE` is not a valid start anchor; it also occurs in a bundled `.ts` source.
 - host mount (host-service, `createApp` .. `writeTempAskpass`, on 2.0.3 .. `PskHostAuthProvider`): `trpcServer` mounts
   `dtsMount(appRouter)`, which rebuilds the eager router with `desktopPresets` added and
@@ -742,7 +820,7 @@ both patch gates, including all flags together, before applying.
   export's host range, so the plan pins it separately (`DESKTOP_PRESET_APP_ROUTER_SHA256`,
   stock or stock plus the pin export's `desktopPins` line); any other shape aborts the plan.
 
-Guards: the selected release's banner (1.39.0, 1.40.0 or 2.0.3) in both chunks, `electronTrpcClient`,
+Guards: the selected release's banner (1.39.0, 1.40.0, 2.0.3 or 2.0.4) in both chunks, `electronTrpcClient`,
 `setHostServiceSecret`, `getHostServiceClientByUrl` and a single React binding in the
 index chunk; `gitHookTolerance`, `hostServiceUtils`, `protectedProcedure`,
 `queryProcedure`, `router` and the single `isLocalCaller` relay marker check in

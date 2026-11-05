@@ -4,7 +4,7 @@
 
 The opt-in `--desktop-pin-sync` patch adds an authenticated `desktopPins`
 tRPC router to the installed host-service (1.39.0, 1.40.0 and, since LUBOS-4009,
-2.0.3) and a small renderer exporter.
+2.0.3; since LUBOS-4029, 2.0.4) and a small renderer exporter.
 The exporter reads the current organization's hydrated workspace-local-state
 collection. It sends only workspace UUIDs and pin timestamps to its own loopback
 host-service. Publishing requires an authenticated local caller; relayed callers
