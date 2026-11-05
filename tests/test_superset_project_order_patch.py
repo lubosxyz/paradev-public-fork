@@ -898,14 +898,16 @@ class CompositionTest(unittest.TestCase):
                       MODULE.SIDEBAR_DEVICE_LAYOUTS, MODULE.DESKTOP_PIN_LAYOUTS, MODULE.DESKTOP_PRESET_LAYOUTS,
                       MODULE.PROJECT_ORDER_LAYOUTS):
             self.assertIn("1.40", set().union(*(MODULE._layout_releases(layout[0]) for layout in table)))
-        # 2.0.0 and 2.0.3 ship every family but desktop pin / preset sync, which stay on 1.40 (no 2.x layout).
+        # 2.0.0 and 2.0.3 ship every family; desktop pin / preset sync have 2.0.3 only (no 2.0.0 layout).
         for release in ("2.0.0", "2.0.3"):
             for table in (MODULE.STATUS_FILTER_LAYOUTS, MODULE.PALETTE_SEARCH_LAYOUTS, MODULE.AUTOMATIONS_HEADER_LAYOUTS,
                           MODULE.AUTOMATIONS_VIEW_LAYOUTS, MODULE.SIDEBAR_DEVICE_LAYOUTS, MODULE.PROJECT_ORDER_LAYOUTS):
                 with self.subTest(release=release, layouts=[layout[0] for layout in table]):
                     self.assertIn(release, set().union(*(MODULE._layout_releases(layout[0]) for layout in table)))
-            for table in (MODULE.DESKTOP_PIN_LAYOUTS, MODULE.DESKTOP_PRESET_LAYOUTS):
-                self.assertNotIn(release, set().union(*(MODULE._layout_releases(layout[0]) for layout in table)))
+        for table in (MODULE.DESKTOP_PIN_LAYOUTS, MODULE.DESKTOP_PRESET_LAYOUTS):
+            names = set().union(*(MODULE._layout_releases(layout[0]) for layout in table))
+            self.assertIn("2.0.3", names)
+            self.assertNotIn("2.0.0", names)
         self.assertIn(("2.0.0", "2.0.3"), [names[-2:] for names in MODULE.PINNED_SORT_RELEASE_NAMES])
         # 2.0.2 (a mix of 2.0.0 and 2.0.3 shapes) has no layout in any family.
         for table in (layouts for _label, layouts in MODULE.RELEASE_PROBES):

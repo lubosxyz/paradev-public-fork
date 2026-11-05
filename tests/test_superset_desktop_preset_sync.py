@@ -10,6 +10,7 @@ import unittest
 from unittest import mock
 from test_superset_icon_patch import MODULE, installed_stock_snapshot, node_check
 from test_superset_palette_patch import BASE as ICON_ANCHORS, asar
+from desktop_bridges import has_layout, installed_bridges, all_flags, run_harness
 from live_host import live_host_only
 from live_bundle import bundle_map
 
@@ -18,16 +19,22 @@ FILES = ['renderer-helper', 'renderer-mount', 'host-router', 'host-mount']
 PIN_FILES = ['index.js', 'renderer.js', 'host-service.js']
 BANNER = b'SENTRY_RELEASE = { id: "1.39.0" };\n'
 BASE = {'size': 6, 'hide_tray': False, 'custom_project_icons': False, 'keep_icon_on_hover': False}
-# Each release's regions of both bridges; a 1.40.0 cut exists only where 1.40 changed the bytes.
+# Each release's regions of both bridges; a later cut exists only where that release changed the bytes.
 REGIONS = {
     '1.39.0': (MODULE.DESKTOP_PRESET_REGIONS, MODULE.DESKTOP_PIN_REGIONS),
     '1.40.0': (MODULE.DESKTOP_PRESET_REGIONS_1_40, MODULE.DESKTOP_PIN_REGIONS_1_40),
+    '2.0.3': (MODULE.DESKTOP_PRESET_REGIONS_2_0_3, MODULE.DESKTOP_PIN_REGIONS_2_0_3),
 }
+RELEASES = tuple(REGIONS)
 
 
 def _cut(name, release):
-    path = FIXTURES / f'superset-{release}-{name}'
-    return (path if path.exists() else FIXTURES / f'superset-1.39.0-{name}').read_bytes()
+    """The newest cut at or before the release: an unchanged region reuses the earlier fixture."""
+    for candidate in reversed(RELEASES[:RELEASES.index(release) + 1]):
+        path = FIXTURES / f'superset-{candidate}-{name}'
+        if path.exists():
+            return path.read_bytes()
+    raise FileNotFoundError(name)
 
 
 def stock(file, release='1.39.0'):
@@ -283,27 +290,93 @@ class Release200Test(unittest.TestCase):
                 self.assertRegex(layout[0], r'^\d+\.\d+\.\d+$')
 
 
-@live_host_only('desktop preset sync touches two installed 1.39.0 chunks')
+class Release203Test(unittest.TestCase):
+    """desktop-v2.0.3 (LUBOS-4009): both bridges re-pinned where 2.0.3 changed the bytes, same wire contract."""
+
+    # Value: protects=every 2.0.3 region of both bridges is the pinned real 2.0.3 bytes, rewrites to its pinned digest, re-runs to nothing and parses; regions 2.0.3 did not change are the earlier objects, the re-pinned ones carry the earlier edits, so the injected JS, routers, caps and auth stay byte-identical; fails_when=a 2.0.3 digest or edit drifts from its fixture, or a re-pin changes the bridge code; why_new=LUBOS-4009; seam=real 2.0.3 bytes
+    def test_regions_are_pinned_with_the_earlier_edits(self):
+        presets, pins = MODULE.DESKTOP_PRESET_REGIONS_2_0_3, MODULE.DESKTOP_PIN_REGIONS_2_0_3
+        cases = (
+            (presets, MODULE.DESKTOP_PRESET_REGIONS_1_40, [stock(file, '2.0.3') for file in FILES], {0, 1, 2}),
+            (pins, MODULE.DESKTOP_PIN_REGIONS_1_40, [pin_stock(file, '2.0.3') for file in PIN_FILES], {1}),
+        )
+        for regions, earlier, stocks, reused in cases:
+            for n, (region, old, original) in enumerate(zip(regions, earlier, stocks, strict=True)):
+                with self.subTest(region=region.label):
+                    self.assertEqual(region is old, n in reused)
+                    self.assertEqual((region.label, region.start, region.edits), (old.label, old.start, old.edits))
+                    self.assertEqual(len(original), region.length)
+                    self.assertEqual(hashlib.sha256(original).hexdigest(), region.stock_sha256)
+                    [(_, _, patched, _)] = MODULE._plan_region_rewrite(original + region.end, region)
+                    self.assertEqual(hashlib.sha256(patched).hexdigest(), region.patched_sha256)
+                    self.assertEqual(MODULE._plan_region_rewrite(patched + region.end, region), [])
+                    node_check(self, patched)
+        self.assertEqual([p.name for p in sorted(FIXTURES.glob('superset-2.0.3-desktop-p*'))], [
+            'superset-2.0.3-desktop-pins-host-service.js', 'superset-2.0.3-desktop-pins-index.js',
+            'superset-2.0.3-desktop-presets-host-mount.js'])
+
+    # Value: protects=on a 2.0.3 bundle both bridges select the 2.0.3 layout, compose in any order to the same bytes and re-plan to nothing; fails_when=the 2.0.3 layout is not selected, a 2.0.3 region collides with the other bridge, the app router digest is wrong, or the order changes the result; why_new=LUBOS-4009; seam=real 2.0.3 bytes
+    def test_composes_with_pin_sync_in_any_order(self):
+        both = bundle(release='2.0.3')
+        self.assertEqual(MODULE._select_layout(both, MODULE.DESKTOP_PRESET_LAYOUTS, 'desktop preset sync')[0], '2.0.3')
+        self.assertEqual(MODULE._select_layout(both, MODULE.DESKTOP_PIN_LAYOUTS, 'desktop pin sync')[0], '2.0.3')
+        writes = apply(both, desktop_pin_sync=True, desktop_preset_sync=True)
+        self.assertEqual(len(writes), 7)
+        self.assertEqual(MODULE.plan_replacements(both, **BASE, desktop_pin_sync=True, desktop_preset_sync=True), [])
+        for first, second in (('desktop_preset_sync', 'desktop_pin_sync'), ('desktop_pin_sync', 'desktop_preset_sync')):
+            data = bundle(release='2.0.3')
+            apply(data, **{first: True})
+            self.assertEqual(MODULE.plan_replacements(data, **BASE, **{first: True}), [])
+            apply(data, **{second: True})
+            self.assertEqual(data, both, f'{first} then {second}')
+        for region in (*MODULE.DESKTOP_PRESET_REGIONS_2_0_3, *MODULE.DESKTOP_PIN_REGIONS_2_0_3):
+            at = bytes(both).index(region.start)
+            self.assertEqual(hashlib.sha256(both[at:at+region.length]).hexdigest(), region.patched_sha256, region.label)
+
+    # Value: protects=the code the 2.0.3 rewrite leaves in the real 2.0.3 region bytes (not the constants) serves publish then list, refuses a relayed publish and errors on a stopped renderer, and the renderer and host call sites survive; fails_when=a rewrite drops the router, the exporter or a mount, or the edit corrupts the code; why_new=LUBOS-4009 (acceptance: behavior on patched bytes, not a string check); seam=real 2.0.3 bytes with the patched regions cut from them
+    def test_patched_bytes_behave(self):
+        chunks = [MODULE._plan_region_rewrite(stock(file, '2.0.3') + region.end, region)[0][2]
+                  for region, file in zip(MODULE.DESKTOP_PRESET_REGIONS_2_0_3, FILES, strict=True)]
+        run_harness(self, 'preset', chunks)
+
+    # Value: protects=2.0.3 bytes under another 2.x banner, a bundle mixing 1.40 and 2.0.3 region bytes, or a 2.0.3 app router with a lazy entry fail before any write; fails_when=the banner check accepts a release that was never reviewed (2.0.0, 2.0.2, 2.0.4), layout selection falls back per region, or the 2.0.3 router digest is not checked; why_new=LUBOS-4009 (acceptance 3: 2.0.0 and 2.0.2 fail closed); seam=real 2.0.3 bytes
+    def test_unknown_or_mixed_shapes_fail_before_any_write(self):
+        retagged = lambda release: bytearray(bytes(bundle(release='2.0.3')).replace(b'"2.0.3"', f'"{release}"'.encode()))
+        mixed_pin = bytearray(bytes(bundle(release='2.0.3')).replace(pin_stock('host-service.js', '2.0.3'), pin_stock('host-service.js', '1.40.0')))
+        mixed_preset = bytearray(bytes(bundle(release='2.0.3')).replace(stock('host-mount', '2.0.3'), stock('host-mount', '1.40.0')))
+        self.assertNotEqual(mixed_pin, bundle(release='2.0.3'))
+        self.assertNotEqual(mixed_preset, bundle(release='2.0.3'))
+        opener = b'const appRouter = router({\n'
+        cases = [('unsupported desktop version', retagged(release), {}) for release in ('2.0.0', '2.0.2', '2.0.4')]
+        cases += [
+            ('desktop pin sync', mixed_pin, dict(desktop_preset_sync=False)),
+            ('desktop preset sync', mixed_preset, dict(desktop_pin_sync=False)),
+            ('app router changed', bundle(release='2.0.3', app_router=(opener, opener + b'  later: lazy(() => import("./later.js")),\n')),
+             dict(desktop_pin_sync=False)),
+        ]
+        for message, data, off in cases:
+            with self.subTest(message=message):
+                before = bytes(data)
+                with self.assertRaisesRegex(RuntimeError, message):
+                    apply(data, **({'desktop_pin_sync': True, 'desktop_preset_sync': True} | off))
+                self.assertEqual(bytes(data), before)
+
+
+@live_host_only('desktop preset sync touches two installed chunks')
 class InstalledTest(unittest.TestCase):
     def test_all_flags_compose_and_patched_chunks_parse(self):
-        snapshot = installed_stock_snapshot()
-        if snapshot is None:
+        bridges = installed_bridges()
+        if bridges is None:
             self.skipTest('no installed bundle')
-        flags = json.loads(Path('patches/approved-flags.json').read_text())
-        options = flags['patch_options'] | {key: True for key in flags['opt_in_flags']}
-        with snapshot.open('rb') as f, bundle_map(f, mmap.ACCESS_COPY) as data:
-            if not any(data.find(MODULE._release_banner(layout[0])) >= 0 for layout in MODULE.DESKTOP_PRESET_LAYOUTS):
-                # A release without a layout (2.0.0, LUBOS-3343): the flag refuses before a write, every other flag plans.
+        if not bridges.supported:
+            # A release without a layout (2.0.2): the flag refuses before a write, every other flag plans.
+            snapshot, options = installed_stock_snapshot(), all_flags()
+            with snapshot.open('rb') as f, bundle_map(f, mmap.ACCESS_COPY) as data:
+                self.assertFalse(has_layout(data, 'preset'))
                 with self.assertRaisesRegex(RuntimeError, 'desktop preset sync: unsupported desktop version'):
                     MODULE.plan_replacements(data, **(options | {'desktop_pin_sync': False}))
                 self.assertTrue(MODULE.plan_replacements(data, **(options | {'desktop_preset_sync': False, 'desktop_pin_sync': False})))
-                return
-            writes = MODULE.plan_replacements(data, **options)
-            bridge_writes = [w for w in writes if w[3].startswith('desktop preset sync:')]
-            self.assertEqual(len(bridge_writes), 4)
-            for offset, old, new, _label in writes:
-                data[offset:offset+len(old)] = new
-            self.assertEqual(MODULE.plan_replacements(data, **options), [])
-            for _path, offset, size in MODULE._asar_entries(data):
-                if any(offset <= w[0] < offset+size for w in bridge_writes):
-                    node_check(self, bytes(data[offset:offset+size]))
+            return
+        self.assertEqual(len([w for w in bridges.writes if w[3].startswith('desktop preset sync:')]), 4)
+        self.assertEqual(bridges.replan, [])
+        run_harness(self, 'preset', list(bridges.chunks.values()))

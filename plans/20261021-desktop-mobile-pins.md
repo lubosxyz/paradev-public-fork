@@ -3,7 +3,8 @@
 ## Channel and ownership
 
 The opt-in `--desktop-pin-sync` patch adds an authenticated `desktopPins`
-tRPC router to the installed 1.39.0 host-service and a small renderer exporter.
+tRPC router to the installed host-service (1.39.0, 1.40.0 and, since LUBOS-4009,
+2.0.3) and a small renderer exporter.
 The exporter reads the current organization's hydrated workspace-local-state
 collection. It sends only workspace UUIDs and pin timestamps to its own loopback
 host-service. Publishing requires an authenticated local caller; relayed callers
@@ -14,7 +15,7 @@ schema, external account, daemon or LevelDB parser is needed.
 and a complete pins list. It waits for a renderer publication after the read
 starts (bounded timeout). The renderer publishes on a short heartbeat, with
 serialized calls; a stopped or unavailable renderer produces an error, never an
-empty authoritative list. The patch pins exact 1.39.0 regions and symbols; unknown
+empty authoritative list. The patch pins exact regions and symbols per release; unknown
 bundle versions/shapes abort before any write. Existing patch flags compose.
 
 ## Merge and removal

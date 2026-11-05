@@ -4045,7 +4045,7 @@ def _plan_sidebar_one_row(data, replacements) -> list[tuple[int, bytes, bytes, s
     return planned
 
 
-# --desktop-pin-sync: exact desktop 1.39.0 and 1.40.0 regions (DESKTOP_PIN_LAYOUTS); renderer exports only, no storage writes.
+# --desktop-pin-sync: exact desktop 1.39.0, 1.40.0 and 2.0.3 regions (DESKTOP_PIN_LAYOUTS); renderer exports only, no storage writes.
 DESKTOP_PIN_RENDERER_JS = b'useCollections.dps = function(org, connection) {\n  const {v2WorkspaceLocalState: collection} = useCollections();\n  reactExports.useEffect(() => {\n    if (!org || !connection?.port || !connection.secret) return;\n    let stopped = false, timer;\n    const publish = async () => {\n      try {\n        if (collection.status !== "ready") return;\n        const pins = [];\n        for (const row of collection.state.values()) {\n          if (!row || typeof row.workspaceId !== "string" || !row.sidebarState) throw Error("Invalid desktop pins");\n          const at = row.sidebarState.pinnedAt;\n          if (at != null) {\n            if (!Number.isSafeInteger(at) || at < 0) throw Error("Invalid pin time");\n            if (!row.sidebarState.isHidden) pins.push({workspaceId:row.workspaceId,pinnedAt:at});\n          }\n        }\n        await getHostServiceClientByUrl(`http://127.0.0.1:${connection.port}`).desktopPins.publish.mutate({version:1,organizationId:org,observedAt:Date.now(),pins},{signal:AbortSignal.timeout(2000)});\n      } catch {} finally {\n        if (!stopped) timer = setTimeout(publish, 1000);\n      }\n    };\n    void publish();\n    return () => {stopped = true;clearTimeout(timer);};\n  }, [org,connection?.port,connection?.secret,collection]);\n};\n'
 DESKTOP_PIN_HOST_JS = b'const dpsWaiters = new Map();\nfunction dpsRouter() {\n  const fail = (code) => {throw new gitHookTolerance.TRPCError({code,message:"Desktop pins unavailable"});};\n  return router({\n    publish: protectedProcedure.input(value => value).mutation(({ctx,input}) => {\n      if (ctx.isLocalCaller !== true) fail("FORBIDDEN");\n      if (!input || input.version !== 1 || input.organizationId !== ctx.organizationId || !Number.isSafeInteger(input.observedAt) || Math.abs(Date.now()-input.observedAt)>5000 || !Array.isArray(input.pins) || input.pins.length>5000) fail("BAD_REQUEST");\n      const ids = new Set();\n      for (const pin of input.pins) {\n        if (!pin || typeof pin.workspaceId!=="string" || !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(pin.workspaceId) || ids.has(pin.workspaceId) || !Number.isSafeInteger(pin.pinnedAt) || pin.pinnedAt<0) fail("BAD_REQUEST");\n        ids.add(pin.workspaceId);\n      }\n      const snapshot = {version:1,organizationId:ctx.organizationId,sourceHostId:hostServiceUtils.getHostId(),observedAt:input.observedAt,pins:input.pins.map(p=>({workspaceId:p.workspaceId,pinnedAt:p.pinnedAt}))};\n      for (const pending of dpsWaiters.get(ctx.organizationId) ?? []) {\n        if (input.observedAt >= pending.since) pending.resolve(snapshot);\n      }\n      return null;\n    }),\n    list: queryProcedure.query(({ctx}) => new Promise((resolve,reject) => {\n      let pending = dpsWaiters.get(ctx.organizationId);\n      if (!pending) dpsWaiters.set(ctx.organizationId,pending=new Set());\n      if (pending.size>=64) {reject(new gitHookTolerance.TRPCError({code:"TOO_MANY_REQUESTS"}));return;}\n      const finish = () => {clearTimeout(timer);pending.delete(waiter);if (!pending.size) dpsWaiters.delete(ctx.organizationId);};\n      const waiter = {since:Date.now(),resolve: snapshot => {finish();resolve(snapshot);}};\n      const timer = setTimeout(() => {finish();reject(new gitHookTolerance.TRPCError({code:"PRECONDITION_FAILED",message:"Desktop pins unavailable"}));},3500);\n      pending.add(waiter);\n    }))\n  });\n}\n'
 DESKTOP_PIN_REGIONS = (
@@ -4116,10 +4116,30 @@ DESKTOP_PIN_REGIONS_1_40 = (
         "3524526b457cde689b6f0008a12e8b9e89c0f207847627b22b401d8ce438ed63",
     ),
 )
+# 2.0.3: the provider range is byte-identical. The renderer helper range gained upstream's
+# strictObject and now ends at a renamed parameter (`options2`); the host router range gained
+# project config tracking, the Paradev wording and the appRouter's `agentJobs` entry, all away
+# from the edits. Both are re-pinned with the same edits. The collection, provider, getConnection
+# and isLocalCaller code the bridge relies on is unchanged (getConnection only adds `machineId`).
+DESKTOP_PIN_REGIONS_2_0_3 = (
+    _rebased(
+        DESKTOP_PIN_REGIONS[0], 22233,
+        "3c45bb798eb838c1fd3b504ec1acb96855039608f9b85131091132587db2b418",
+        "429fefc58f2abe941781e949f9982511b8fc4a2c3bf080af9eb0522c5f7fab40",
+        end=b'function union$2(options2, params) {\n',
+    ),
+    DESKTOP_PIN_REGIONS[1],
+    _rebased(
+        DESKTOP_PIN_REGIONS[2], 66087,
+        "4df75dfcb1e7ec0c84195b7815e2832b1a9457ec0bd3e09b65808563bd9ceb7e",
+        "1fe18374add0ef67d03df9f341e52aaf69fb720bfe16a2071b287dd32edea3db",
+    ),
+)
 # (release, regions, variants): the provider chunk's release banner must name the selected release.
 DESKTOP_PIN_LAYOUTS = (
     ("1.39.0", DESKTOP_PIN_REGIONS, ()),
     ("1.40.0", DESKTOP_PIN_REGIONS_1_40, ()),
+    ("2.0.3", DESKTOP_PIN_REGIONS_2_0_3, ()),
 )
 
 
@@ -4148,7 +4168,7 @@ def _plan_desktop_pin_sync(data):
     return [write for region in regions for write in _plan_region_rewrite(data, region)]
 
 
-# --desktop-preset-sync: exact desktop 1.39.0 and 1.40.0 regions; the renderer exports the
+# --desktop-preset-sync: exact desktop 1.39.0, 1.40.0 and 2.0.3 regions; the renderer exports the
 # terminal presets (V2 presets bar shortcuts) read-only, the host serves them.
 DESKTOP_PRESET_RENDERER_JS = b'''function dtsUse(org, collections) {
   reactExports.useEffect(() => {
@@ -4324,10 +4344,26 @@ DESKTOP_PRESET_REGIONS_1_40 = (
     ),
 )
 DESKTOP_PRESET_APP_ROUTER_SHA256_1_40 = "ee2b24c9672c1a5b8e800a881a0afe4819ad2dfe611a8171d53313f13cc9f1c9"
+# 2.0.3: the renderer helper, renderer mount and host router regions keep their 1.40 bytes.
+# createApp gained the agent job runner, and writeTempAskpass moved away from it, so the
+# host mount range now ends at PskHostAuthProvider, re-pinned with the same edits. The appRouter
+# literal gained `agentJobs` and still has no lazy entries. Collection schemas (the executionMode
+# enum included), hiddenBuiltinPresetIds and getConnection's {port, secret} are unchanged.
+DESKTOP_PRESET_REGIONS_2_0_3 = (
+    *DESKTOP_PRESET_REGIONS_1_40[:3],
+    _rebased(
+        DESKTOP_PRESET_REGIONS[3], 14005,
+        "61792ff2cda381fc2ffdfc4fd7a89d0d38713b4fb800ad0a0f9a29d8ad300de9",
+        "77d335d5c36806713bc6c5e521b0f6e9dc51d4159824f7a92a693db77cb0e951",
+        end=b'class PskHostAuthProvider {\n',
+    ),
+)
+DESKTOP_PRESET_APP_ROUTER_SHA256_2_0_3 = "29781797d52299d9d9585c804123c2f5f0ee63a5952f32c063cc4c98488e4b77"
 # (release, regions, variants, appRouter literal digest); both chunks' release banners must name the release.
 DESKTOP_PRESET_LAYOUTS = (
     ("1.39.0", DESKTOP_PRESET_REGIONS, (), DESKTOP_PRESET_APP_ROUTER_SHA256),
     ("1.40.0", DESKTOP_PRESET_REGIONS_1_40, (), DESKTOP_PRESET_APP_ROUTER_SHA256_1_40),
+    ("2.0.3", DESKTOP_PRESET_REGIONS_2_0_3, (), DESKTOP_PRESET_APP_ROUTER_SHA256_2_0_3),
 )
 
 
@@ -5788,8 +5824,8 @@ def main(argv=None):
         "the header is one row from the arrows to the icons (no sidebar toggle, Cmd+B stays) and the device filter "
         "is an icon button in the search row",
     )
-    parser.add_argument("--desktop-pin-sync", action="store_true", help="export desktop workspace pins to mobile over the authenticated host relay (1.39.0, 1.40.0)")
-    parser.add_argument("--desktop-preset-sync", action="store_true", help="export the desktop terminal presets (presets bar shortcuts) to mobile over the authenticated host relay (1.39.0, 1.40.0)")
+    parser.add_argument("--desktop-pin-sync", action="store_true", help="export desktop workspace pins to mobile over the authenticated host relay (1.39.0, 1.40.0, 2.0.3)")
+    parser.add_argument("--desktop-preset-sync", action="store_true", help="export the desktop terminal presets (presets bar shortcuts) to mobile over the authenticated host relay (1.39.0, 1.40.0, 2.0.3)")
     parser.add_argument(
         "--pinned-activity-sort",
         action="store_true",

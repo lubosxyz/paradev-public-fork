@@ -640,7 +640,7 @@ tab only).
 - Automations view: the page carries the 2.0.3 header edits plus the delta
   (470 B left); the full-width edit closes the new bulk bar's wrapper; the
   chip room is re-pinned (373 B); the detail region is byte-identical.
-- Pin / preset export: still no 2.0.x layout.
+- Pin / preset export: no 2.0.3 layout in this port; LUBOS-4009 adds it (below).
 - Fixtures are cut from the real stock 2.0.3 bundle
   (`tests/fixtures/superset-2.0.3-*`; byte-identical regions reuse the 2.0.0
   fixtures).
@@ -651,7 +651,58 @@ tab only).
   touched JS chunk (9 and 11) passes `node --check`. Pin and preset sync
   refuse 2.0.3 (`unsupported desktop version`) without a write.
 
-## Desktop pin export (LUBOS-2944, 1.39.0 and 1.40.0)
+## Worked example: pin / preset export on 2.0.3 (2026-11-04, LUBOS-4009)
+
+Mapped on a clone of the verified stock `app.asar` (`932e150c…`, the 2.0.3
+backup behind the patch manifests), never on the installed file. Five of the
+seven regions keep their bytes; each of the other edits still matched once:
+
+- Pin renderer helper: upstream added `strictObject` and the region's end
+  renamed its parameter (`function union$2(options2, params)`), so the layout
+  overrides `end` (22,233 B, 694 B left).
+- Pin host router: project config tracking, the Paradev wording and the
+  `agentJobs` entry of `appRouter` (66,087 B, 972 B left).
+- Preset host mount: the agent job runner grew `createApp` and
+  `writeTempAskpass` moved away, so the region ends at `PskHostAuthProvider`,
+  the next top-level statement (14,005 B, 494 B left).
+- `DESKTOP_PRESET_APP_ROUTER_SHA256_2_0_3` pins the `agentJobs` literal.
+
+Read outside the regions: the relay still forces `x-superset-relayed` in
+`forwardHttp` after spreading the caller's headers, and `isLocalCaller` is still
+that header's absence; the server binds `127.0.0.1`; `getConnection` only adds
+`machineId` to `{port, secret}`; `LocalHostServiceProvider` is mounted inside
+`CollectionsProvider`, which `useCollections` needs; `v2TerminalPresetSchema`
+and the host's `modes` list hold the same four execution modes; a desktop host
+runs from `app.asar/dist/main/host-service.js` and cannot `self-update` (only a
+standalone install can). The default query timeout stays 5 s, above the 3.5 s
+read wait.
+
+`tests/desktop_bridges.py` cuts the bridge from patched bytes for the harnesses
+and plans every flag once per process for both bridges' live tests, on a shared
+read-only map: the scans are the ones the other live tests already made. The
+writes go into copies of the three chunks they touch, and the re-plan runs on
+those chunks only, in a small ASAR. Writing into the whole map would detach it
+from the shared scans; that first version cost ~200 s of re-scans, this one
+~10 s after the other live tests (measured on M5).
+
+Proof on the real stock 2.0.3 bundle (`932e150c…`), standalone copies only: the
+production flag set plus both sync flags writes 81 regions to `da6d5ce5…`, same
+length, and a re-plan is 0. Every flag at once, others then sync, sync then
+others, and pin then preset then others all reach `951a7493…`. The others
+without sync reach `3c1021b2…`, the installed M5 digest, so the port does not
+disturb any other family. The CLI patches a copy, reports `already patched` on
+a second run, and `--revert` restores the stock digest. The patched
+`host-service.js`, booted in a sandbox over real HTTP, answers an unauthenticated
+publish with 401, a relayed publish with 403, an unknown version with 400, a
+list without a renderer with 412 after 3.5 s, and a relayed list with the
+snapshot a local publish delivered.
+
+Real bundles: 2.0.0 (`6c8baea7…`, stock backup) and 2.0.2 (`779b1282…`, verified
+against the release's SHA-512) still refuse both flags before a write: 2.0.0
+with `unsupported desktop version`, 2.0.2 earlier, with `mixed release layouts`,
+because its status filter regions match several releases.
+
+## Desktop pin export (LUBOS-2944, 1.39.0, 1.40.0 and 2.0.3)
 
 `DESKTOP_PIN_REGIONS` touches three disjoint files. The index chunk's Zod helper
 range supplies room by removing only PURE/i18n comments; its executable code is
@@ -659,8 +710,8 @@ unchanged apart from attaching `useCollections.dps`. The LocalHostServiceProvide
 range calls that hook before its early return; exact whitespace-only declaration
 edits plus the PURE marker provide room. The host-service createSession..appRouter
 range removes explicitly pinned documentation comments and adds the authenticated
-snapshot router. Fixtures are byte excerpts of the shipped 1.39.0 and 1.40.0
-bundles, not
+snapshot router. Fixtures are byte excerpts of the shipped 1.39.0, 1.40.0 and
+2.0.3 bundles, not
 constructed from the constants. Verify complete patched chunks with node --check.
 
 The provider release banner must name the selected release (`DESKTOP_PIN_LAYOUTS`). Verify the collection's ready status,
@@ -670,7 +721,7 @@ must remain an unavailable source, never an empty pin set. Keep the exporter
 read-only and preserve every existing route. Run the bridge behavior harness and
 both patch gates, including all flags together, before applying.
 
-## Desktop preset export (LUBOS-3112, 1.39.0 and 1.40.0)
+## Desktop preset export (LUBOS-3112, 1.39.0, 1.40.0 and 2.0.3)
 
 `DESKTOP_PRESET_REGIONS` adds four regions, disjoint from the pin export's:
 
@@ -685,13 +736,13 @@ both patch gates, including all flags together, before applying.
 - host router (host-service, `RESCUE_REPORT_INTERVAL_MS` .. `PING_INTERVAL_MS`): the
   RELAY_CLOSE and partysocket JSDoc blocks make room for `dtsRouter` (364 B left).
   `const RELAY_CLOSE` is not a valid start anchor; it also occurs in a bundled `.ts` source.
-- host mount (host-service, `createApp` .. `writeTempAskpass`): `trpcServer` mounts
+- host mount (host-service, `createApp` .. `writeTempAskpass`, on 2.0.3 .. `PskHostAuthProvider`): `trpcServer` mounts
   `dtsMount(appRouter)`, which rebuilds the eager router with `desktopPresets` added and
   leaves a router with lazy entries untouched. The `appRouter` literal itself lies in the pin
   export's host range, so the plan pins it separately (`DESKTOP_PRESET_APP_ROUTER_SHA256`,
   stock or stock plus the pin export's `desktopPins` line); any other shape aborts the plan.
 
-Guards: the selected release's banner (1.39.0 or 1.40.0) in both chunks, `electronTrpcClient`,
+Guards: the selected release's banner (1.39.0, 1.40.0 or 2.0.3) in both chunks, `electronTrpcClient`,
 `setHostServiceSecret`, `getHostServiceClientByUrl` and a single React binding in the
 index chunk; `gitHookTolerance`, `hostServiceUtils`, `protectedProcedure`,
 `queryProcedure`, `router` and the single `isLocalCaller` relay marker check in

@@ -67,4 +67,32 @@ assert.equal(calls.length,2);
 collection.status='loading';
 const loading=[...timers.values()][0];timers.clear();await loading();
 assert.equal(calls.length,2);cleanup();assert.equal(timers.size,0);
-console.log('bridge auth, validation, fresh reads, unpin, timeout, renderer hydration and cleanup passed');
+// End to end: the exporter publishes into the router as the local caller, the relay reads.
+const relay={...ctx,isLocalCaller:false};
+const pinned={status:'ready',state:new Map([[id,{workspaceId:id,sidebarState:{pinnedAt:7,isHidden:false}}]])};
+const liveCollections=()=>({v2WorkspaceLocalState:pinned});
+const live=vm.createContext({...clock,Number,Error,AbortSignal,Promise,
+  useCollections:liveCollections,reactExports:{useEffect:fn=>{effect=fn;}},
+  getHostServiceClientByUrl:()=>({desktopPins:{publish:{mutate:value=>api.publish({ctx,input:value})}}}),
+});
+vm.runInContext(source.renderer,live);
+liveCollections.dps('org',{port:123,secret:'fixture'});
+const first=api.list({ctx:relay});
+const stop=effect();await new Promise(setImmediate);
+assert.deepEqual(JSON.parse(JSON.stringify(await first)),{version:1,organizationId:'org',sourceHostId:'mac1',observedAt:now,pins:[{workspaceId:id,pinnedAt:7}]});
+// A relayed publish is refused and does not answer a waiting read.
+let forged=false;
+const waiting=api.list({ctx:relay}).then(value=>{forged=true;return value;},()=>{forged=true;});
+await assert.rejects(api.publish({ctx:relay,input:{...input,pins:[]}}),{code:'FORBIDDEN'});
+await new Promise(setImmediate);assert.equal(forged,false);
+pinned.state.get(id).sidebarState.pinnedAt=8;
+for (const [key,fn] of [...timers]) {if (String(fn).includes('publish')) {timers.delete(key);await fn();}}
+assert.equal((await waiting).pins[0].pinnedAt,8);
+// A stopped renderer is an error, never an empty list.
+stop();
+for (const fn of [...timers.values()]) assert.ok(!String(fn).includes('publish'));
+const gone=api.list({ctx:relay});
+for (const fn of [...timers.values()]) fn();
+await assert.rejects(gone,{code:'PRECONDITION_FAILED'});
+assert.equal(timers.size,0);
+console.log('bridge auth, validation, fresh reads, unpin, timeout, renderer hydration, cleanup and renderer-to-relay flow passed');

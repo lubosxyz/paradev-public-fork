@@ -170,7 +170,23 @@ assert.equal(calls.length, 3);
 const [waitId, wait] = [...timers].find(([, timer]) => timer.ms === 3500);
 timers.delete(waitId); await wait.fn();
 await assert.rejects(rejected, {code:'PRECONDITION_FAILED'});
+presets.state.get(id(1)).executionMode = 'new-tab';
+
+// The relay reads what the renderer publishes; a relayed publish is refused and answers nobody.
+const relay = {...ctx, isLocalCaller:false};
+let forged = false;
+const waiting = api.list({ctx:relay}).then(value => {forged = true; return value;}, () => {forged = true;});
+await assert.rejects(api.publish({ctx:relay,input:input({presets:[]})}), {code:'FORBIDDEN'});
+await new Promise(setImmediate); assert.equal(forged, false);
+now += 1000; await fire();
+assert.equal((await waiting).presets.length, 4);
+
+// A stopped renderer is an error, never an empty list.
 cleanup(); assert.equal(timers.size, 0);
+const gone = api.list({ctx:relay});
+await fire();
+await assert.rejects(gone, {code:'PRECONDITION_FAILED'});
+assert.equal(timers.size, 0);
 
 // Unmounted while the connection lookup is in flight: no publish, no next heartbeat.
 let release;
@@ -178,5 +194,5 @@ connectionGate = new Promise(resolve => {release = resolve;});
 vm.runInContext('dtsUse', renderer)('org', collections);
 const unmount = effect(); await Promise.resolve();
 unmount(); release(); await new Promise(setImmediate);
-assert.equal(calls.length, 3, 'no publish after cleanup'); assert.equal(timers.size, 0, 'no heartbeat after cleanup');
-console.log('preset bridge mount, auth, validation, caps, fresh reads, timeout, contract fixture, renderer hydration and cleanup passed');
+assert.equal(calls.length, 4, 'no publish after cleanup'); assert.equal(timers.size, 0, 'no heartbeat after cleanup');
+console.log('preset bridge mount, auth, validation, caps, fresh reads, timeout, contract fixture, renderer hydration, relay read and stopped renderer passed');

@@ -23,5 +23,6 @@ invalid publication keeps the source unavailable instead of replacing it.
 
 Mobile treats an error or a missing route as an unavailable source and keeps its
 last good snapshot. Merge, M1/M5 application and the mobile side belong to the
-LUBOS-3111 orchestrator. Note: M1's updater has Superset 1.40.0 pending; a quit
-installs it, and this patch (like the pin export) refuses 1.40.0.
+LUBOS-3111 orchestrator. Note: at the time M1's updater had Superset 1.40.0 pending;
+a quit installed it. Both exports have supported 1.40.0 since LUBOS-3122 and 2.0.3
+since LUBOS-4009; 2.0.0 and 2.0.2 have no layout and are refused before a write.

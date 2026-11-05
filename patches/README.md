@@ -559,9 +559,9 @@ The hotkey registry adds `TOGGLE_RIGHT_PANE_FULL_SCREEN` on ⌘⇧L and moves
 `OPEN_DIFF_VIEWER` to ⌘⇧G; no chip hotkey or the Cmd+K swap collides.
 Behaviour is unchanged from 1.40 under every flag; 1.37 – 1.40 stay supported.
 Desktop pin / preset sync (outside the approved and the optional set) have no
-2.0 layout: their flags refuse 2.0 before a write, and their byte-identical 1.40
-regions do not count as a 1.40 family in a 2.0 bundle (the release check reads
-them only under one of their release banners). The 2.0 fixtures
+2.0.0 layout: their flags refuse 2.0.0 before a write, and their byte-identical
+1.40 regions do not count as a 1.40 family in a 2.0.0 bundle (the release check
+reads them only under one of their release banners). The 2.0 fixtures
 (`tests/fixtures/superset-2.0.0-*`) are cut from the real stock bundle; worked
 example: `REBASE.md` "1.40.0 → 2.0.0".
 
@@ -581,10 +581,14 @@ registry keeps every mac default of 2.0.0, so no chip hotkey or the Cmd+K swap
 collides. Layout names of 2.x releases are exact patch versions (`2.0.0`,
 `2.0.3`): 2.0.2 shares only part of 2.0.3's shapes (its automations page and
 sidebar data region match neither release), so a 2.0.2 bundle fails closed
-before a write instead of being patched with a mixed layout. Desktop pin and
-preset sync still have no 2.0.x layout. The 2.0.3 fixtures
+before a write instead of being patched with a mixed layout. The 2.0.3 fixtures
 (`tests/fixtures/superset-2.0.3-*`) are cut from the real stock bundle; worked
 example: `REBASE.md` "2.0.0 → 2.0.3".
+
+Desktop pin and preset sync have a `2.0.3` layout (LUBOS-4009): the pin helper
+and host router and the preset host mount are re-pinned with the same edits,
+and the protocol stays version 1. They have no 2.0.0 or 2.0.2 layout: both flags
+refuse those releases before a write, on the real bundles too.
 
 The `LIVE_HOST_ONLY` anchor tests (`test_installed_bundle_accepts_*`) read the
 installed release's stock bytes, not the live file. `stock_snapshot()` follows
@@ -1588,7 +1592,7 @@ See conversation transcript on 2026-05-07. Key insights:
   `file://` origin in Chromium's localStorage leveldb. Value envelope:
   `0x01 + <latin1 utf-8 json>`.
 
-## Desktop workspace pins on mobile (opt-in, 1.39.0 and 1.40.0; not 2.0.x)
+## Desktop workspace pins on mobile (opt-in, 1.39.0, 1.40.0 and 2.0.3)
 
 `--desktop-pin-sync` exports workspace pins from the active desktop organization
 through the existing authenticated host-service relay. It does not change pins,
@@ -1602,13 +1606,14 @@ The publisher uses the hydrated renderer collection, sends only UUIDs and pin
 timestamps to loopback, and stops on unmount. Relayed callers cannot publish.
 Reads wait at most 3.5 seconds for a fresh publication. Unknown protocol versions,
 invalid rows, a closed renderer or an unsupported bundle fail without returning
-an authoritative empty list. All three patch regions are pinned to 1.39.0 and
-1.40.0 (1.40 re-pins only the host router range, same edits); 2.0.0 and 2.0.3
-are not supported yet (the flag refuses it before a write);
+an authoritative empty list. All three patch regions are pinned to 1.39.0,
+1.40.0 (re-pins only the host router range, same edits) and 2.0.3 (re-pins the
+renderer helper and host router ranges, same edits); 2.0.0 and 2.0.2 have no
+layout (the flag refuses them before a write);
 missing symbols, changed local-caller auth or hash drift abort the entire plan.
 See `plans/20261021-desktop-mobile-pins.md` for merge and rollout semantics.
 
-## Desktop terminal presets on mobile (opt-in, 1.39.0 and 1.40.0; not 2.0.x)
+## Desktop terminal presets on mobile (opt-in, 1.39.0, 1.40.0 and 2.0.3)
 
 `--desktop-preset-sync` exports the active organization's terminal presets (the
 V2 presets bar shortcuts) and `hiddenBuiltinPresetIds` through the same
@@ -1628,7 +1633,8 @@ each preset carries only `id, name, description?, cwd, commands, projectIds,
 pinnedToBar?, executionMode, tabOrder, agentId?, useAsWorkspaceRun?`, stably
 sorted by `tabOrder`. A closed renderer or a rejected row is an error
 (PRECONDITION_FAILED), never an empty list. All four regions are pinned to
-1.39.0 and 1.40.0 (1.40 re-pins the renderer helper and host mount ranges, same
-edits); 2.0.0 and 2.0.3 are not supported yet (the flag refuses them before a write). It
-composes with `--desktop-pin-sync` and every other flag in any order.
+1.39.0, 1.40.0 (re-pins the renderer helper and host mount ranges, same edits)
+and 2.0.3 (re-pins the host mount range, which now ends at `PskHostAuthProvider`,
+same edits); 2.0.0 and 2.0.2 have no layout (the flag refuses them before a
+write). It composes with `--desktop-pin-sync` and every other flag in any order.
 See `plans/20261024-desktop-mobile-presets.md`.
