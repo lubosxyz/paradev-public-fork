@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from isolated_locks import isolate  # noqa: E402  (tests/isolated_locks.py)
 from live_host import live_host_only  # noqa: E402  (LIVE_HOST_ONLY, tests/live_host.py)
 from live_bundle import bundle_map, share_scans  # noqa: E402  (one bundle scan per process, tests/live_bundle.py)
+from release_flags import assert_refused, supported_options, unsupported_flags  # noqa: E402  (tests/release_flags.py)
 from test_superset_icon_patch import installed_stock_snapshot, node_check  # noqa: E402
 from test_superset_palette_patch import BASE, asar  # noqa: E402
 from test_superset_device_automations_patch import DF_REGIONS_140, DF_STOCK_140, layout_chunk  # noqa: E402
@@ -290,11 +291,15 @@ class InstalledTest(unittest.TestCase):
         if self.stock is None:
             self.skipTest("no installed Superset bundle on this machine")
 
-    # Value: protects=the stock snapshot of the installed release plans the header and view writes, and each whole patched chunk passes node --check; fails_when=an upstream update moves an anchor, renames a name or a patched module no longer parses; why_new=automations view; seam=installed bundle
+    # Value: protects=the stock snapshot of the installed release plans the header and view writes, and each whole patched chunk passes node --check; a release without an automations layout (2.0.4, 2.0.8) is refused by the planner instead; fails_when=an upstream update moves an anchor, renames a name or a patched module no longer parses, or the view plans on a release it was never rebased to; why_new=automations view, LUBOS-4303 (release-bound view); seam=installed bundle
     def test_stock_snapshot_plans_and_patched_chunks_parse(self):
         import mmap
 
         with self.stock.open("rb") as stream, bundle_map(stream, mmap.ACCESS_READ) as data:
+            if "automations_view" in unsupported_flags(MODULE, data):
+                with self.assertRaisesRegex(RuntimeError, "automations"):
+                    MODULE._plan_automations_header(data, view=True)
+                return
             writes = MODULE._plan_automations_header(data, view=True)
             self.assertEqual(sorted(w[3] for w in writes), sorted([HEADER[0].label, *VIEW_LABELS]))
             touched_paths = []
@@ -318,6 +323,13 @@ class InstalledTest(unittest.TestCase):
         options = json.loads(APPROVED_FLAGS.read_text())["patch_options"]
         options.update(automations_header=True)
         with MODULE.DEFAULT_ASAR.open("rb") as stream, bundle_map(stream, mmap.ACCESS_COPY) as data:
+            refused = unsupported_flags(MODULE, data)
+            if "automations_view" in refused:
+                # No automations layout for this release: both flags refuse while planning, so before any write.
+                supported = supported_options(MODULE, data, options)
+                self.assertIsInstance(MODULE.plan_replacements(data, **supported), list)  # the rest still plans
+                assert_refused(self, MODULE, data, supported, refused)
+                return
             try:
                 others = MODULE.plan_replacements(data, **options)
             except RuntimeError as exc:

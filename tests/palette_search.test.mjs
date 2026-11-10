@@ -13,7 +13,9 @@ const read = (name) => readFileSync(new URL(name, FIXTURES), "utf8");
 // palette_search_1_39.test.mjs on desktop-v1.39.0 (LUBOS-2797), whose region 3 is byte-identical to 1.38.0;
 // palette_search_1_40.test.mjs on desktop-v1.40.0 (LUBOS-3122), which re-pins only region 2;
 // palette_search_2_0.test.mjs on desktop-v2.0.0 (LUBOS-3343), which re-pins regions 2 and 3;
-// palette_search_2_0_3.test.mjs on desktop-v2.0.3 (LUBOS-3874), which re-pins regions 3 and 4.
+// palette_search_2_0_3.test.mjs on desktop-v2.0.3 (LUBOS-3874), which re-pins regions 3 and 4;
+// palette_search_2_0_8.test.mjs on desktop-v2.0.8 (LUBOS-4303), which re-pins regions 1, 3 and 4 on the
+// 2.0.4 region 2 and adds three entries to the hotkey registry.
 const RELEASE = globalThis.SSP_PALETTE_RELEASE ?? "1.37.0";
 const LAYOUT_FIXTURES = {
   "1.37.0": ["r2.v5-", "r3.", "r4.", "r5.", "r6.", "r7."].map((region) => `superset-1.37.0-palette-${region}patched.js`),
@@ -22,9 +24,13 @@ const LAYOUT_FIXTURES = {
   "1.40.0": ["1.40.0-palette-r2.", "1.38.0-palette-r3.", "1.39.0-palette-r4."].map((region) => `superset-${region}patched.js`),
   "2.0.0": ["2.0.0-palette-r2.", "2.0.0-palette-r3.", "1.39.0-palette-r4."].map((region) => `superset-${region}patched.js`),
   "2.0.3": ["2.0.0-palette-r2.", "2.0.3-palette-r3.", "2.0.3-palette-r4."].map((region) => `superset-${region}patched.js`),
+  "2.0.8": ["2.0.4-palette-r2.", "2.0.8-palette-r3.", "2.0.8-palette-r4."].map((region) => `superset-${region}patched.js`),
 }[RELEASE];
+// Region 1 (CommandListView) is the 1.37.0 cut up to 2.0.4; 2.0.8 adds the chat search results to it.
+const REGION_1 = RELEASE === "2.0.8" ? "superset-2.0.8-palette-r1" : "superset-1.37.0-palette-r1";
 // The hotkey registry is byte-identical in 1.38.0 and 1.39.0 and in 2.0.0 and 2.0.3; 1.40.0 adds NEW_CHAT,
 // 2.0.0 TOGGLE_RIGHT_PANE_FULL_SCREEN.
+// 2.0.8 adds PREV_RIGHT_SIDEBAR_TAB, NEXT_RIGHT_SIDEBAR_TAB and TOGGLE_RIGHT_SIDEBAR_FOCUS.
 const HOTKEYS_RELEASE = { "1.39.0": "1.38.0", "2.0.3": "2.0.0" }[RELEASE] ?? RELEASE;
 
 // Any value: callable, constructible and indexable, so module-scope code of a region that the
@@ -527,9 +533,10 @@ test("registerAllModules registers the search provider after the upstream ones",
   assert.equal(calls.providers.length, 6);
 });
 
-function commandList(fixture, providers) {
+function commandList(fixture, providers, extra = {}) {
   const mocks = {
     ...harness().mocks,
+    ...extra,
     getProviders: () => providers,
     subscribeToProviders: () => () => {},
     useCommandContext: () => ({}),
@@ -549,15 +556,27 @@ test("CommandListView mounts each provider's paletteSearch above the ranked comm
     { id: "actions", provide: () => [{ id: "a.one", section: "actions", title: { id: "x" } }] },
     { id: "ssp-workspace-search", provide: () => [], paletteSearch: search },
   ];
-  const [empty, slots, ranked] = commandList("superset-1.37.0-palette-r1.patched.js", providers);
+  // 2.0.8 ends the list with the chat search results, gated by the workspace-moves flag (off here).
+  const chat = RELEASE === "2.0.8" ? [false] : [];
+  const [empty, slots, ranked, ...rest] = commandList(`${REGION_1}.patched.js`, providers);
   assert.equal(empty.type, "CommandEmpty");
   assert.deepEqual(slots, [undefined, { type: search, props: { query: "cmdk", onSelect: "onSelect" }, key: "ssp-workspace-search" }]);
   assert.equal(ranked.length, 1);
   assert.equal(ranked[0].type, "CommandGroup");
-  // Stock renders the empty state and the ranked sections only.
-  const stock = commandList("superset-1.37.0-palette-r1.js", providers);
-  assert.equal(stock.length, 2);
+  assert.deepEqual(rest, chat);
+  // Stock renders the empty state and the ranked sections only (and the gated chat results on 2.0.8).
+  const stock = commandList(`${REGION_1}.js`, providers);
+  assert.equal(stock.length, 2 + chat.length);
   assert.equal(stock[1][0].type, "CommandGroup");
+  assert.deepEqual(stock.slice(2), chat);
+  if (RELEASE === "2.0.8") {
+    // With the flag on, the chat results stay last, below the paletteSearch slots and the ranked commands.
+    const on = commandList(`${REGION_1}.patched.js`, providers, { useFeatureFlagEnabled: () => true });
+    assert.equal(on.length, 4);
+    assert.equal(on[3].type.name, "ChatSearchResults");
+    assert.deepEqual(on[3].props, { query: "cmdk" });
+    assert.equal(on[1][1].type, search);
+  }
 });
 
 function registry(fixture) {

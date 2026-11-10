@@ -37,7 +37,9 @@ All `size-N` strings are 6 chars, so asar header offsets stay valid — no repac
 unpacking-pattern issues with native modules.
 
 With `--compact-sidebar`, the expanded utility navigation becomes a four-column
-icon grid. Anchor families track desktop-v1.25.1 and desktop-v1.26.0–v2.0.3:
+icon grid. Anchor families track desktop-v1.25.1, desktop-v1.26.0–v2.0.3, v2.0.4 and v2.0.8
+(2.0.5–2.0.7 were never reviewed: they plan only where their bytes are a pinned layout, and the real 2.0.6
+fails closed; `REBASE.md` lists the worked examples):
 eight buttons (New Workspace, Search,
 Workspaces, Automations, Tasks, Pull requests, plus the flag-gated Pages and
 Plugins; Usage left this header and later returned flag-gated, see below). Labels render through Lingui

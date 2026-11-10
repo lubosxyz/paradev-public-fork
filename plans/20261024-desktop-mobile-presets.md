@@ -25,6 +25,6 @@ Mobile treats an error or a missing route as an unavailable source and keeps its
 last good snapshot. Merge, M1/M5 application and the mobile side belong to the
 LUBOS-3111 orchestrator. Note: at the time M1's updater had Superset 1.40.0 pending;
 a quit installed it. Both exports have supported 1.40.0 since LUBOS-3122, 2.0.3
-since LUBOS-4009 and 2.0.4 since LUBOS-4029 (same wire contract: version 1, local
-publish only, 3.5 s read wait, a closed renderer is an error); 2.0.0 and 2.0.2 have
+since LUBOS-4009, 2.0.4 since LUBOS-4029 and 2.0.8 since LUBOS-4303 (same wire contract: version 1, local
+publish only, 3.5 s read wait, a closed renderer is an error); 2.0.0, 2.0.2 and 2.0.6 have
 no layout and are refused before a write.

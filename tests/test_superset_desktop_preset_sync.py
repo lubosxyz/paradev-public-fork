@@ -13,6 +13,7 @@ from test_superset_palette_patch import BASE as ICON_ANCHORS, asar
 from desktop_bridges import has_layout, installed_bridges, all_flags, run_harness
 from live_host import live_host_only
 from live_bundle import bundle_map
+from release_flags import supported_options
 
 FIXTURES = Path(__file__).parent / 'fixtures'
 FILES = ['renderer-helper', 'renderer-mount', 'host-router', 'host-mount']
@@ -25,6 +26,7 @@ REGIONS = {
     '1.40.0': (MODULE.DESKTOP_PRESET_REGIONS_1_40, MODULE.DESKTOP_PIN_REGIONS_1_40),
     '2.0.3': (MODULE.DESKTOP_PRESET_REGIONS_2_0_3, MODULE.DESKTOP_PIN_REGIONS_2_0_3),
     '2.0.4': (MODULE.DESKTOP_PRESET_REGIONS_2_0_4, MODULE.DESKTOP_PIN_REGIONS_2_0_4),
+    '2.0.8': (MODULE.DESKTOP_PRESET_REGIONS_2_0_8, MODULE.DESKTOP_PIN_REGIONS_2_0_8),
 }
 RELEASES = tuple(REGIONS)
 
@@ -390,8 +392,8 @@ class Release204Test(unittest.TestCase):
         self.assertEqual([p.name for p in sorted(FIXTURES.glob('superset-2.0.4-desktop-p*'))], [
             'superset-2.0.4-desktop-pins-host-service.js', 'superset-2.0.4-desktop-presets-host-mount.js',
             'superset-2.0.4-desktop-presets-host-router.js'])
-        self.assertEqual(MODULE.DESKTOP_PRESET_LAYOUTS[-1][0], '2.0.4')
-        self.assertEqual(MODULE.DESKTOP_PRESET_LAYOUTS[-1][3], MODULE.DESKTOP_PRESET_APP_ROUTER_SHA256_2_0_3)
+        self.assertEqual(MODULE.DESKTOP_PRESET_LAYOUTS[-2][0], '2.0.4')
+        self.assertEqual(MODULE.DESKTOP_PRESET_LAYOUTS[-2][3], MODULE.DESKTOP_PRESET_APP_ROUTER_SHA256_2_0_3)
 
     # Value: protects=on a 2.0.4 bundle both bridges select the 2.0.4 layout, compose in any order to the same bytes and re-plan to nothing; fails_when=the 2.0.4 layout is not selected, a 2.0.4 region collides with the other bridge, or the order changes the result; why_new=LUBOS-4029; seam=real 2.0.4 bytes
     def test_composes_with_pin_sync_in_any_order(self):
@@ -440,6 +442,86 @@ class Release204Test(unittest.TestCase):
                 self.assertEqual(bytes(data), before)
 
 
+class Release208Test(unittest.TestCase):
+    """desktop-v2.0.8 (LUBOS-4303): only the preset host mount and the pin host router are re-pinned (with the 2.0.4
+    edits), every other region is the 2.0.4 object; the app router literal gained entries, so its digest is 2.0.8's."""
+
+    # Value: protects=every 2.0.8 region of both bridges is the pinned real 2.0.8 bytes, rewrites to its pinned digest, re-runs to nothing and parses; unchanged regions are the 2.0.4 objects and the two re-pinned ones carry the 2.0.4 anchors and edits, so the injected JS, routers, caps and auth stay byte-identical; the layout pins the 2.0.8 app router digest; fails_when=a 2.0.8 digest or edit drifts from its fixture, a re-pin changes the bridge code, or 2.0.8 inherits the 2.0.3 app router digest; why_new=LUBOS-4303; seam=real 2.0.8 bytes
+    def test_regions_are_pinned_with_the_earlier_edits(self):
+        presets, pins = MODULE.DESKTOP_PRESET_REGIONS_2_0_8, MODULE.DESKTOP_PIN_REGIONS_2_0_8
+        cases = (
+            (presets, MODULE.DESKTOP_PRESET_REGIONS_2_0_4, [stock(file, '2.0.8') for file in FILES], {0, 1, 2}),
+            (pins, MODULE.DESKTOP_PIN_REGIONS_2_0_4, [pin_stock(file, '2.0.8') for file in PIN_FILES], {0, 1}),
+        )
+        for regions, earlier, stocks, reused in cases:
+            for n, (region, old, original) in enumerate(zip(regions, earlier, stocks, strict=True)):
+                with self.subTest(region=region.label):
+                    self.assertEqual(region is old, n in reused)
+                    self.assertEqual((region.label, region.start, region.end, region.edits), (old.label, old.start, old.end, old.edits))
+                    if n not in reused:
+                        self.assertNotEqual(region.stock_sha256, old.stock_sha256)
+                    self.assertEqual(len(original), region.length)
+                    self.assertEqual(hashlib.sha256(original).hexdigest(), region.stock_sha256)
+                    [(_, _, patched, _)] = MODULE._plan_region_rewrite(original + region.end, region)
+                    self.assertEqual(hashlib.sha256(patched).hexdigest(), region.patched_sha256)
+                    self.assertEqual(MODULE._plan_region_rewrite(patched + region.end, region), [])
+                    node_check(self, patched)
+        self.assertEqual([p.name for p in sorted(FIXTURES.glob('superset-2.0.8-desktop-p*'))], [
+            'superset-2.0.8-desktop-pins-host-service.js', 'superset-2.0.8-desktop-presets-host-mount.js'])
+        self.assertEqual(MODULE.DESKTOP_PRESET_LAYOUTS[-1][0], '2.0.8')
+        self.assertEqual(MODULE.DESKTOP_PRESET_LAYOUTS[-1][3], MODULE.DESKTOP_PRESET_APP_ROUTER_SHA256_2_0_8)
+        self.assertNotEqual(MODULE.DESKTOP_PRESET_APP_ROUTER_SHA256_2_0_8, MODULE.DESKTOP_PRESET_APP_ROUTER_SHA256_2_0_3)
+        self.assertEqual(MODULE.DESKTOP_PIN_LAYOUTS[-1][0], '2.0.8')
+
+    # Value: protects=on a 2.0.8 bundle both bridges select the 2.0.8 layout, compose in any order to the same bytes and re-plan to nothing; fails_when=the 2.0.8 layout is not selected, a 2.0.8 region collides with the other bridge, the 2.0.8 app router digest is wrong, or the order changes the result; why_new=LUBOS-4303; seam=real 2.0.8 bytes
+    def test_composes_with_pin_sync_in_any_order(self):
+        both = bundle(release='2.0.8')
+        self.assertEqual(MODULE._select_layout(both, MODULE.DESKTOP_PRESET_LAYOUTS, 'desktop preset sync')[0], '2.0.8')
+        self.assertEqual(MODULE._select_layout(both, MODULE.DESKTOP_PIN_LAYOUTS, 'desktop pin sync')[0], '2.0.8')
+        writes = apply(both, desktop_pin_sync=True, desktop_preset_sync=True)
+        self.assertEqual(len(writes), 7)
+        self.assertEqual(MODULE.plan_replacements(both, **BASE, desktop_pin_sync=True, desktop_preset_sync=True), [])
+        for first, second in (('desktop_preset_sync', 'desktop_pin_sync'), ('desktop_pin_sync', 'desktop_preset_sync')):
+            data = bundle(release='2.0.8')
+            apply(data, **{first: True})
+            self.assertEqual(MODULE.plan_replacements(data, **BASE, **{first: True}), [])
+            apply(data, **{second: True})
+            self.assertEqual(data, both, f'{first} then {second}')
+        for region in (*MODULE.DESKTOP_PRESET_REGIONS_2_0_8, *MODULE.DESKTOP_PIN_REGIONS_2_0_8):
+            at = bytes(both).index(region.start)
+            self.assertEqual(hashlib.sha256(both[at:at+region.length]).hexdigest(), region.patched_sha256, region.label)
+
+    # Value: protects=the code the 2.0.8 rewrite leaves in the real 2.0.8 region bytes (not the constants) serves publish then list, refuses a relayed publish and errors on a stopped renderer, and the renderer and host call sites survive; fails_when=a rewrite drops the router, the exporter or a mount, or the edit corrupts the code; why_new=LUBOS-4303 (acceptance: behavior on patched 2.0.8 bytes); seam=real 2.0.8 bytes with the patched regions cut from them
+    def test_patched_bytes_behave(self):
+        chunks = [MODULE._plan_region_rewrite(stock(file, '2.0.8') + region.end, region)[0][2]
+                  for region, file in zip(MODULE.DESKTOP_PRESET_REGIONS_2_0_8, FILES, strict=True)]
+        run_harness(self, 'preset', chunks)
+
+    # Value: protects=2.0.8 bytes under the 2.0.4 banner (or another unreviewed 2.x, 2.0.6 included), 2.0.4 host bytes in a 2.0.8 bundle, a 2.0.8 bundle with the 2.0.4 app router, or a 2.0.8 app router with a lazy entry fail before any write; fails_when=the banner check accepts the wrong release, layout selection falls back per region, or the 2.0.8 router digest is not checked; why_new=LUBOS-4303; seam=real 2.0.4 / 2.0.8 bytes
+    def test_unknown_or_mixed_shapes_fail_before_any_write(self):
+        retagged = lambda release: bytearray(bytes(bundle(release='2.0.8')).replace(b'"2.0.8"', f'"{release}"'.encode()))
+        mixed_pin = bytearray(bytes(bundle(release='2.0.8')).replace(pin_stock('host-service.js', '2.0.8'), pin_stock('host-service.js', '2.0.4')))
+        mixed_preset = bytearray(bytes(bundle(release='2.0.8')).replace(stock('host-mount', '2.0.8'), stock('host-mount', '2.0.4')))
+        self.assertNotEqual(mixed_pin, bundle(release='2.0.8'))
+        self.assertNotEqual(mixed_preset, bundle(release='2.0.8'))
+        opener = b'const appRouter = router({\n'
+        cases = [('unsupported desktop version', retagged(release), {}) for release in ('2.0.0', '2.0.2', '2.0.4', '2.0.6', '2.0.7')]
+        cases += [
+            ('desktop pin sync', mixed_pin, dict(desktop_preset_sync=False)),
+            ('desktop preset sync', mixed_preset, dict(desktop_pin_sync=False)),
+            # The 2.0.4 host-service region carries the 2.0.4 app router: the preset bridge alone refuses it too.
+            ('desktop preset sync: app router changed', mixed_pin, dict(desktop_pin_sync=False)),
+            ('app router changed', bundle(release='2.0.8', app_router=(opener, opener + b'  later: lazy(() => import("./later.js")),\n')),
+             dict(desktop_pin_sync=False)),
+        ]
+        for message, data, off in cases:
+            with self.subTest(message=message):
+                before = bytes(data)
+                with self.assertRaisesRegex(RuntimeError, message):
+                    apply(data, **({'desktop_pin_sync': True, 'desktop_preset_sync': True} | off))
+                self.assertEqual(bytes(data), before)
+
+
 @live_host_only('desktop preset sync touches two installed chunks')
 class InstalledTest(unittest.TestCase):
     def test_all_flags_compose_and_patched_chunks_parse(self):
@@ -448,8 +530,9 @@ class InstalledTest(unittest.TestCase):
             self.skipTest('no installed bundle')
         if not bridges.supported:
             # A release without a layout (2.0.2): the flag refuses before a write, every other flag plans.
-            snapshot, options = installed_stock_snapshot(), all_flags()
+            snapshot = installed_stock_snapshot()
             with snapshot.open('rb') as f, bundle_map(f, mmap.ACCESS_COPY) as data:
+                options = supported_options(MODULE, data, all_flags())
                 self.assertFalse(has_layout(data, 'preset'))
                 with self.assertRaisesRegex(RuntimeError, 'desktop preset sync: unsupported desktop version'):
                     MODULE.plan_replacements(data, **(options | {'desktop_pin_sync': False}))

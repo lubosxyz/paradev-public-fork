@@ -3380,6 +3380,83 @@ class SupersetSidebarStatusFilter204PatchTest(SupersetSidebarStatusFilter203Patc
                 self.assertEqual(result.returncode, 0, result.stderr)
 
 
+def _fixture_2_0_8(kind: str, n: int, suffix: str = ".js") -> Path:
+    """The 2.0.8 cut of region n, or the 2.0.4 one (or earlier) it is byte-identical to."""
+    path = FIXTURES / f"superset-2.0.8-{kind}-r{n}{suffix}"
+    return path if path.exists() else _fixture_2_0_4(kind, n, suffix)
+
+
+class SupersetSidebarStatusFilter208PatchTest(SupersetSidebarStatusFilter204PatchTest):
+    """The same filter on the desktop-v2.0.8 layout (LUBOS-4303): every inherited test runs on the 2.0.8 regions.
+
+    2.0.8 keeps the project order stable across moves and resumes moved workspaces (region 3), wraps the
+    workspace context menu in a fragment with the new MoveWorkspaceDialog (region 5: the search helper's
+    placement anchor is the fragment's close now), draws the spinner with CSS and adds cloud port actions
+    (region 12), error toasts in the modals (region 13) and i18n ids (region 14). Regions 3, 5, 12, 13 and 14
+    are cut from the real 2.0.8 bundle; the rest is byte-identical to 2.0.4. Palette regions 1, 3 and 4 are
+    re-pinned too.
+    """
+
+    REGIONS = MODULE.STATUS_FILTER_REGIONS_2_0_8
+    PALETTE_REGIONS = MODULE.PALETTE_SEARCH_REGIONS_2_0_8
+    PALETTE_FIXTURES = ["superset-2.0.8-palette-r1.js", "superset-2.0.4-palette-r2.js", "superset-2.0.8-palette-r3.js", "superset-2.0.8-palette-r4.js"]
+    REGION_FIXTURES = [_fixture_2_0_8("status-filter", n) for n in range(1, 15)]
+    PATCHED_FIXTURES = [_fixture_2_0_8("status-filter", n, ".patched.js") for n in range(1, 15)]
+    REBASED = (3, 5, 12, 13, 14)
+
+    # Value: protects=the 2.0.8 regions are pinned on the real 2.0.8 bytes and reuse only the 2.0.4 regions that are byte-identical there; only region 5 changes edits (its placement anchor), with the same injected search helper; fails_when=a 2.0.8 fixture is missing, a reused 2.0.4 region drifted, a 2.0.8 region inherits a legacy / upgrade digest that never ran on 2.0.8, or region 5 injects different code; why_new=LUBOS-4303 release layout; seam=real 2.0.8 bytes
+    def test_layout_reuses_identical_regions_and_has_no_earlier_generations(self):
+        earlier = MODULE.STATUS_FILTER_REGIONS_2_0_4
+        self.assertEqual(len(self.REGIONS), 14)
+        for n, region in enumerate(self.REGIONS, 1):
+            with self.subTest(region=n):
+                self.assertEqual(self.REGION_FIXTURES[n - 1].name.startswith("superset-2.0.8-"), n in self.REBASED)
+                if n in self.REBASED:
+                    old = earlier[n - 1]
+                    self.assertEqual((region.legacy_sha256, region.upgrades), ((), ()))
+                    self.assertEqual((region.label, region.start, region.end, region.shared), (old.label, old.start, old.end, old.shared))
+                    self.assertNotEqual(region.stock_sha256, old.stock_sha256)
+                    if n != 5:
+                        self.assertEqual(region.edits, old.edits)
+                else:
+                    self.assertIs(region, earlier[n - 1])
+        (old_anchor, old_new), = earlier[4].edits
+        (anchor, new), = self.REGIONS[4].edits
+        self.assertEqual((old_anchor, anchor), (b"    ] })\n  ] });\n}\n", b"    } })\n  ] });\n}\n"))
+        self.assertEqual(new[len(anchor):], old_new[len(old_anchor):])
+
+    # Value: protects=the search helper lands after the whole 2.0.8 workspace context menu (its fragment and the MoveWorkspaceDialog mount stay upstream's) and nowhere inside it; fails_when=the old `] })` anchor is kept (found 0 on 2.0.8) or the new anchor matches inside the menu; why_new=LUBOS-4303 (2.0.8 wraps the menu in a fragment); seam=real 2.0.8 region 5
+    def test_search_helper_follows_the_move_dialog(self):
+        stock = self.REGION_FIXTURES[4].read_bytes()
+        patched = self.PATCHED_FIXTURES[4].read_bytes()
+        (anchor, _new), = self.REGIONS[4].edits
+        self.assertEqual(stock.count(anchor), 1)
+        self.assertNotIn(b"    ] })\n  ] });\n}\n", stock)
+        dialog = patched.index(b"move && moveOpen && jsxRuntimeExports.jsx(MoveWorkspaceDialog, ")
+        helper = patched.index(b"function SsfSearch({")
+        self.assertLess(dialog, helper)
+        self.assertEqual(patched[helper - len(anchor) : helper], anchor)
+        self.assertEqual(patched.count(b"function SsfSearch({"), 1)
+
+    # Value: protects=each release is planned with its own layout; fails_when=the 2.0.8 bundle is planned with 2.0.4 regions or the other way round; why_new=LUBOS-4303; seam=none
+    def test_each_release_selects_its_own_layout(self):
+        self.assertEqual(MODULE.status_filter_layout(self.stock_bundle())[0], "2.0.8")
+        earlier = SupersetSidebarStatusFilter204PatchTest("test_status_filter_is_idempotent").stock_bundle()
+        self.assertEqual(MODULE.status_filter_layout(earlier)[0], "2.0.4")
+        patched, _changes = self.patch(self.stock_bundle())
+        self.assertEqual(MODULE.status_filter_layout(patched)[0], "2.0.8")
+
+    # Value: protects=a bundle mixing 2.0.4 and 2.0.8 region bytes (stock or patched) fails closed instead of patching half of each; fails_when=layout selection falls back per region; why_new=REBASE.md mixed-release rule; seam=real 2.0.4 / 2.0.8 bytes
+    def test_mixed_release_bundle_fails_closed(self):
+        for n in self.REBASED:
+            for older in (SupersetSidebarStatusFilter204PatchTest.REGION_FIXTURES, SupersetSidebarStatusFilter204PatchTest.PATCHED_FIXTURES):
+                with self.subTest(region=n, patched=older is SupersetSidebarStatusFilter204PatchTest.PATCHED_FIXTURES):
+                    mixed = self.stock_bundle().replace(self.REGION_FIXTURES[n - 1].read_bytes(), older[n - 1].read_bytes())
+                    self.assertNotEqual(mixed, self.stock_bundle())
+                    with self.assertRaisesRegex(RuntimeError, "status filter"):
+                        self.patch(mixed)
+
+
 class SupersetUiPatch204HeaderTest(unittest.TestCase):
     """--compact-sidebar, --hide-nav-buttons and --custom-project-icons on desktop 2.0.4 (LUBOS-4029).
 
@@ -3527,6 +3604,43 @@ class SupersetUiPatch204HeaderTest(unittest.TestCase):
             MODULE.revert(asar, backups)
             self.assertEqual(asar.read_bytes(), original)
             self.assertEqual(backup.read_bytes(), original)
+
+
+class SupersetProjectRowContainer208Test(unittest.TestCase):
+    """The project row's icon container on desktop 2.0.8 (LUBOS-4303).
+
+    2.0.6 and 2.0.8 draw the container class string a second time, as a <span>, in the import-worktrees
+    dialog (superset-2.0.8-import-worktrees-dialog.js, cut from the real 2.0.8 page chunk), so the anchor
+    carries the row's jsxs("div". The sidebar header and the new-workspace icon site of 2.0.8 are
+    byte-identical to the 2.0.4 fixtures (both parts of superset-2.0.4-sidebar-header.js occur once in the
+    real 2.0.8 bundle), so SupersetUiPatch204HeaderTest covers 2.0.8 there.
+    """
+
+    DIALOG = FIXTURES / "superset-2.0.8-import-worktrees-dialog.js"
+    CLASSES = b'"flex size-4 shrink-0 items-center justify-center", children: ['
+
+    # Value: protects=the container anchor names the row's <div> and the 2.0.8 dialog holds the same class string only as a <span>, so the anchor matches once and the dialog keeps its bytes; fails_when=the anchor drops the element (found 2 on 2.0.6 and 2.0.8, the watcher's "expected exactly one container anchor") or rewrites the dialog's checkbox column; why_new=LUBOS-4303; seam=real 2.0.8 dialog bytes
+    def test_dialog_span_is_not_the_row_container(self):
+        dialog = self.DIALOG.read_bytes()
+        self.assertEqual(dialog.count(b'jsxs("span", { className: ' + self.CLASSES), 1)
+        self.assertEqual(dialog.count(MODULE.CONTAINER_TEMPLATE.format(4).encode()), 0)
+        self.assertTrue(MODULE.CONTAINER_TEMPLATE.startswith('jsxs("div", {{ className: '))
+        node_check(self, dialog)
+        header = SupersetUiPatch204HeaderTest()
+        original = header.bundle() + b"|" + dialog
+        self.assertEqual(original.count(self.CLASSES.replace(b"size-4", b"size-5")) + original.count(self.CLASSES), 2)
+        patched, changes = header.patch(original)
+        self.assertEqual(len(patched), len(original))
+        self.assertTrue(patched.endswith(b"|" + dialog))
+        self.assertEqual(patched.count(MODULE.CONTAINER_TEMPLATE.format(6).encode()), 1)
+        self.assertEqual(header.patch(patched), (patched, []))
+        self.assertTrue(changes)
+
+    # Value: protects=a second row container (a real duplicate <div>) still fails closed; fails_when=the prefixed anchor is counted per file or the first match wins; why_new=LUBOS-4303; seam=none
+    def test_two_row_containers_fail_closed(self):
+        header = SupersetUiPatch204HeaderTest()
+        with self.assertRaisesRegex(RuntimeError, "container anchor"):
+            header.patch(header.bundle() + b"|" + MODULE.CONTAINER_TEMPLATE.format(4).encode())
 
 
 class SupersetProjectIconEnvironments203Test(unittest.TestCase):
@@ -3836,6 +3950,20 @@ class SupersetHideSidebarFooter200PatchTest(SupersetHideSidebarFooter140PatchTes
     # Value: protects=the 2.0 footer row and both sort data lines are still the shared writes inside status filter region 3; fails_when=2.0 moves one out of region 3 or the region loses a shared pair; why_new=LUBOS-3343; seam=real 2.0.0 region 3
     def test_anchor_is_the_real_footer_row_and_hides_only_the_expanded_sidebar(self):
         region3 = (FIXTURES / "superset-2.0.0-status-filter-r3.js").read_bytes()
+        self.assertEqual(self.REGIONS[2].shared, MODULE.STATUS_FILTER_REGIONS_1_40[2].shared)
+        for stock, _patched in self.REGIONS[2].shared:
+            self.assertEqual(region3.count(stock), 1, stock)
+
+
+class SupersetHideSidebarFooter208PatchTest(SupersetHideSidebarFooter140PatchTest):
+    """--hide-sidebar-footer composed with the 2.0.8 status filter regions (LUBOS-4303)."""
+
+    REGIONS = SupersetSidebarStatusFilter208PatchTest.REGIONS
+    REGION_FIXTURES = SupersetSidebarStatusFilter208PatchTest.REGION_FIXTURES
+
+    # Value: protects=the 2.0.8 footer row and both sort data lines are still the shared writes inside the re-pinned status filter region 3; fails_when=2.0.8 moves one out of region 3 or the region loses a shared pair; why_new=LUBOS-4303; seam=real 2.0.8 region 3
+    def test_anchor_is_the_real_footer_row_and_hides_only_the_expanded_sidebar(self):
+        region3 = (FIXTURES / "superset-2.0.8-status-filter-r3.js").read_bytes()
         self.assertEqual(self.REGIONS[2].shared, MODULE.STATUS_FILTER_REGIONS_1_40[2].shared)
         for stock, _patched in self.REGIONS[2].shared:
             self.assertEqual(region3.count(stock), 1, stock)
@@ -5029,6 +5157,40 @@ class SupersetStatusFilterNames203Test(SupersetStatusFilterNamesTest):
 
     REGIONS = SupersetSidebarStatusFilter203PatchTest.REGIONS
     REGION_FIXTURES = SupersetSidebarStatusFilter203PatchTest.REGION_FIXTURES
+
+
+class SupersetStatusFilterHotkeys208PatchTest(SupersetStatusFilterHotkeys138PatchTest):
+    """--status-filter-hotkeys on the 2.0.8 regions and registry (LUBOS-4303).
+
+    2.0.8 adds PREV_RIGHT_SIDEBAR_TAB, NEXT_RIGHT_SIDEBAR_TAB (plain chord strings) and
+    TOGGLE_RIGHT_SIDEBAR_FOCUS to the registry; the moved entries are unchanged.
+    """
+
+    REGIONS = SupersetSidebarStatusFilter208PatchTest.REGIONS
+    REGION_FIXTURES = SupersetSidebarStatusFilter208PatchTest.REGION_FIXTURES
+    HOTKEYS = FIXTURES / "superset-2.0.8-hotkeys-registry.js"
+
+    # Value: protects=the chords the moves and the chips take are free on the 2.0.8 registry, counting the new entries whose mac chord is a plain string; fails_when=a 2.0.8 entry (either chord form) binds Cmd+I, Cmd+Shift+E, Cmd+Shift+W, Cmd+Shift+I or Cmd+Option+W after the moves; why_new=LUBOS-4303 (2.0.8 adds plain-string chords the L$1 regex misses); seam=real 2.0.8 registry
+    def test_registry_moves_free_the_chip_chords_in_both_chord_forms(self):
+        registry = self.HOTKEYS.read_bytes()
+        for stock, moved in ((MODULE.HOTKEY_RICH_INPUT_STOCK, MODULE.HOTKEY_RICH_INPUT_MOVED), (MODULE.HOTKEY_CLOSE_TAB_STOCK, MODULE.HOTKEY_CLOSE_TAB_MOVED)):
+            self.assertEqual(registry.count(stock), 1)
+            registry = registry.replace(stock, moved)
+        macs = re.findall(rb'mac: (?:L\$1\()?"([^"]+)"', registry)
+        self.assertIn(b"meta+ctrl+left", macs)
+        self.assertGreater(len(macs), len(re.findall(rb'mac: L\$1\("([^"]+)"\)', registry)))
+        for chord in (b"meta+i", b"meta+shift+e", b"meta+shift+w"):
+            self.assertNotIn(chord, macs)
+        for chord in (b"meta+shift+i", b"meta+alt+w"):
+            self.assertEqual(macs.count(chord), 1)
+        node_check(self, registry)
+
+
+class SupersetStatusFilterNames208Test(SupersetStatusFilterNamesTest):
+    """The name check on a 2.0.8 chunk (LUBOS-4303)."""
+
+    REGIONS = SupersetSidebarStatusFilter208PatchTest.REGIONS
+    REGION_FIXTURES = SupersetSidebarStatusFilter208PatchTest.REGION_FIXTURES
 
 
 class SupersetAsarIntegrityFuseTest(unittest.TestCase):

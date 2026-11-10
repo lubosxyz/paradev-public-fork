@@ -134,7 +134,7 @@ or mixed-release bundle) is planned with the layout that fits most of its
 regions, so the error names the region that drifted. Regions that are
 byte-identical in the new release are reused as the same objects. Two releases
 with the same region structure (start, end and length of every region; the
-2.0.3 and 2.0.4 palette) both fit whole: then only the layout whose every
+2.0.3 and 2.0.4 palette, palette region 4 of 2.0.4 and 2.0.8) both fit whole: then only the layout whose every
 region is at one of its pinned digests (stock, patched, legacy or upgradable)
 counts (`_region_known`), in `_select_layout` and in the release probe alike,
 so an unflagged family still records its own release. Rebased ones
@@ -779,7 +779,90 @@ bundles: 1.39.0 (production + sync) and 2.0.3 (production + 4 extras) apply;
 2.0.0 and 2.0.2 fail before any write; on 2.0.4 the full production set fails
 at the automations header.
 
-## Desktop pin export (LUBOS-2944, 1.39.0, 1.40.0, 2.0.3 and 2.0.4)
+## Worked example: 2.0.4 → 2.0.8 (2026-11-10, LUBOS-4303)
+
+The watcher (patcher `adc2ed3e1f`, 2.0.4) refused 2.0.6 (`debff4b6…`) as
+`mixed release layouts across families (status filter regions of several
+releases)`. Before the port finished, the orchestrator installed 2.0.8 on M5
+(stock `app.asar` `43e44908…`, 140,845,883 B), so the port targets 2.0.8
+directly. 2.0.6 stays unsupported and fails before any write. Every apply ran
+on `cp -c` copies in the scratchpad; /Applications and the ShipIt cache were
+only read. Upstream added workspace moves between computers
+(`WORKSPACE_MOVES`, `MoveWorkspaceDialog`, `useWorkspaceMoveDirections`), a
+feature-flagged chat search in the palette, chat sync in the host service, a
+teleport router and an import dialog for worktrees made by other tools.
+
+- Base set: the only miss was `expected exactly one container anchor,
+  found 2`. `ImportFromOtherToolsDialog` uses the same class string for a
+  `<span>` thumbnail, so `CONTAINER_TEMPLATE` now carries the row's own
+  `jsxs("div", { className: …` prefix. That prefix is the same in 2.0.3 and
+  2.0.4, so their bytes do not change. Fixture:
+  `superset-2.0.8-import-worktrees-dialog.js`. The header shapes and the
+  project icon sites are the 2.0.4 ones (`superset-2.0.4-sidebar-header.js`
+  occurs whole in 2.0.8), so there is no new header generation.
+- Status filter (`STATUS_FILTER_REGIONS_2_0_8`): regions 3, 5, 12, 13 and 14
+  are re-pinned (291, 402, 425, 2,217 and 47 B left). The other nine are the
+  2.0.4 objects. Region 5 (search) gained the move dialog, and its JSX now
+  closes on `    } })`. The single edit therefore anchors on
+  `_SF_SEARCH_CLOSE_2_0_8` with the 2.0.4 replacement tail. Region 14 keeps
+  its length. The order line in region 3 is still the 1.39 shape, so the
+  project order swaps fold in unchanged.
+- Palette search: regions 1, 3 and 4 are re-pinned (262, 499 and 37 B left);
+  region 2 is 2.0.4's. Region 1 gained `ChatSearchResults` behind
+  `chatSearchEnabled`. The slot stays before the ranked results and the chat
+  results (`test_re_pinned_rooms_only_lose_comments`). Region 4 has the same
+  length as in 2.0.4, so only its digest tells the releases apart
+  (`_region_known`). The hotkey registry gained entries, but none binds a
+  patched chord (`superset-2.0.8-hotkeys-registry.js`).
+- Device filter: regions 1, 2 and 5 are re-pinned (29, 122 and 110 B left);
+  regions 3 and 4 are 2.0.4's. 2.0.8 still imports `TbCloud`
+  (`SIDEBAR_DEVICE_CLOUD_ICONS`). One-row (`SIDEBAR_ONE_ROW_RELEASES`) and
+  the PINNED sort list 2.0.8; their shared pairs sit in the re-pinned search
+  region and device region 1.
+- Project order: the hook room (calls `useResumeMovesToThisComputer`, 188 B
+  left), the store room (payment-failed card dismissal, 327 B left) and the
+  pin-projects menu room (`useWorkspaceMoveDirections`, 69 B left) are
+  re-pinned with the 2.0.4 anchors and edits. The sort room and the three
+  swaps are 2.0.0's.
+- Pin / preset export: only the pin host router (972 B left; the app router
+  gained `teleport: teleportRouter`) and the preset host mount (494 B left;
+  `createApp` gained chat sync) are re-pinned, with the earlier edits. The
+  `appRouter` literal digest is `DESKTOP_PRESET_APP_ROUTER_SHA256_2_0_8`, and
+  every other region is a 2.0.4 object. The plan's guards outside the
+  regions (banner, `protectedProcedure`, the single `isLocalCaller` relay
+  check, the React binding and the client names) pass on 2.0.8, and the
+  sandbox boot below exercises the wire contract.
+- **Manual rebase still required: `--automations-header` and
+  `--automations-view`.** The Archived tab and its flow still sit inside the
+  tab row that the header patch removes. So there is no 2.0.8 layout, and
+  both flags fail while planning, before any write (`automations header: all
+  automations, project filter: end anchor not at the pinned length`). The
+  live tests drop exactly these flags on such a release and prove the refusal
+  (`tests/release_flags.py`) instead of skipping.
+- Interim handoff (see Worker handoff): the orchestrator applied the interim
+  copy (`a9228054…`, production set without automations and sync) live at
+  10:48 SEČ, giving `c6c7e16e…`. The final patcher writes the same region
+  bytes, so no `legacy_sha256` is needed: the interim flags on a
+  `c6c7e16e…` copy report `already patched`, and adding pin and preset sync
+  writes only the sync regions.
+- Fixtures are cut from the real stock 2.0.8 bundle
+  (`tests/fixtures/superset-2.0.8-*`); unchanged regions reuse earlier cuts.
+
+Proof (2026-11-10, `cp -c` copies of stock 2.0.8 `43e44908…`, 140,845,883 B,
+patcher `a9228054…`): the production set without `--automations-header` (20
+flags) makes 79 writes and gives `8a13b224…` at the same size; a second run
+reports `already patched`; the reversed flag order reaches the same digest;
+`--revert` restores `43e44908…`. `node --check` passes on all 11 changed files.
+`--automations-header` and `--automations-view` exit 1 with no write and no
+backup. On a copy of the interim bundle `c6c7e16e…`, the interim flags report
+`already patched`, and adding `--desktop-pin-sync --desktop-preset-sync` makes
+exactly the 7 sync writes and ends at `8a13b224…`. The patched
+`dist/main/host-service.js`, booted by the Electron binary of a pristine signed
+2.0.8 in a sandbox (own HOME, DB and organization, no relay, cloud API on a
+closed loopback port), answers 401 / 403 / 400 / 412 for both bridges, and a
+relayed list returns the snapshot a local publish delivered.
+
+## Desktop pin export (LUBOS-2944, 1.39.0, 1.40.0, 2.0.3, 2.0.4 and 2.0.8)
 
 `DESKTOP_PIN_REGIONS` touches three disjoint files. The index chunk's Zod helper
 range supplies room by removing only PURE/i18n comments; its executable code is
@@ -787,8 +870,8 @@ unchanged apart from attaching `useCollections.dps`. The LocalHostServiceProvide
 range calls that hook before its early return; exact whitespace-only declaration
 edits plus the PURE marker provide room. The host-service createSession..appRouter
 range removes explicitly pinned documentation comments and adds the authenticated
-snapshot router. Fixtures are byte excerpts of the shipped 1.39.0, 1.40.0, 2.0.3
-and 2.0.4 bundles, not
+snapshot router. Fixtures are byte excerpts of the shipped 1.39.0, 1.40.0, 2.0.3,
+2.0.4 and 2.0.8 bundles, not
 constructed from the constants. Verify complete patched chunks with node --check.
 
 The provider release banner must name the selected release (`DESKTOP_PIN_LAYOUTS`). Verify the collection's ready status,
@@ -798,7 +881,7 @@ must remain an unavailable source, never an empty pin set. Keep the exporter
 read-only and preserve every existing route. Run the bridge behavior harness and
 both patch gates, including all flags together, before applying.
 
-## Desktop preset export (LUBOS-3112, 1.39.0, 1.40.0, 2.0.3 and 2.0.4)
+## Desktop preset export (LUBOS-3112, 1.39.0, 1.40.0, 2.0.3, 2.0.4 and 2.0.8)
 
 `DESKTOP_PRESET_REGIONS` adds four regions, disjoint from the pin export's:
 
@@ -812,15 +895,17 @@ both patch gates, including all flags together, before applying.
   `function useCollections` at column 0.
 - host router (host-service, `RESCUE_REPORT_INTERVAL_MS` .. `PING_INTERVAL_MS`): the
   RELAY_CLOSE and partysocket JSDoc blocks make room for `dtsRouter` (364 B left);
-  on 2.0.4 the range opens at `installProcessSafetyNet`.
+  on 2.0.4 and 2.0.8 the range opens at `installProcessSafetyNet`.
   `const RELAY_CLOSE` is not a valid start anchor; it also occurs in a bundled `.ts` source.
-- host mount (host-service, `createApp` .. `writeTempAskpass`, on 2.0.3 .. `PskHostAuthProvider`): `trpcServer` mounts
+- host mount (host-service, `createApp` .. `writeTempAskpass`, on 2.0.3 .. `PskHostAuthProvider`; re-pinned on
+  2.0.4 and on 2.0.8, which adds the chat sync wiring to `createApp`): `trpcServer` mounts
   `dtsMount(appRouter)`, which rebuilds the eager router with `desktopPresets` added and
   leaves a router with lazy entries untouched. The `appRouter` literal itself lies in the pin
   export's host range, so the plan pins it separately (`DESKTOP_PRESET_APP_ROUTER_SHA256`,
-  stock or stock plus the pin export's `desktopPins` line); any other shape aborts the plan.
+  stock or stock plus the pin export's `desktopPins` line, per layout: 2.0.8 adds `teleport: teleportRouter`,
+  so its digest is `DESKTOP_PRESET_APP_ROUTER_SHA256_2_0_8`); any other shape aborts the plan.
 
-Guards: the selected release's banner (1.39.0, 1.40.0, 2.0.3 or 2.0.4) in both chunks, `electronTrpcClient`,
+Guards: the selected release's banner (1.39.0, 1.40.0, 2.0.3, 2.0.4 or 2.0.8) in both chunks, `electronTrpcClient`,
 `setHostServiceSecret`, `getHostServiceClientByUrl` and a single React binding in the
 index chunk; `gitHookTolerance`, `hostServiceUtils`, `protectedProcedure`,
 `queryProcedure`, `router` and the single `isLocalCaller` relay marker check in

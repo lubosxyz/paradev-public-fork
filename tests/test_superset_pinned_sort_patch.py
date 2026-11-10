@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from isolated_locks import isolate  # noqa: E402  (tests/isolated_locks.py)
 from live_host import live_host_only  # noqa: E402  (LIVE_HOST_ONLY, tests/live_host.py)
 from live_bundle import bundle_map, share_scans  # noqa: E402  (one bundle scan per process, tests/live_bundle.py)
+from release_flags import supported_options  # noqa: E402  (tests/release_flags.py)
 from test_superset_icon_patch import installed_stock_snapshot, node_check  # noqa: E402
 from test_superset_palette_patch import BASE, asar  # noqa: E402
 import test_superset_icon_patch as icon_tests  # noqa: E402  (modules, so their TestCases are not collected twice)
@@ -65,11 +66,13 @@ REGION_3 = (
     (MODULE.STATUS_FILTER_REGIONS_2_0_3[2], "superset-2.0.3-status-filter-r3.js", DATA, DATA_SORTED),
     # desktop-v2.0.4 (LUBOS-4029) re-pins region 3 once more (pinned pages fold); the data line is unchanged.
     (MODULE.STATUS_FILTER_REGIONS_2_0_4[2], "superset-2.0.4-status-filter-r3.js", DATA, DATA_SORTED),
+    # desktop-v2.0.8 (LUBOS-4303) re-pins region 3 once more (stable project order, resumed moves); the data line is unchanged.
+    (MODULE.STATUS_FILTER_REGIONS_2_0_8[2], "superset-2.0.8-status-filter-r3.js", DATA, DATA_SORTED),
 )
 # The releases of the 1.37 data swap shape; 2.x layouts name exact patch releases.
 PINNED_SORT_NAMES = MODULE.PINNED_SORT_RELEASE_NAMES[0]
 # Every release the synthetic composition bundles cover (CompositionTest.stock).
-RELEASES = ("1.37", "1.38", "1.39", "1.40", "2.0.0", "2.0.3", "2.0.4")
+RELEASES = ("1.37", "1.38", "1.39", "1.40", "2.0.0", "2.0.3", "2.0.4", "2.0.8")
 
 LAYOUT_NAMES = device_tests.imports(MODULE.PINNED_SORT_CHUNK_NAMES[0]) + b"".join(MODULE.PINNED_SORT_HELPERS)
 
@@ -411,7 +414,14 @@ class CompositionTest(unittest.TestCase):
     def stock(self, release, extra=()):
         """`extra`: (region, stock) pairs of another family, placed and chained like the rest."""
         device_stock = device_tests.DF_STOCK
-        if release == "2.0.4":
+        if release == "2.0.8":
+            # desktop-v2.0.8 (LUBOS-4303): its own status, device and palette regions and hotkey registry.
+            status = icon_tests.SupersetSidebarStatusFilter208PatchTest("test_each_release_selects_its_own_layout")
+            regions = status.regions()
+            device, device_stock, cloud = MODULE.SIDEBAR_DEVICE_REGIONS_2_0_8, device_tests.DF_STOCK_208, b""
+            palette = list(zip(palette_tests.REGIONS_208, palette_tests.STOCK_208, strict=True))
+            hotkeys = palette_tests.HOTKEYS_208
+        elif release == "2.0.4":
             # desktop-v2.0.4 (LUBOS-4029): its own status, device and palette regions; the hotkey registry
             # is still the 2.0.0 one.
             status = icon_tests.SupersetSidebarStatusFilter204PatchTest("test_each_release_selects_its_own_layout")
@@ -504,7 +514,7 @@ class CompositionTest(unittest.TestCase):
 
     # Value: protects=the synthetic 2.x bundles really are one release each: the status filter, the palette search and the device filter all select the bundle's own patch release, so the composition tests above run on 2.0.0, 2.0.3 and 2.0.4 shapes and not on a fallback layout; fails_when=a 2.0.3 or 2.0.4 region set is planned with the regions of another 2.x release or a fixture of the wrong release is wired in; why_new=LUBOS-3874, LUBOS-4029 (2.x layouts name exact patch releases); seam=real 2.0.0, 2.0.3 and 2.0.4 fixtures
     def test_2_x_bundles_select_their_own_layouts(self):
-        for release in ("2.0.0", "2.0.3", "2.0.4"):
+        for release in ("2.0.0", "2.0.3", "2.0.4", "2.0.8"):
             with self.subTest(release=release):
                 stock = self.stock(release)
                 self.assertEqual(MODULE.status_filter_layout(stock)[0], release)
@@ -573,6 +583,9 @@ class InstalledTest(unittest.TestCase):
         sort_only = {key: options[key] for key in ("size", "hide_tray", "custom_project_icons", "keep_icon_on_hover")}
         sort_only["pinned_activity_sort"] = True
         with self.stock.open("rb") as stream:
+            # The automations header stays off on a release it has no layout for (2.0.4, 2.0.8; tests/release_flags.py).
+            with bundle_map(stream, mmap.ACCESS_READ) as data:
+                options = supported_options(MODULE, data, options)
             results = []
             for first, second in ((options, sort_only), (sort_only, options), ({**options, "pinned_activity_sort": True}, None)):
                 stream.seek(0)

@@ -20,6 +20,7 @@ import subprocess
 from types import SimpleNamespace
 
 from live_bundle import bundle_map
+from release_flags import supported_options, unsupported_flags
 from test_superset_icon_patch import MODULE, installed_stock_snapshot
 from test_superset_palette_patch import asar
 
@@ -84,7 +85,8 @@ def installed_bridges():
     """Every flag planned once on the installed stock, or None without a bundle.
 
     `.supported` is False on a release without a layout, which plans nothing here. Otherwise `.writes`
-    is the plan, `.chunks` the patched JS chunks of both bridges by path (every flag's writes in them
+    is the plan of every flag the release has a layout for (`.refused` lists the release-bound flags it has
+    none for, tests/release_flags.py; `.options` is what was planned), `.chunks` the patched JS chunks of both bridges by path (every flag's writes in them
     applied) and `.replan` both bridges' plans of those written chunks.
     """
     stock = installed_stock_snapshot()
@@ -93,7 +95,9 @@ def installed_bridges():
     with stock.open('rb') as stream, bundle_map(stream, mmap.ACCESS_READ) as data:
         if not all(has_layout(data, bridge) for bridge in LAYOUTS):
             return SimpleNamespace(supported=False)
-        writes = MODULE.plan_replacements(data, **all_flags())
+        options = supported_options(MODULE, data, all_flags())
+        refused = unsupported_flags(MODULE, data)
+        writes = MODULE.plan_replacements(data, **options)
         bridge_writes = [write for write in writes if write[3].startswith(('desktop pin sync:', 'desktop preset sync:'))]
         chunks = {}
         for path, start, size in MODULE._asar_entries(data):
@@ -106,4 +110,4 @@ def installed_bridges():
                 chunks[path] = bytes(chunk)
     written = asar(*((f'{index}-{Path(path).name}', body) for index, (path, body) in enumerate(chunks.items())))
     replan = MODULE._plan_desktop_pin_sync(written) + MODULE._plan_desktop_preset_sync(written)
-    return SimpleNamespace(supported=True, writes=writes, replan=replan, chunks=chunks)
+    return SimpleNamespace(supported=True, writes=writes, replan=replan, chunks=chunks, options=options, refused=refused)

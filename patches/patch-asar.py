@@ -37,7 +37,10 @@ LOCK_ROOT = Path.home() / ".superset" / "patch-locks"
 TRAY_ENABLED = b"function initTray() {\n  if (tray) {"
 TRAY_DISABLED = b"function initTray() {\n  if (true) {"
 
-CONTAINER_TEMPLATE = '"flex size-{} shrink-0 items-center justify-center", children: ['
+# The project row's icon container. 2.0.6 draws the same class string in the
+# import-worktrees dialog as a <span>, so the anchor carries the row's <div>
+# (identical bytes in every supported release; the write is still one digit).
+CONTAINER_TEMPLATE = 'jsxs("div", {{ className: "flex size-{} shrink-0 items-center justify-center", children: ['
 THUMBNAIL_VISIBLE_TEMPLATE = 'className: "size-{} group-hover:hidden"'
 THUMBNAIL_PINNED_TEMPLATE = 'className: "size-{} group-hover:!block"'
 CHEVRON_VISIBLE_TEMPLATE = (
@@ -1991,6 +1994,30 @@ STATUS_FILTER_REGIONS_2_0_4 = (
     _rebased(STATUS_FILTER_REGIONS_2_0_3[12], 37049, "9b3a2948a501ab806b5a0d41eedb81f6c2498c680ea2efd2ef5d812cfbfe1b77", "504b1b91f1a8fd8a49833b58592a828ec45cb2887644a88cbaf128bab39b6364"),
     STATUS_FILTER_REGIONS_2_0_3[13],
 )
+# 2.0.8: the workspace context menu wraps its menu in a fragment with the new move-workspace dialog, so
+# the menu closes one level deeper and region 5's helpers go after the dialog's
+# closing `} })`. Region 3 keeps a stable project order and gained the resume-moves
+# hook, room 12 a CSS braille spinner (AsciiSpinner keeps its name and props),
+# cloud port actions and re-keyed i18n ids, room 13 the modal error toasts, room 14
+# one i18n id; all away from the edits. The rest is byte-identical to 2.0.4.
+_SF_SEARCH_2_0_4 = STATUS_FILTER_REGIONS_2_0_4[4]
+_SF_SEARCH_CLOSE_2_0_4 = b"    ] })\n  ] });\n}\n"
+_SF_SEARCH_CLOSE_2_0_8 = b"    } })\n  ] });\n}\n"
+if _SF_SEARCH_2_0_4.edits[0][0] != _SF_SEARCH_CLOSE_2_0_4 or len(_SF_SEARCH_2_0_4.edits) != 1:
+    raise AssertionError("internal error: 2.0.4 search region edit")
+STATUS_FILTER_REGIONS_2_0_8 = (
+    *STATUS_FILTER_REGIONS_2_0_4[:2],
+    _rebased(STATUS_FILTER_REGIONS_2_0_4[2], 21516, "d54e0c2a5cf8747d6d17ba3aa57ada3bef67264f7b31111bae34d4dff491dc21", "2572700ab588b4f0dae8b63bab2eb9845b8bf2829ffac1c2bbc53b135ade5aa7"),
+    STATUS_FILTER_REGIONS_2_0_4[3],
+    _rebased(
+        _SF_SEARCH_2_0_4, 13224, "ebb7a5e12410dedacd5872dc462baac3b6348854548a15055f50c228f6842730", "7f76081c61dc29b37665767e5f2e4234bdd4d38c0d6ff172517c85731cf4bc8f",
+        edits=((_SF_SEARCH_CLOSE_2_0_8, _SF_SEARCH_CLOSE_2_0_8 + _SF_SEARCH_2_0_4.edits[0][1][len(_SF_SEARCH_CLOSE_2_0_4):]),),
+    ),
+    *STATUS_FILTER_REGIONS_2_0_4[5:11],
+    _rebased(STATUS_FILTER_REGIONS_2_0_4[11], 22423, "fb349b8cfcb05fa72c5573d3084118ffdc1e1c5eb37cc0816e5ff308a866d9cb", "f8a9107e5afde3d8fd5d08734a6be0d8ea554cf0a752a37db4c7bb8780369ce3"),
+    _rebased(STATUS_FILTER_REGIONS_2_0_4[12], 36753, "beb72748c4b35b5bfed64b57ede9cef1046ef2de10e470789175f758a69dff02", "ece027a64956c7da06d561248005ece8e51af7af3edf30796683d29f0e488f12"),
+    _rebased(STATUS_FILTER_REGIONS_2_0_4[13], 16905, "8068070c1dcb6e6adaf36e5b3b11a84b18be5429b168ef48e44d39b1a6a9ff53", "ce9ac73b5d3d0ca073cc9e607f6cbcec55007d2b1ac9d980e14c58324880ab1b"),
+)
 # (name, regions, sibling variants): every supported release layout of the filter.
 STATUS_FILTER_LAYOUTS = (
     ("1.36-1.37", STATUS_FILTER_REGIONS, STATUS_FILTER_REGION_VARIANTS),
@@ -2000,6 +2027,7 @@ STATUS_FILTER_LAYOUTS = (
     ("2.0.0", STATUS_FILTER_REGIONS_2_0, ()),
     ("2.0.3", STATUS_FILTER_REGIONS_2_0_3, ()),
     ("2.0.4", STATUS_FILTER_REGIONS_2_0_4, ()),
+    ("2.0.8", STATUS_FILTER_REGIONS_2_0_8, ()),
 )
 
 # Names the injected filter JS reads from upstream code outside the pinned
@@ -3076,6 +3104,20 @@ PALETTE_SEARCH_CHUNKS_2_0_4 = (
     (PALETTE_SEARCH_REGIONS_2_0_4[:1], *PALETTE_SEARCH_CHUNKS[0][1:]),
     (PALETTE_SEARCH_REGIONS_2_0_4[1:], *PALETTE_SEARCH_CHUNKS[1][1:]),
 )
+# 2.0.8: region 1 gained upstream's chat search results (ChatSearchResults, behind
+# the workspace-moves flag), mounted after the ranked commands; the provider slot
+# stays before them. Room 3 lost the ASCII update spinner (CSS now), room 4 two
+# i18n ids. All three re-pinned with the same edits; region 2 is byte-identical.
+PALETTE_SEARCH_REGIONS_2_0_8 = (
+    _rebased(PALETTE_SEARCH_REGIONS_2_0_4[0], 5659, "53e9238f744faa59dcfb0f1cf8e2097fc38ae307606cc3ebfe92010918e57ef3", "9d18455a1c85dd9e8040677090e5206a03065fd01520799687fa84cbdff11085"),
+    PALETTE_SEARCH_REGIONS_2_0_4[1],
+    _rebased(PALETTE_SEARCH_REGIONS_2_0_4[2], 29128, "cb60df08372d5a5a8707da1f66ff867794d5a00d7cf7324403d1ad5c554388e5", "dae27481df5bbd407deda52b393f7feb3a3b117d32427575db5aa7f16477da1d"),
+    _rebased(PALETTE_SEARCH_REGIONS_2_0_4[3], 10201, "04a2e81d4cdde4aaa78195924aca888733bc7ba10fb6223e8666b902a4340e46", "bafd5431c05b31d682374cd53873abf831b9b4e0ba53b82457078d03e3938347"),
+)
+PALETTE_SEARCH_CHUNKS_2_0_8 = (
+    (PALETTE_SEARCH_REGIONS_2_0_8[:1], *PALETTE_SEARCH_CHUNKS[0][1:]),
+    (PALETTE_SEARCH_REGIONS_2_0_8[1:], *PALETTE_SEARCH_CHUNKS[1][1:]),
+)
 # (name, regions, variants, chunks, generations): every supported release layout.
 PALETTE_SEARCH_LAYOUTS = (
     ("1.37", PALETTE_SEARCH_REGIONS, (), PALETTE_SEARCH_CHUNKS, PALETTE_SEARCH_GENERATIONS),
@@ -3119,6 +3161,13 @@ PALETTE_SEARCH_LAYOUTS = (
         {
             "stock": tuple(region.stock_sha256 for region in PALETTE_SEARCH_REGIONS_2_0_4),
             "generation 6": tuple(region.patched_sha256 for region in PALETTE_SEARCH_REGIONS_2_0_4),
+        },
+    ),
+    (
+        "2.0.8", PALETTE_SEARCH_REGIONS_2_0_8, (), PALETTE_SEARCH_CHUNKS_2_0_8,
+        {
+            "stock": tuple(region.stock_sha256 for region in PALETTE_SEARCH_REGIONS_2_0_8),
+            "generation 6": tuple(region.patched_sha256 for region in PALETTE_SEARCH_REGIONS_2_0_8),
         },
     ),
 )
@@ -4144,6 +4193,16 @@ SIDEBAR_DEVICE_REGIONS_2_0_4 = (
     ),
     *SIDEBAR_DEVICE_REGIONS_2_0_3[2:],
 )
+# 2.0.8: the data region selects only pending inserts from the transactions store
+# and shares upstream's hostQueryFn, the device-list room uses hostQueryFn too and
+# the group-filter room re-keys three i18n ids, all away from the edits; re-pinned
+# with the 2.0.4 edits (TbCloud). Regions 3 and 4 are byte-identical.
+SIDEBAR_DEVICE_REGIONS_2_0_8 = (
+    _rebased(SIDEBAR_DEVICE_REGIONS_2_0_4[0], 67664, "057889b905686f11881ccb49bf29249376c3d91d624b130388b439441dd3e170", "2aad70dd1fd3a06f576cf75c138c8f97fe8b8737eaf24bcb0db8225ecc08f331"),
+    _rebased(SIDEBAR_DEVICE_REGIONS_2_0_4[1], 32072, "b14f3d780a26c9c2e75ed622c9534d9f7ccae2249403f82cc1a7da0530a7f05b", "722890a7d388bed8431602e5ebc9d8d2c70d077f1171d7e1af808a7222980909"),
+    *SIDEBAR_DEVICE_REGIONS_2_0_4[2:4],
+    _rebased(SIDEBAR_DEVICE_REGIONS_2_0_4[4], 10957, "220009611b5e4d63fd4e0c232a679badd89f9744a961cf69449af1a56e836241", "663a1be2e85690baa27ba67e0059455d90aa92ee13006b96240f545bc6ce246f"),
+)
 # (name, stock, filtered, label) of the two anchor swaps outside the regions.
 SIDEBAR_DEVICE_SWAPS = (
     ("sidebar device filter mount", SIDEBAR_DEVICE_MOUNT, SIDEBAR_DEVICE_MOUNT_FILTER, "sidebar device filter: title-bar dropdown"),
@@ -4158,6 +4217,7 @@ SIDEBAR_DEVICE_LAYOUTS = (
     ("2.0.0", SIDEBAR_DEVICE_REGIONS_2_0, (), SIDEBAR_DEVICE_SWAPS[:1]),
     ("2.0.3", SIDEBAR_DEVICE_REGIONS_2_0_3, (), SIDEBAR_DEVICE_SWAPS[:1]),
     ("2.0.4", SIDEBAR_DEVICE_REGIONS_2_0_4, (), SIDEBAR_DEVICE_SWAPS[:1]),
+    ("2.0.8", SIDEBAR_DEVICE_REGIONS_2_0_8, (), SIDEBAR_DEVICE_SWAPS[:1]),
 )
 SIDEBAR_DEVICE_CHUNK_NAMES = (
     (
@@ -4172,7 +4232,7 @@ SIDEBAR_DEVICE_CHUNK_NAMES = (
     ),
 )
 # The cloud icon each layout's device list reads (SIDEBAR_DEVICE_HOSTS_JS_2_0_4).
-SIDEBAR_DEVICE_CLOUD_ICONS = {"2.0.4": "TbCloud"}
+SIDEBAR_DEVICE_CLOUD_ICONS = {"2.0.4": "TbCloud", "2.0.8": "TbCloud"}
 
 
 def _sidebar_device_chunk_names(layout: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -4208,14 +4268,14 @@ def _plan_sidebar_device_filter(data) -> list[tuple[int, bytes, bytes, str]]:
 
 
 
-SIDEBAR_ONE_ROW_RELEASES = ("2.0.3", "2.0.4")
+SIDEBAR_ONE_ROW_RELEASES = ("2.0.3", "2.0.4", "2.0.8")
 
 
 def _plan_sidebar_one_row(data, replacements) -> list[tuple[int, bytes, bytes, str]]:
     """Add the writes the header row still needs; the two JS pairs join a planned region rewrite when there is one."""
     layout, device_regions, *_rest = _select_layout(data, SIDEBAR_DEVICE_LAYOUTS, "sidebar device filter")
     if layout not in SIDEBAR_ONE_ROW_RELEASES:
-        raise RuntimeError(f"--sidebar-one-row needs desktop 2.0.3 or 2.0.4, this bundle is {layout}")
+        raise RuntimeError(f"--sidebar-one-row needs desktop 2.0.3, 2.0.4 or 2.0.8, this bundle is {layout}")
     search = next(region for region in status_filter_layout(data)[1] if region.label == "status filter: search")
     found = _region_chunk(data, (search, *device_regions[:1]), "sidebar one row")
     if found is not None:
@@ -4243,7 +4303,7 @@ def _plan_sidebar_one_row(data, replacements) -> list[tuple[int, bytes, bytes, s
     return planned
 
 
-# --desktop-pin-sync: exact desktop 1.39.0, 1.40.0, 2.0.3 and 2.0.4 regions (DESKTOP_PIN_LAYOUTS); renderer exports only, no storage writes.
+# --desktop-pin-sync: exact desktop 1.39.0, 1.40.0, 2.0.3, 2.0.4 and 2.0.8 regions (DESKTOP_PIN_LAYOUTS); renderer exports only, no storage writes.
 DESKTOP_PIN_RENDERER_JS = b'useCollections.dps = function(org, connection) {\n  const {v2WorkspaceLocalState: collection} = useCollections();\n  reactExports.useEffect(() => {\n    if (!org || !connection?.port || !connection.secret) return;\n    let stopped = false, timer;\n    const publish = async () => {\n      try {\n        if (collection.status !== "ready") return;\n        const pins = [];\n        for (const row of collection.state.values()) {\n          if (!row || typeof row.workspaceId !== "string" || !row.sidebarState) throw Error("Invalid desktop pins");\n          const at = row.sidebarState.pinnedAt;\n          if (at != null) {\n            if (!Number.isSafeInteger(at) || at < 0) throw Error("Invalid pin time");\n            if (!row.sidebarState.isHidden) pins.push({workspaceId:row.workspaceId,pinnedAt:at});\n          }\n        }\n        await getHostServiceClientByUrl(`http://127.0.0.1:${connection.port}`).desktopPins.publish.mutate({version:1,organizationId:org,observedAt:Date.now(),pins},{signal:AbortSignal.timeout(2000)});\n      } catch {} finally {\n        if (!stopped) timer = setTimeout(publish, 1000);\n      }\n    };\n    void publish();\n    return () => {stopped = true;clearTimeout(timer);};\n  }, [org,connection?.port,connection?.secret,collection]);\n};\n'
 DESKTOP_PIN_HOST_JS = b'const dpsWaiters = new Map();\nfunction dpsRouter() {\n  const fail = (code) => {throw new gitHookTolerance.TRPCError({code,message:"Desktop pins unavailable"});};\n  return router({\n    publish: protectedProcedure.input(value => value).mutation(({ctx,input}) => {\n      if (ctx.isLocalCaller !== true) fail("FORBIDDEN");\n      if (!input || input.version !== 1 || input.organizationId !== ctx.organizationId || !Number.isSafeInteger(input.observedAt) || Math.abs(Date.now()-input.observedAt)>5000 || !Array.isArray(input.pins) || input.pins.length>5000) fail("BAD_REQUEST");\n      const ids = new Set();\n      for (const pin of input.pins) {\n        if (!pin || typeof pin.workspaceId!=="string" || !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(pin.workspaceId) || ids.has(pin.workspaceId) || !Number.isSafeInteger(pin.pinnedAt) || pin.pinnedAt<0) fail("BAD_REQUEST");\n        ids.add(pin.workspaceId);\n      }\n      const snapshot = {version:1,organizationId:ctx.organizationId,sourceHostId:hostServiceUtils.getHostId(),observedAt:input.observedAt,pins:input.pins.map(p=>({workspaceId:p.workspaceId,pinnedAt:p.pinnedAt}))};\n      for (const pending of dpsWaiters.get(ctx.organizationId) ?? []) {\n        if (input.observedAt >= pending.since) pending.resolve(snapshot);\n      }\n      return null;\n    }),\n    list: queryProcedure.query(({ctx}) => new Promise((resolve,reject) => {\n      let pending = dpsWaiters.get(ctx.organizationId);\n      if (!pending) dpsWaiters.set(ctx.organizationId,pending=new Set());\n      if (pending.size>=64) {reject(new gitHookTolerance.TRPCError({code:"TOO_MANY_REQUESTS"}));return;}\n      const finish = () => {clearTimeout(timer);pending.delete(waiter);if (!pending.size) dpsWaiters.delete(ctx.organizationId);};\n      const waiter = {since:Date.now(),resolve: snapshot => {finish();resolve(snapshot);}};\n      const timer = setTimeout(() => {finish();reject(new gitHookTolerance.TRPCError({code:"PRECONDITION_FAILED",message:"Desktop pins unavailable"}));},3500);\n      pending.add(waiter);\n    }))\n  });\n}\n'
 DESKTOP_PIN_REGIONS = (
@@ -4343,12 +4403,24 @@ DESKTOP_PIN_REGIONS_2_0_4 = (
         "d6fd4cc94b0b3ee66fe5f71fb89a6f9551bcca0bc4e22dc225e63c9800cf0573",
     ),
 )
+# 2.0.8: the renderer helper and provider ranges are byte-identical to 2.0.4. The host router range
+# reads deleted projects through getProjectIncludingDeleted and the appRouter gained `teleport`,
+# away from the edit; re-pinned with the same edit.
+DESKTOP_PIN_REGIONS_2_0_8 = (
+    *DESKTOP_PIN_REGIONS_2_0_4[:2],
+    _rebased(
+        DESKTOP_PIN_REGIONS_2_0_4[2], 67556,
+        "dba4fe2c3723433df39420490e7265fbee98a7b98db7710cd9d9b4e7e10c6cf9",
+        "2acf6905ba8f534e65f5660061ac482ac181f1fd310d9265528b7fc81e07ecf7",
+    ),
+)
 # (release, regions, variants): the provider chunk's release banner must name the selected release.
 DESKTOP_PIN_LAYOUTS = (
     ("1.39.0", DESKTOP_PIN_REGIONS, ()),
     ("1.40.0", DESKTOP_PIN_REGIONS_1_40, ()),
     ("2.0.3", DESKTOP_PIN_REGIONS_2_0_3, ()),
     ("2.0.4", DESKTOP_PIN_REGIONS_2_0_4, ()),
+    ("2.0.8", DESKTOP_PIN_REGIONS_2_0_8, ()),
 )
 
 
@@ -4377,7 +4449,7 @@ def _plan_desktop_pin_sync(data):
     return [write for region in regions for write in _plan_region_rewrite(data, region)]
 
 
-# --desktop-preset-sync: exact desktop 1.39.0, 1.40.0, 2.0.3 and 2.0.4 regions; the renderer exports the
+# --desktop-preset-sync: exact desktop 1.39.0, 1.40.0, 2.0.3, 2.0.4 and 2.0.8 regions; the renderer exports the
 # terminal presets (V2 presets bar shortcuts) read-only, the host serves them.
 DESKTOP_PRESET_RENDERER_JS = b'''function dtsUse(org, collections) {
   reactExports.useEffect(() => {
@@ -4587,6 +4659,19 @@ DESKTOP_PRESET_REGIONS_2_0_4 = (
         "41ef1df6669ada0b764f036ec3aa632e429618528c0444d41fb0f7fd333ec333",
     ),
 )
+# 2.0.8: the renderer regions and the host router range are byte-identical to 2.0.4. createApp
+# builds the app with `Hono2`, checks chat liveness through the chat runtime and starts a
+# chat sync, all away from the edit; the host mount is re-pinned on the same end. The appRouter
+# literal gained `teleport: teleportRouter` and still has no lazy entries.
+DESKTOP_PRESET_REGIONS_2_0_8 = (
+    *DESKTOP_PRESET_REGIONS_2_0_4[:3],
+    _rebased(
+        DESKTOP_PRESET_REGIONS_2_0_4[3], 15422,
+        "fa3ae7166a5e9edae50f7273034788f0c25986bdc8204782b90926fade342875",
+        "d3f2689c83b247f876cd3a3cdfa5b4eab369afdbb5f6922afc761a4a794b5aab",
+    ),
+)
+DESKTOP_PRESET_APP_ROUTER_SHA256_2_0_8 = "fa45104f3b2c34caa5384bf38a25b1c1cc97ac76f02b53c8c3335cb7d254f3ca"
 # (release, regions, variants, appRouter literal digest); both chunks' release banners must name the release.
 DESKTOP_PRESET_LAYOUTS = (
     ("1.39.0", DESKTOP_PRESET_REGIONS, (), DESKTOP_PRESET_APP_ROUTER_SHA256),
@@ -4594,6 +4679,7 @@ DESKTOP_PRESET_LAYOUTS = (
     ("2.0.3", DESKTOP_PRESET_REGIONS_2_0_3, (), DESKTOP_PRESET_APP_ROUTER_SHA256_2_0_3),
     # The appRouter literal is byte-identical to 2.0.3.
     ("2.0.4", DESKTOP_PRESET_REGIONS_2_0_4, (), DESKTOP_PRESET_APP_ROUTER_SHA256_2_0_3),
+    ("2.0.8", DESKTOP_PRESET_REGIONS_2_0_8, (), DESKTOP_PRESET_APP_ROUTER_SHA256_2_0_8),
 )
 
 
@@ -5039,6 +5125,16 @@ PROJECT_ORDER_REGIONS_2_0_4 = (
         end=b"function SidebarCardSlot({\n",
     ),
 )
+# 2.0.8: the hook region mounts upstream's resume-moves hook, the store room's
+# payment card can be dismissed and SidebarCard draws a media layout (3,016 B
+# more before SidebarCardSlot), and the pin menu room passes the workspace move
+# directions to the context menu; all re-pinned with the same edits. The sort
+# menu region and all three swaps are the 2.0.4 shapes.
+PROJECT_ORDER_REGIONS_2_0_8 = (
+    _rebased(PROJECT_ORDER_REGIONS_2_0_4[0], 8828, "b50a97ebfcc4f45c9601d09ec93f0a54bf6a217e9cf38e752426ff83e70bfb35", "b8203afc766508827cdcf5d1d8757f1fc71ee4d1d720163c467ae8fcb4f08bcc"),
+    _rebased(PROJECT_ORDER_REGIONS_2_0_4[1], 14427, "66cd3ab6c7b685687a41026ceff8e57da9d6a4e8ae276ef15c89310da0cfcdd1", "c5661d3b7e3f31f78b9ff74ccd2f7056e70c44137f5d10358000ec4eeee09ad5"),
+)
+PIN_PROJECTS_REGIONS_2_0_8 = (_rebased(PIN_PROJECTS_REGIONS_1_40[0], 9661, "8ec8521ba12fca5dfc1e5bffc931b116719582d97e7301b300bd4dc39038b4ec", "9985943b8596c8ef75714e52ba502e45d09a4fe268cecf3c5cf7e4df164e4845"),)
 # (name, (core, sort, pin) regions, hook variants, (core, sort, pin) swaps): every
 # supported release layout. _select_layout picks it by the regions; the swaps
 # have to be that release's shapes, so a mixed bundle fails closed.
@@ -5066,6 +5162,11 @@ PROJECT_ORDER_LAYOUTS = (
     (
         "2.0.4", (*PROJECT_ORDER_REGIONS_2_0_4, *SORT_PROJECTS_REGIONS_2_0, *PIN_PROJECTS_REGIONS_1_40), (),
         (PROJECT_ORDER_REGIONS_2_0_4, SORT_PROJECTS_REGIONS_2_0, PIN_PROJECTS_REGIONS_1_40),
+        (PROJECT_ORDER_SWAPS_1_39, SORT_PROJECTS_SWAPS_1_39, PIN_PROJECTS_SWAPS_1_39),
+    ),
+    (
+        "2.0.8", (*PROJECT_ORDER_REGIONS_2_0_8, *SORT_PROJECTS_REGIONS_2_0, *PIN_PROJECTS_REGIONS_2_0_8), (),
+        (PROJECT_ORDER_REGIONS_2_0_8, SORT_PROJECTS_REGIONS_2_0, PIN_PROJECTS_REGIONS_2_0_8),
         (PROJECT_ORDER_SWAPS_1_39, SORT_PROJECTS_SWAPS_1_39, PIN_PROJECTS_SWAPS_1_39),
     ),
 )
@@ -5315,7 +5416,7 @@ RELEASE_PROBES = (
 # without one the family is unsupported and its own flag refuses it.
 RELEASE_BANNER_PROBES = ("desktop pin sync", "desktop preset sync")
 # The releases of each PINNED_SORT_RELEASES entry.
-PINNED_SORT_RELEASE_NAMES = (("1.37", "1.38", "1.40", "2.0.0", "2.0.3", "2.0.4"), ("1.39",))
+PINNED_SORT_RELEASE_NAMES = (("1.37", "1.38", "1.40", "2.0.0", "2.0.3", "2.0.4", "2.0.8"), ("1.39",))
 
 
 def _probe_releases(data) -> None:
@@ -6145,12 +6246,12 @@ def main(argv=None):
     parser.add_argument(
         "--sidebar-one-row",
         action="store_true",
-        help="desktop 2.0.3 or 2.0.4, with --compact-sidebar, --hide-nav-buttons, --sidebar-status-filter and --sidebar-device-filter: "
+        help="desktop 2.0.3, 2.0.4 or 2.0.8, with --compact-sidebar, --hide-nav-buttons, --sidebar-status-filter and --sidebar-device-filter: "
         "the header is one row from the arrows to the icons (no sidebar toggle, Cmd+B stays) and the device filter "
         "is an icon button in the search row",
     )
-    parser.add_argument("--desktop-pin-sync", action="store_true", help="export desktop workspace pins to mobile over the authenticated host relay (1.39.0, 1.40.0, 2.0.3, 2.0.4)")
-    parser.add_argument("--desktop-preset-sync", action="store_true", help="export the desktop terminal presets (presets bar shortcuts) to mobile over the authenticated host relay (1.39.0, 1.40.0, 2.0.3, 2.0.4)")
+    parser.add_argument("--desktop-pin-sync", action="store_true", help="export desktop workspace pins to mobile over the authenticated host relay (1.39.0, 1.40.0, 2.0.3, 2.0.4, 2.0.8)")
+    parser.add_argument("--desktop-preset-sync", action="store_true", help="export the desktop terminal presets (presets bar shortcuts) to mobile over the authenticated host relay (1.39.0, 1.40.0, 2.0.3, 2.0.4, 2.0.8)")
     parser.add_argument(
         "--pinned-activity-sort",
         action="store_true",

@@ -1043,6 +1043,135 @@ class PaletteSearch204Test(unittest.TestCase):
             patch(half)
 
 
+# desktop-v2.0.8 (LUBOS-4303): regions 1 (CommandListView ends with the chat search results behind
+# FEATURE_FLAGS.WORKSPACE_MOVES), 3 (the ASCII spinner is gone) and 4 (i18n ids) are re-pinned, cut from the
+# real 2.0.8 bundle; region 2 is the 2.0.4 object. The hotkey registry adds PREV_RIGHT_SIDEBAR_TAB,
+# NEXT_RIGHT_SIDEBAR_TAB and TOGGLE_RIGHT_SIDEBAR_FOCUS (superset-2.0.8-hotkeys-registry.js, cut from the real
+# useRecordHotkeys chunk); the Cmd+K swap anchors are unchanged.
+REGIONS_208 = MODULE.PALETTE_SEARCH_REGIONS_2_0_8
+STOCK_208 = [(FIXTURES / "superset-2.0.8-palette-r1.js").read_bytes(), STOCK_204[1],
+             *((FIXTURES / f"superset-2.0.8-palette-r{n}.js").read_bytes() for n in (3, 4))]
+PATCHED_208 = [(FIXTURES / "superset-2.0.8-palette-r1.patched.js").read_bytes(), PATCHED_204[1],
+               *((FIXTURES / f"superset-2.0.8-palette-r{n}.patched.js").read_bytes() for n in (3, 4))]
+HOTKEYS_208 = (FIXTURES / "superset-2.0.8-hotkeys-registry.js").read_bytes()
+HOTKEYS_208_PATCHED = (FIXTURES / "superset-2.0.8-hotkeys-registry.patched.js").read_bytes()
+
+
+def layout_chunk_208(regions=None, names=LAYOUT_NAMES):
+    regions = STOCK_208[1:] if regions is None else regions
+    return names + b"".join(r + spec.end + tail for spec, r, tail in zip(REGIONS_208[1:], regions, TAILS_138, strict=True))
+
+
+def bundle_208(layout=None, menu=None, hotkeys=HOTKEYS_208):
+    return asar(
+        ("index.js", BASE),
+        ("AppMenuButton-q3s0wF7I.js", menu_chunk(region=STOCK_208[0]) if menu is None else menu),
+        ("layout-LF5A5mOm.js", layout_chunk_208() if layout is None else layout),
+        ("useRecordHotkeys-DDdsqo3n.js", hotkeys),
+    )
+
+
+class PaletteSearch208Test(unittest.TestCase):
+    """The 2.0.8 layout: the same injected JS, regions 1, 3 and 4 re-pinned on the 2.0.4 region 2 (LUBOS-4303)."""
+
+    # Value: protects=the 2.0.8 rewrites are exactly the reviewed fixtures, keep their length, re-run to nothing and parse, carry the 2.0.4 edits, and region 2 is the 2.0.4 object; fails_when=an edit, the injected JS or a 2.0.8 digest changes without its fixture, a re-pinned region inherits a 2.0.4 digest or generation, or region 2 drifted on 2.0.8; why_new=LUBOS-4303; seam=real 2.0.8 bytes
+    def test_real_regions_are_pinned_idempotent_and_parseable(self):
+        for n, (region, old) in enumerate(zip(REGIONS_208, REGIONS_204, strict=True), 1):
+            with self.subTest(region=n):
+                self.assertEqual(region is old, n == 2)
+                self.assertEqual((region.label, region.start, region.end, region.edits), (old.label, old.start, old.end, old.edits))
+                if n != 2:
+                    self.assertNotEqual(region.stock_sha256, old.stock_sha256)
+        # Region 4 keeps the 2.0.4 length (same-length i18n ids): only its digest tells the releases apart.
+        self.assertEqual([r.length == o.length for r, o in zip(REGIONS_208, REGIONS_204)], [False, True, False, True])
+        for region, stock, patched in zip(REGIONS_208, STOCK_208, PATCHED_208, strict=True):
+            with self.subTest(region=region.label):
+                self.assertEqual(len(stock), region.length)
+                self.assertEqual(hashlib.sha256(stock).hexdigest(), region.stock_sha256)
+                self.assertEqual(hashlib.sha256(patched).hexdigest(), region.patched_sha256)
+                self.assertEqual(MODULE._plan_region_rewrite(stock + region.end, region), [(0, stock, patched, region.label)])
+                self.assertEqual(MODULE._plan_region_rewrite(patched + region.end, region), [])
+                self.assertEqual((region.legacy_sha256, region.upgrades), ((), ()))
+                node_check(self, patched)
+
+    # Value: protects=the re-pinned 2.0.8 rooms only lose no-op comments and gain the injected JS once; in region 1 the paletteSearch slot still lands above the ranked commands and the new chat search results stay last; fails_when=a 2.0.8 edit anchor matches twice, the slot moves below the chat results, or the rebase rewrites upstream code; why_new=LUBOS-4303; seam=real 2.0.8 bytes
+    def test_re_pinned_rooms_only_lose_comments(self):
+        for n in (1, 3, 4):
+            region, stock, patched = REGIONS_208[n - 1], STOCK_208[n - 1], PATCHED_208[n - 1]
+            with self.subTest(region=n):
+                expected = stock
+                for comment in MODULE.JS_NOOP_COMMENTS:
+                    expected = expected.replace(comment, b"")
+                for old, new in region.edits:
+                    self.assertEqual(expected.count(old), 1, old[:60])
+                    expected = expected.replace(old, new)
+                self.assertEqual(patched.rstrip(b" "), expected.rstrip(b" "))
+                self.assertEqual(len(patched), len(stock))
+        r1 = PATCHED_208[0]
+        slot = r1.index(b"getProviders().map((provider) => provider.paletteSearch && ")
+        self.assertLess(slot, r1.index(b"ranked.map((section) => "))
+        self.assertLess(r1.index(b"ranked.map((section) => "), r1.index(b"chatSearchEnabled && jsxRuntimeExports.jsx(ChatSearchResults, { query })"))
+
+    # Value: protects=the Cmd+K swap is the same two mac edits on the 2.0.8 registry, and the three new 2.0.8 entries bind none of the chords the palette swap or the status filter hotkeys use; fails_when=2.0.8 binds Cmd+K, Cmd+Shift+K, Cmd+I, Cmd+Shift+E, Cmd+Shift+W, Cmd+Shift+I or Cmd+Option+W in a new entry, or the swap anchors drift; why_new=LUBOS-4303 (2.0.8 adds three registry entries); seam=real 2.0.8 registry
+    def test_cmd_k_swap_on_the_2_0_8_registry(self):
+        new_entries = (b"  PREV_RIGHT_SIDEBAR_TAB: {\n", b"  NEXT_RIGHT_SIDEBAR_TAB: {\n", b"  TOGGLE_RIGHT_SIDEBAR_FOCUS: {\n")
+        for entry in new_entries:
+            self.assertEqual(HOTKEYS_208.count(entry), 1, entry)
+            self.assertNotIn(entry, HOTKEYS_200)
+            start = HOTKEYS_208.index(entry)
+            body = HOTKEYS_208[start:HOTKEYS_208.index(b"\n  },\n", start)]
+            for chord in (b"meta+k", b"meta+shift+k", b"meta+i", b"meta+shift+e", b"meta+shift+w", b"meta+shift+i", b"meta+alt+w"):
+                self.assertNotIn(b'"' + chord + b'"', body, (entry, chord))
+        swapped = bytearray(HOTKEYS_208)
+        for offset, old, new, _label in MODULE._plan_command_palette_cmd_k(HOTKEYS_208):
+            swapped[offset : offset + len(old)] = new
+        self.assertEqual(bytes(swapped), HOTKEYS_208_PATCHED)
+        self.assertEqual(MODULE._plan_command_palette_cmd_k(HOTKEYS_208_PATCHED), [])
+        node_check(self, HOTKEYS_208_PATCHED)
+
+    # Value: protects=the 2.0.8 bundle applies all four writes plus the Cmd+K swap, re-runs to nothing and reverts byte-identically, and 2.0.4 and 2.0.8 bundles each pick their own layout; fails_when=the 2.0.8 layout is not selected, a 2.0.4 bundle is planned with 2.0.8 regions, or revert does not restore; why_new=LUBOS-4303; seam=temp ASAR
+    def test_apply_rerun_and_revert(self):
+        original = bundle_208()
+        pick = lambda data: MODULE._select_layout(data, MODULE.PALETTE_SEARCH_LAYOUTS, "command palette")[0]
+        self.assertEqual(pick(original), "2.0.8")
+        self.assertEqual(pick(bundle_204()), "2.0.4")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target, backups = root / "app.asar", root / "backups"
+            target.write_bytes(original)
+            options = dict(size=6, hide_tray=False, custom_project_icons=False, keep_icon_on_hover=False,
+                           command_palette_cmd_k=True, command_palette_workspace_search=True)
+            _backup, changes = MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options)
+            self.assertEqual(sorted(changes), sorted([r.label for r in REGIONS_208] + SWAP_LABELS))
+            patched = target.read_bytes()
+            self.assertEqual(len(patched), len(original))
+            for region, new in zip(REGIONS_208, PATCHED_208):
+                self.assertEqual(patched.count(new), 1, region.label)
+            self.assertEqual(patched.count(HOTKEYS_208_PATCHED), 1)
+            self.assertEqual(pick(patched), "2.0.8")
+            self.assertEqual(MODULE.patch_file(target, backups, acknowledge_invalid_signature=False, **options), (None, []))
+            MODULE.revert(target, backups)
+            self.assertEqual(target.read_bytes(), original)
+
+    # Value: protects=a 2.0.8 bundle holding a 2.0.4 region 1, 3 or 4 (stock or patched), or half-patched 2.0.8 regions, fails closed before a write; fails_when=layout selection falls back per region, or a partial 2.0.8 state is accepted; why_new=REBASE.md mixed-release rule (LUBOS-4303); seam=real 2.0.4 / 2.0.8 bytes
+    def test_mixed_release_or_generation_fails_closed(self):
+        with self.assertRaisesRegex(RuntimeError, "command palette"):
+            patch(bundle_208(menu=menu_chunk(region=STOCK_204[0])))
+        with self.assertRaisesRegex(RuntimeError, "command palette"):
+            patch(bundle_204(layout=layout_chunk_204([STOCK_204[1], STOCK_208[2], STOCK_204[3]])))
+        for n in (3, 4):
+            for older in (STOCK_204, PATCHED_204):
+                with self.subTest(old_region=n, patched=older is PATCHED_204):
+                    regions = list(STOCK_208[1:])
+                    regions[n - 2] = older[n - 1]
+                    with self.assertRaisesRegex(RuntimeError, "command palette"):
+                        patch(bundle_208(layout=layout_chunk_208(regions)))
+        half = bundle_208(layout=layout_chunk_208([STOCK_208[1], PATCHED_208[2], STOCK_208[3]]))
+        with self.assertRaisesRegex(RuntimeError, "mix generations"):
+            patch(half)
+        self.assertEqual(patch(half, search=False)[1], SWAP_LABELS)
+
+
 @live_host_only("anchors, names and chunk syntax are checked against the Superset.app bundle installed on this host")
 class InstalledPaletteTest(unittest.TestCase):
     """The installed release still has the pinned stock bytes, and the patched chunks parse."""

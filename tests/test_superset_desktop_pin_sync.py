@@ -9,16 +9,17 @@ from test_superset_icon_patch import MODULE, installed_stock_snapshot, node_chec
 from desktop_bridges import has_layout, installed_bridges, all_flags, run_harness
 from live_host import live_host_only
 from live_bundle import bundle_map
+from release_flags import supported_options
 
 FIXTURES = Path(__file__).parent / 'fixtures'
 FILES = ['index.js', 'renderer.js', 'host-service.js']
 
 
-RELEASES = ('1.39.0', '1.40.0', '2.0.3', '2.0.4')
+RELEASES = ('1.39.0', '1.40.0', '2.0.3', '2.0.4', '2.0.8')
 
 
 def pin_stock(file, release):
-    """The newest cut of a pin region at or before the release (1.40.0, 2.0.3 and 2.0.4 re-cut what changed)."""
+    """The newest cut of a pin region at or before the release (1.40.0, 2.0.3, 2.0.4 and 2.0.8 re-cut what changed)."""
     for candidate in reversed(RELEASES[:RELEASES.index(release) + 1]):
         path = FIXTURES / f'superset-{candidate}-desktop-pins-{file}'
         if path.exists():
@@ -32,6 +33,7 @@ class RegionTest(unittest.TestCase):
         cases += [(region, '1.40.0', file) for region, file in zip(MODULE.DESKTOP_PIN_REGIONS_1_40, FILES)]
         cases += [(region, '2.0.3', file) for region, file in zip(MODULE.DESKTOP_PIN_REGIONS_2_0_3, FILES)]
         cases += [(region, '2.0.4', file) for region, file in zip(MODULE.DESKTOP_PIN_REGIONS_2_0_4, FILES)]
+        cases += [(region, '2.0.8', file) for region, file in zip(MODULE.DESKTOP_PIN_REGIONS_2_0_8, FILES)]
         for region, release, file in cases:
             stock = pin_stock(file, release)
             self.assertEqual(hashlib.sha256(stock).hexdigest(), region.stock_sha256)
@@ -72,6 +74,18 @@ class RegionTest(unittest.TestCase):
         run_harness(self, 'pin', chunks)
 
 
+    # Value: protects=the code the 2.0.8 rewrite leaves in the real 2.0.8 region bytes serves publish then list, refuses a relayed publish and errors on a stopped renderer, and both call sites survive; the renderer regions are still the 2.0.3 objects (their 2.0.8 bytes are the 2.0.3 cuts) and only the host router is re-pinned again, with the 2.0.3 edits; fails_when=the 2.0.8 re-pin changes the bridge code or the renderer regions drift; why_new=LUBOS-4303 (acceptance: behavior on patched 2.0.8 bytes); seam=real 2.0.8 bytes with the patched regions cut from them
+    def test_patched_2_0_8_bytes_behave(self):
+        regions, earlier = MODULE.DESKTOP_PIN_REGIONS_2_0_8, MODULE.DESKTOP_PIN_REGIONS_2_0_4
+        self.assertEqual([region is old for region, old in zip(regions, earlier, strict=True)], [True, True, False])
+        self.assertEqual((regions[2].label, regions[2].start, regions[2].end, regions[2].edits),
+                         (earlier[2].label, earlier[2].start, earlier[2].end, earlier[2].edits))
+        self.assertNotEqual(regions[2].stock_sha256, earlier[2].stock_sha256)
+        chunks = [MODULE._plan_region_rewrite(pin_stock(file, '2.0.8') + region.end, region)[0][2]
+                  for region, file in zip(regions, FILES, strict=True)]
+        run_harness(self, 'pin', chunks)
+
+
 @live_host_only('desktop pin sync touches three installed chunks')
 class InstalledTest(unittest.TestCase):
     def test_all_flags_compose_and_patched_chunks_parse(self):
@@ -80,8 +94,9 @@ class InstalledTest(unittest.TestCase):
             self.skipTest('no installed bundle')
         if not bridges.supported:
             # A release without a layout (2.0.2): the flag refuses before a write, every other flag plans.
-            stock, options = installed_stock_snapshot(), all_flags()
+            stock = installed_stock_snapshot()
             with stock.open('rb') as f, bundle_map(f, mmap.ACCESS_COPY) as data:
+                options = supported_options(MODULE, data, all_flags())
                 self.assertFalse(has_layout(data, 'pin'))
                 with self.assertRaisesRegex(RuntimeError, 'desktop pin sync: unsupported desktop version'):
                     MODULE.plan_replacements(data, **(options | {'desktop_preset_sync': False}))
