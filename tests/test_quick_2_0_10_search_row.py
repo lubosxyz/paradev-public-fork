@@ -124,6 +124,12 @@ def test_patched_layout_shape(patched):
     for shape in R.STATUS_CHIPS_ROW_ALTS:
         assert body.count(shape) == 1
     assert R.CHIPS_C + R.SEARCH_C not in body and R.CHIPS_S + R.SEARCH_S not in body
+    # PINNED and SESSIONS hide at their final return; the hooks sit at the top
+    assert b"if (!ssfV) return null;" not in body
+    assert b"\treturn ssfV ? t15 : null;\n}\nfunction _temp$32(s) {\n" in body
+    assert b'\treturn !ssfV ? null : (0, import_jsx_runtime.jsxs)("div", {\n\t\tclassName: "mt-3 pb-1 first:mt-0",\n' in body
+    # a project the search row keeps (a selected row) passes status-chips' guard
+    assert b"\tif (t0.ssfKeep) return t16;\n" + R.PROJECT_GUARD in body
     # PROJECTS header: label kept, no filter input, no device icon
     assert b"children: [t10, t33] /* sidebar-search-row: t9 */" in body
     assert R.SORT_MENU_ROW in body and b"jsx)(SdfDevices, {}), (0, import_jsx_runtime.jsx)(DashboardSidebarProjectsSortMenu" not in body
@@ -192,6 +198,33 @@ def test_upgrade_adds_the_row_to_a_bundle_patched_without_it(copy, patched):
     assert b"SsfSearch" not in layout(asar.read_bytes())
     code, out, err = run_cli(asar, backups)
     assert code == 0, err
+    assert asar.read_bytes() == patched[0]
+
+
+def test_upgrade_from_the_v1_module_code(copy, patched):
+    """A bundle with v1's module code and mid-component guards reaches the bytes of a run from stock."""
+    asar, backups = copy
+    code, _, err = run_cli(asar, backups)
+    assert code == 0, err
+    data = bytearray(asar.read_bytes())
+    for path, off, size in Q.asar_files(bytes(data)):
+        if path == LAYOUT_PATH:
+            body = bytes(data[off:off + size]).rstrip(b" ")
+            v2 = [(R.SSR_JS, R.SSR_JS_V1),
+                  (b"\t/* sidebar-search-row: PINNED hides at its final return */\n", b"\tif (!ssfV) return null;\n"),
+                  (b"\treturn ssfV ? t15 : null;\n", b"\treturn t15;\n"),
+                  (R.SESSIONS_DROP + R.SESSIONS_RAIL, R.SESSIONS_DROP + b"\tif (!ssfV) return null;\n" + R.SESSIONS_RAIL),
+                  (b'\treturn !ssfV ? null : (0, import_jsx_runtime.jsxs)("div", {\n', b'\treturn (0, import_jsx_runtime.jsxs)("div", {\n'),
+                  (b"\tif (t0.ssfKeep) return t16;\n", b"")]
+            for new, old in v2:
+                assert body.count(new) == 1, new[:60]
+                body = body.replace(new, old)
+            assert len(body) <= size
+            data[off:off + size] = body + b" " * (size - len(body))
+    asar.write_bytes(bytes(data))
+    code, out, err = run_cli(asar, backups)
+    assert code == 0, err
+    assert "search row: PINNED guard at the final return (v1 guard out)" in out
     assert asar.read_bytes() == patched[0]
 
 

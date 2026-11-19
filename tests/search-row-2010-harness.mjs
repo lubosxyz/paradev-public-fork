@@ -204,7 +204,23 @@ assert.equal(m.ssfUseGroup([b1], "B", false), 0);
 assert.equal(m.ssfUseGroup([b1], "B", true), 1); // icon rail ignores the filter
 selected = new Set(["b1"]);
 assert.equal(m.ssfUseGroup([b1], "B", false), 2); // a selected row keeps its group
+// ... and its project: status-chips' project guard alone would hide B, the search row keeps it
+const keptB = m.ssrUseProject({
+	project: B,
+	isSidebarCollapsed: false,
+	onToggleCollapse: toggleProject,
+});
+assert.equal(keptB.ssfKeep, true);
+assert.equal(m.ssfUseProject(keptB.project, false)[0], true);
 selected = new Set();
+assert.equal(
+	m.ssrUseProject({
+		project: B,
+		isSidebarCollapsed: false,
+		onToggleCollapse: toggleProject,
+	}).ssfKeep,
+	undefined,
+);
 m.ssfToggle(4, false); // + Review: a1
 const [, projOpen, flip] = m.ssfUseFold(A, [a1, a2], "A", false, toggleProject);
 assert.equal(projOpen.isCollapsed, false);

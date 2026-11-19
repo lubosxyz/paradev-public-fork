@@ -35,6 +35,10 @@ scope and every guard is a useSyncExternalStore hook):
     of status-chips' ssfUseProject (which forces a project with a match open):
     a collapsed override copy is registered in its ssfOpenC cache, so that
     hook returns it as is.
+  * Visibility follows ssfUseGroup everywhere: a selected workspace keeps its
+    group (and status-chips' project guard yields to `ssfKeep`, which the
+    search row sets on a project it keeps). PINNED and SESSIONS call the hook at
+    the top and hide at their final return.
 
 Byte rules: SSF_JS is untouched and the module code goes right before
 DashboardSidebar (after SSF_JS and DashboardSidebarContent). The row lands
@@ -53,7 +57,9 @@ LAYOUT = b"var DashboardSidebarContent = (0, import_react.memo)(function Dashboa
 SIDEBAR = b"var DashboardSidebar = (0, import_react.memo)(function DashboardSidebar(props) {"
 
 # Module code, inserted right before DashboardSidebar (after SSF_JS and DashboardSidebarContent).
-SSR_JS = b'''/* quick-ui-patch: sidebar search row (status filter v5) */
+# SSR_JS_V1: the module code of the first two commits (8627ed0553, e4243738d3), kept
+# so an upgrade replaces it instead of adding a second copy.
+SSR_JS_V1 = b'''/* quick-ui-patch: sidebar search row (status filter v5) */
 let ssfQ = "", ssfHide = new Set(), ssrQuery = "", ssrSetQ = null, ssrF = null;
 const ssfShut = new Set();
 ssfSub(() => {
@@ -174,6 +180,13 @@ function SsfSearch() {
 }
 '''
 
+# v2: a project kept visible by the search row's guard (a selected row, the
+# search) tells status-chips' project guard so through `ssfKeep`.
+SSR_JS = SSR_JS_V1.replace(
+    b"\treturn { ...props, project: p, onToggleCollapse: toggle };\n",
+    b"\treturn { ...props, project: p, onToggleCollapse: toggle, ssfKeep: true };\n")
+assert SSR_JS != SSR_JS_V1
+
 SSR_NAMES = (
     b"ssfMask", b"ssfEmit", b"ssfSub", b"ssfHit", b"ssfUseStore", b"ssfCollapsed", b"ssfOpenC", b"SsfChips",
     b"DashboardSidebarSelectionContext", b"useSidebarSectionsCollapseStore", b"DashboardSidebarProjectsFilterInput",
@@ -199,10 +212,18 @@ FADE = b"\t\t\t\t(0, import_jsx_runtime.jsxs)(OverflowFadeContainer, {\n"
 # The shapes status-chips' two row edits list as alts in quick-ui-patch.py.
 STATUS_CHIPS_ROW_ALTS = (HEADER_C + SEARCH_C + CHIPS_C, HEADER_S + SEARCH_S + CHIPS_S)
 
+PINNED_PAGES = b"\tconst showsPinnedPages = isDraggingWorkspace ? pickup.hasPinnedPages : hasPinnedPages;\n"
+PINNED_RAIL = b"\tif (isCollapsed) {\n\t\tif (pinnedWorkspaces.length === 0 && !hasPinnedPages) return null;\n"
+SESSIONS_HOOK = b'\tconst ssfV = ssfUseGroup(sessionWorkspaces, "sessions", isCollapsed);\n'
+SESSIONS_DROP = b'\tconst collapsedDropZoneEligible = !isCollapsed && isSectionCollapsed && sessionItems.length === 0 && activeWorkspaceHome === "sessions";\n'
+SESSIONS_RAIL = b"\tif (isCollapsed) {\n\t\tif (sessionWorkspaces.length === 0) return null;\n"
+PROJECT_GUARD = (b"\treturn ssfX ? null : t16;\n}\n// src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/"
+                 b"components/DashboardSidebarProjectSection/index.ts\n")
+
 EDITS = [
     # --- module code and SSF_JS -------------------------------------------------
     ("search row: module code",
-     SIDEBAR,
+     (SSR_JS_V1 + SIDEBAR, SIDEBAR),
      SSR_JS + SIDEBAR),
     # --- DashboardSidebarContent ------------------------------------------------
     ("search row: sidebar data",
@@ -254,18 +275,24 @@ EDITS = [
      b"\tconst isSectionCollapsed = useSidebarSectionsCollapseStore(_temp$32);\n",
      b"\tconst ssfS = useSidebarSectionsCollapseStore(_temp$32), ssfV = ssfUseGroup(pinnedWorkspaces, \"pinned\", isCollapsed);\n"
      b"\tconst isSectionCollapsed = ssfV > 1 ? ssfV > 2 : ssfS;\n"),
+    # PINNED and SESSIONS hide at their final return; the hook sits at the top.
+    # The first anchor is v1's guard in the middle of the component.
+    ("search row: PINNED guard at the final return (v1 guard out)",
+     (PINNED_PAGES + b"\tif (!ssfV) return null;\n" + PINNED_RAIL, PINNED_PAGES + PINNED_RAIL),
+     PINNED_PAGES + b"\t/* sidebar-search-row: PINNED hides at its final return */\n" + PINNED_RAIL),
     ("search row: PINNED guard",
-     b"\tconst showsPinnedPages = isDraggingWorkspace ? pickup.hasPinnedPages : hasPinnedPages;\n",
-     b"\tconst showsPinnedPages = isDraggingWorkspace ? pickup.hasPinnedPages : hasPinnedPages;\n\tif (!ssfV) return null;\n"),
+     b"\treturn t15;\n}\nfunction _temp$32(s) {\n",
+     b"\treturn ssfV ? t15 : null;\n}\nfunction _temp$32(s) {\n"),
     ("search row: PINNED header",
      b'\tif ($[29] !== t9) {\n\t\tt10 = (0, import_jsx_runtime.jsx)(DashboardSidebarSectionHeader, {\n\t\t\tlabel: t9,\n\t\t\tsection: "pinned"\n',
      b'\tif ($[29] !== t9 || $[30].props.ssfV !== ssfV) {\n\t\tt10 = (0, import_jsx_runtime.jsx)(DashboardSidebarSectionHeader, {\n\t\t\tlabel: t9,\n\t\t\tssfV,\n\t\t\tsection: "pinned"\n'),
     # --- SESSIONS -----------------------------------------------------------------
+    ("search row: SESSIONS guard hook (v1 guard out)",
+     (SESSIONS_HOOK + SESSIONS_DROP + b"\tif (!ssfV) return null;\n" + SESSIONS_RAIL, SESSIONS_DROP + SESSIONS_RAIL),
+     SESSIONS_HOOK + SESSIONS_DROP + SESSIONS_RAIL),
     ("search row: SESSIONS guard",
-     b'\tconst collapsedDropZoneEligible = !isCollapsed && isSectionCollapsed && sessionItems.length === 0 && activeWorkspaceHome === "sessions";\n',
-     b'\tconst ssfV = ssfUseGroup(sessionWorkspaces, "sessions", isCollapsed);\n'
-     b'\tconst collapsedDropZoneEligible = !isCollapsed && isSectionCollapsed && sessionItems.length === 0 && activeWorkspaceHome === "sessions";\n'
-     b"\tif (!ssfV) return null;\n"),
+     b'\treturn (0, import_jsx_runtime.jsxs)("div", {\n\t\tclassName: "mt-3 pb-1 first:mt-0",\n',
+     b'\treturn !ssfV ? null : (0, import_jsx_runtime.jsxs)("div", {\n\t\tclassName: "mt-3 pb-1 first:mt-0",\n'),
     ("search row: SESSIONS header",
      b'\t\t\t\tsection: "sessions",\n\t\t\t\tchildren: (0, import_jsx_runtime.jsxs)(Tooltip, {\n',
      b'\t\t\t\tsection: "sessions",\n\t\t\t\tssfV,\n\t\t\t\tchildren: (0, import_jsx_runtime.jsxs)(Tooltip, {\n'),
@@ -276,6 +303,11 @@ EDITS = [
     ("search row: project override",
      b"\tconst $ = (0, import_compiler_runtime.c)(95);\n\tconst { project: ssfP, isSidebarCollapsed: t1,",
      b"\tconst $ = (0, import_compiler_runtime.c)(95);\n\tt0 = ssrUseProject(t0);\n\tconst { project: ssfP, isSidebarCollapsed: t1,"),
+    # status-chips' guard hides a project by the chips alone; a project the
+    # search row keeps (a selected row) stays. Lines go only before its span.
+    ("search row: project kept by the search row",
+     PROJECT_GUARD,
+     b"\tif (t0.ssfKeep) return t16;\n" + PROJECT_GUARD),
     # --- folders ------------------------------------------------------------------
     ("search row: folder override",
      b"\tconst { sortableId, section, indentation, onDelete, onRename, onToggleCollapse } = t0;\n",
