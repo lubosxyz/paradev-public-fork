@@ -461,6 +461,142 @@ ORDER_SHARED = (
 )
 RESOLVE_IMPORT = b'import { n as resolveProjectIconUrl } from "./resolveProjectIconUrl-CcUkJ5FA.js";\n'
 
+# --- desktop pin and preset sync (host-service relay, protocol version 1) ----
+# Same wire contract as patch-asar.py --desktop-pin-sync / --desktop-preset-sync:
+# the renderer publishes {version:1, organizationId, observedAt, ...} every
+# second to the local host-service; desktopPins/desktopPresets.list long-poll
+# for the next publish. Bridges mount inside LocalHostServiceProvider (they
+# wrap SandboxAccessProvider and HostWorkspacesProvider in AuthenticatedLayout).
+
+DPS_HOST_JS = b'''/* quick-ui-patch: desktop pin sync */
+const dpsWaiters = new Map();
+function dpsRouter() {
+  const fail = (code) => {throw new require_git_hook_tolerance.TRPCError({code,message:"Desktop pins unavailable"});};
+  return router({
+    publish: protectedProcedure.input(value => value).mutation(({ctx,input}) => {
+      if (ctx.isLocalCaller !== true) fail("FORBIDDEN");
+      if (!input || input.version !== 1 || input.organizationId !== ctx.organizationId || !Number.isSafeInteger(input.observedAt) || Math.abs(Date.now()-input.observedAt)>5000 || !Array.isArray(input.pins) || input.pins.length>5000) fail("BAD_REQUEST");
+      const ids = new Set();
+      for (const pin of input.pins) {
+        if (!pin || typeof pin.workspaceId!=="string" || !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(pin.workspaceId) || ids.has(pin.workspaceId) || !Number.isSafeInteger(pin.pinnedAt) || pin.pinnedAt<0) fail("BAD_REQUEST");
+        ids.add(pin.workspaceId);
+      }
+      const snapshot = {version:1,organizationId:ctx.organizationId,sourceHostId:require_pull_request_threads.getHostId(),observedAt:input.observedAt,pins:input.pins.map(p=>({workspaceId:p.workspaceId,pinnedAt:p.pinnedAt}))};
+      for (const pending of dpsWaiters.get(ctx.organizationId) ?? []) {
+        if (input.observedAt >= pending.since) pending.resolve(snapshot);
+      }
+      return null;
+    }),
+    list: queryProcedure.query(({ctx}) => new Promise((resolve,reject) => {
+      let pending = dpsWaiters.get(ctx.organizationId);
+      if (!pending) dpsWaiters.set(ctx.organizationId,pending=new Set());
+      if (pending.size>=64) {reject(new require_git_hook_tolerance.TRPCError({code:"TOO_MANY_REQUESTS"}));return;}
+      const finish = () => {clearTimeout(timer);pending.delete(waiter);if (!pending.size) dpsWaiters.delete(ctx.organizationId);};
+      const waiter = {since:Date.now(),resolve: snapshot => {finish();resolve(snapshot);}};
+      const timer = setTimeout(() => {finish();reject(new require_git_hook_tolerance.TRPCError({code:"PRECONDITION_FAILED",message:"Desktop pins unavailable"}));},3500);
+      pending.add(waiter);
+    }))
+  });
+}
+'''
+DTS_HOST_JS = b'''/* quick-ui-patch: desktop preset sync */
+const dtsWaiters = new Map();
+function dtsRouter() {
+  const fail = (code) => {throw new require_git_hook_tolerance.TRPCError({code,message:"Desktop presets unavailable"});};
+  const text = (v) => typeof v === "string" && Buffer.byteLength(v) <= 16384;
+  const texts = (v, max) => Array.isArray(v) && v.length <= max && v.every(text);
+  const opt = (v, ok) => v === void 0 || ok(v);
+  const bool = (v) => typeof v === "boolean";
+  const modes = ["split-pane", "new-tab", "new-tab-split-pane", "sequential"];
+  return router({
+    publish: protectedProcedure.input(value => value).mutation(({ctx,input}) => {
+      if (ctx.isLocalCaller !== true) fail("FORBIDDEN");
+      if (!input || input.version !== 1 || input.organizationId !== ctx.organizationId || !Number.isSafeInteger(input.observedAt) || Math.abs(Date.now()-input.observedAt)>5000 || !Array.isArray(input.presets) || input.presets.length>500 || !texts(input.hiddenBuiltinPresetIds,500)) fail("BAD_REQUEST");
+      const ids = new Set();
+      const presets = input.presets.map(p => {
+        if (!p || typeof p.id!=="string" || !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(p.id) || ids.has(p.id.toLowerCase()) || !text(p.name) || !opt(p.description,text) || !text(p.cwd) || !texts(p.commands,64) || !(p.projectIds===null || texts(p.projectIds,5000)) || !opt(p.pinnedToBar,bool) || !modes.includes(p.executionMode) || !Number.isSafeInteger(p.tabOrder) || !opt(p.agentId,text) || !opt(p.useAsWorkspaceRun,bool)) fail("BAD_REQUEST");
+        ids.add(p.id.toLowerCase());
+        return {id:p.id,name:p.name,description:p.description,cwd:p.cwd,commands:[...p.commands],projectIds:p.projectIds&&[...p.projectIds],pinnedToBar:p.pinnedToBar,executionMode:p.executionMode,tabOrder:p.tabOrder,agentId:p.agentId,useAsWorkspaceRun:p.useAsWorkspaceRun};
+      }).sort((a,b) => a.tabOrder-b.tabOrder);
+      for (const p of presets) for (const key in p) if (p[key] === void 0) delete p[key];
+      const snapshot = {version:1,organizationId:ctx.organizationId,sourceHostId:require_pull_request_threads.getHostId(),observedAt:input.observedAt,presets,hiddenBuiltinPresetIds:[...input.hiddenBuiltinPresetIds]};
+      for (const pending of dtsWaiters.get(ctx.organizationId) ?? []) {
+        if (input.observedAt >= pending.since) pending.resolve(snapshot);
+      }
+      return null;
+    }),
+    list: queryProcedure.query(({ctx}) => new Promise((resolve,reject) => {
+      let pending = dtsWaiters.get(ctx.organizationId);
+      if (!pending) dtsWaiters.set(ctx.organizationId,pending=new Set());
+      if (pending.size>=64) {reject(new require_git_hook_tolerance.TRPCError({code:"TOO_MANY_REQUESTS"}));return;}
+      const finish = () => {clearTimeout(timer);pending.delete(waiter);if (!pending.size) dtsWaiters.delete(ctx.organizationId);};
+      const waiter = {since:Date.now(),resolve: snapshot => {finish();resolve(snapshot);}};
+      const timer = setTimeout(() => {finish();reject(new require_git_hook_tolerance.TRPCError({code:"PRECONDITION_FAILED",message:"Desktop presets unavailable"}));},3500);
+      pending.add(waiter);
+    }))
+  });
+}
+'''
+DPS_JS = b'''/* quick-ui-patch: desktop pin sync */
+function DpsSandbox(props) {
+	const { activeHostUrl: url, activeOrganizationId: org } = useLocalHostService();
+	const { v2WorkspaceLocalState: collection } = useCollections();
+	(0, import_react.useEffect)(() => {
+		if (!org || !url) return;
+		let stopped = false, timer;
+		const publish = async () => {
+			try {
+				if (collection.status !== "ready") return;
+				const pins = [];
+				for (const row of collection.state.values()) {
+					if (!row || typeof row.workspaceId !== "string" || !row.sidebarState) throw Error("Invalid desktop pins");
+					const at = row.sidebarState.pinnedAt;
+					if (at != null) {
+						if (!Number.isSafeInteger(at) || at < 0) throw Error("Invalid pin time");
+						if (!row.sidebarState.isHidden) pins.push({ workspaceId: row.workspaceId, pinnedAt: at });
+					}
+				}
+				await getHostServiceClientByUrl(url).desktopPins.publish.mutate({ version: 1, organizationId: org, observedAt: Date.now(), pins }, { signal: AbortSignal.timeout(2e3) });
+			} catch {} finally {
+				if (!stopped) timer = setTimeout(publish, 1e3);
+			}
+		};
+		void publish();
+		return () => {
+			stopped = true;
+			clearTimeout(timer);
+		};
+	}, [org, url, collection]);
+	return (0, import_jsx_runtime.jsx)(SandboxAccessProvider, props);
+}
+'''
+DTS_JS = b'''/* quick-ui-patch: desktop preset sync */
+function DtsHostWorkspaces(props) {
+	const { activeHostUrl: url, activeOrganizationId: org } = useLocalHostService();
+	const { v2TerminalPresets: presets, v2UserPreferences: prefs } = useCollections();
+	(0, import_react.useEffect)(() => {
+		if (!org || !url) return;
+		let stopped = false, timer;
+		const publish = async () => {
+			try {
+				if (presets.status !== "ready" || prefs.status !== "ready") return;
+				await getHostServiceClientByUrl(url).desktopPresets.publish.mutate({ version: 1, organizationId: org, observedAt: Date.now(), presets: [...presets.state.values()].map((p) => ({ id: p.id, name: p.name, description: p.description, cwd: p.cwd, commands: p.commands, projectIds: p.projectIds, pinnedToBar: p.pinnedToBar, executionMode: p.executionMode, tabOrder: p.tabOrder, agentId: p.agentId, useAsWorkspaceRun: p.useAsWorkspaceRun })), hiddenBuiltinPresetIds: prefs.state.get("preferences")?.hiddenBuiltinPresetIds ?? [] }, { signal: AbortSignal.timeout(2e3) });
+			} catch {} finally {
+				if (!stopped) timer = setTimeout(publish, 1e3);
+			}
+		};
+		void publish();
+		return () => {
+			stopped = true;
+			clearTimeout(timer);
+		};
+	}, [org, url, presets, prefs]);
+	return (0, import_jsx_runtime.jsx)(HostWorkspacesProvider, props);
+}
+'''
+HOST_NAMES = (b"require_git_hook_tolerance", b"require_pull_request_threads", b"router", b"protectedProcedure", b"queryProcedure", b"isLocalCaller")
+BRIDGE_NAMES = (b"useLocalHostService", b"useCollections", b"getHostServiceClientByUrl", b"import_react", b"import_jsx_runtime")
+
 ROW_ITEM = b"DashboardSidebarWorkspaceItem/index.ts\n"
 PROJECT_ITEM = b"DashboardSidebarProjectSection/index.ts\n"
 
@@ -497,6 +633,8 @@ ONE_ROW_TITLE = b'\t\t\tclassName: "-mx-2 flex h-8 min-w-0 items-center",\n\t\t\
 LAYOUT = b"var DashboardSidebarContent = (0, import_react.memo)(function DashboardSidebarContent(t0) {"
 HOTKEYS = b"\tTOGGLE_TERMINAL_RICH_INPUT: {\n"
 MAIN = b"function initTray() {\n"
+HOST = b"var appRouter = router({\n"
+AUTH = b"function AuthenticatedLayout() {\n"
 
 # EDITS[release] = [(family, [(file marker, [edit, ...], required names), ...]), ...]
 # edit = (label, old, new) or (label, old, new, alts): `new` (or any of `alts`,
@@ -772,6 +910,42 @@ EDITS: dict[str, list] = {
                  b'(0, import_jsx_runtime.jsx)(LuFolderInput, { className: "size-4 mr-2" }), (0, import_jsx_runtime.jsx)(Trans, { id: "LhpIB7" })]\n\t\t\t}),\n'
                  b"\t\t\t(0, import_jsx_runtime.jsx)(LppPinItem, { projectId }),\n"),
             ], ORDER_NAMES + (b"ContextMenuItem", b"LuPinOff")),
+        ]),
+        ("desktop-pin-sync", [
+            (HOST, [
+                ("desktop pin sync: host router",
+                 b"var createWorkspacesCaller = createCallerFactory(workspacesRouter);\n",
+                 DPS_HOST_JS + b"var createWorkspacesCaller = createCallerFactory(workspacesRouter);\n"),
+                ("desktop pin sync: appRouter entry",
+                 b"var appRouter = router({\n\tagents: agentsRouter,\n",
+                 b"var appRouter = router({\n\tdesktopPins: dpsRouter(),\n\tagents: agentsRouter,\n"),
+            ], HOST_NAMES),
+            (AUTH, [
+                ("desktop pin sync: renderer bridge",
+                 b"function AuthenticatedLayout() {\n",
+                 DPS_JS + b"function AuthenticatedLayout() {\n"),
+                ("desktop pin sync: bridge mount",
+                 b"(0, import_jsx_runtime.jsx)(SandboxAccessProvider, { children:",
+                 b"(0, import_jsx_runtime.jsx)(DpsSandbox, { children:"),
+            ], BRIDGE_NAMES + (b"SandboxAccessProvider",)),
+        ]),
+        ("desktop-preset-sync", [
+            (HOST, [
+                ("desktop preset sync: host router",
+                 b"// ../../packages/host-service/src/trpc/router/router.ts\n",
+                 DTS_HOST_JS + b"// ../../packages/host-service/src/trpc/router/router.ts\n"),
+                ("desktop preset sync: appRouter entry",
+                 b"\tworkspaceCreation: workspaceCreationRouter\n});\n",
+                 b"\tworkspaceCreation: workspaceCreationRouter,\n\tdesktopPresets: dtsRouter()\n});\n"),
+            ], HOST_NAMES),
+            (AUTH, [
+                ("desktop preset sync: renderer bridge",
+                 b"var SESSION_PENDING_TIMEOUT_MS = 15e3;\n",
+                 DTS_JS + b"var SESSION_PENDING_TIMEOUT_MS = 15e3;\n"),
+                ("desktop preset sync: bridge mount",
+                 b"(0, import_jsx_runtime.jsx)(HostWorkspacesProvider, { children:",
+                 b"(0, import_jsx_runtime.jsx)(DtsHostWorkspaces, { children:"),
+            ], BRIDGE_NAMES + (b"HostWorkspacesProvider",)),
         ]),
     ],
 }
