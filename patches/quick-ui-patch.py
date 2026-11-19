@@ -731,8 +731,8 @@ EDITS: dict[str, list] = {
         ("project-icon-size", [
             (LAYOUT, [
                 ("project icon: thumbnail size-6, kept on hover",
-                 b'className: "size-4 group-hover:hidden"',
-                 b'className: "size-6"'),  # the 2.0.9 CSS ships no group-hover:!block
+                 b'\t\t\tcolor: projectColor,\n\t\t\tclassName: "size-4 group-hover:hidden"\n',
+                 b'\t\t\tcolor: projectColor,\n\t\t\tclassName: "size-6"\n'),  # the 2.0.9 CSS ships no group-hover:!block
                 ("project icon: hover chevron hidden",
                  b't9 = cn("hidden size-4 text-muted-foreground transition-transform group-hover:block", t8);',
                  b't9 = cn("hidden size-6 text-muted-foreground transition-transform", t8);'),
@@ -832,8 +832,8 @@ EDITS: dict[str, list] = {
                  b'prefix: pinnedContext ? pinnedContext.projectName ?? _t({ id: "CqO9qC" }) : void 0,',
                  b"prefix: /* pinned-icon-only */ void 0,"),
                 ("pinned: project icon size-5",
-                 b'className: "size-3.5 text-[8px]"',
-                 b'className: "size-5 text-[11px]"'),
+                 b'\ticonUrl: pinnedContext.projectIconUrl,\n\t\t\t\t\t\tclassName: "size-3.5 text-[8px]"\n',
+                 b'\ticonUrl: pinnedContext.projectIconUrl,\n\t\t\t\t\t\tclassName: "size-5 text-[11px]"\n'),
             ], ()),
         ]),
         ("palette-workspace-search", [
@@ -1150,13 +1150,23 @@ def _apply_family(name, parts, files, data, chunks):
             label, old, new = edit[:3]
             alts = edit[3] if len(edit) > 3 else ()
             new = norm(new)
-            if new in body or any(norm(a) in body for a in alts):
-                already.append(label)
-                continue
             # `old` may be a tuple of anchors tried in order (e.g. an older
             # output of the same edit first, then stock): the first that
             # occurs exactly once is replaced.
             olds = [norm(o) for o in (old if isinstance(old, tuple) else (old,))]
+            # Applied = the result (or an alt) sits at exactly one place and no
+            # anchor survives outside it; a result seen elsewhere is no proof.
+            shapes = [(m, body.count(m)) for m in (new, *map(norm, alts))]
+            seen = [(m, n) for m, n in shapes if n]
+            if seen:
+                m, n = seen[0]
+                stray = [o for o in olds if body.count(o) != m.count(o)]
+                if n != 1 or stray:
+                    errors.append(f"{label}: result found {n}x in {path}" + (" with its anchor still outside it" if stray else "")
+                                  + "; the edit needs more context")
+                else:
+                    already.append(label)
+                continue
             counts = [body.count(o) for o in olds]
             if 1 not in counts:
                 errors.append(f"{label}: expected exactly one anchor in {path}, found {counts[0] if len(counts) == 1 else counts}")

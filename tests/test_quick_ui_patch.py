@@ -282,6 +282,29 @@ class ReleaseCases:
         code, out, err = self.cli("--asar", str(target), "--skip", "hide-tray", "--dry-run")
         self.assertEqual(code, 0, err)
 
+    # Value: protects=a result seen elsewhere is no proof that an edit ran (review r1): the original icon anchor kept
+    # plus the edit's result text at another place, or the result twice, fails the family instead of "already applied";
+    # fails_when=_apply_family accepts `new in body` anywhere.
+    def test_result_elsewhere_does_not_count_as_applied(self):
+        (path, off, size), = [f for f in Q.asar_files(self.stock) if Q.LAYOUT in self.stock[f[1]:f[1] + f[2]]]
+        fams, _, _, _ = Q.release_families(self.RELEASE, overrides=False)
+        (edit,) = [e for name, parts in fams if name == "project-icon-size" for _, edits, _ in parts for e in edits
+                   if e[0].startswith("project icon: thumbnail")]
+        result = Q.norm(edit[2])
+        data = bytearray(self.stock)
+        at = off + 4096  # overwrite unrelated bytes of the same chunk with the edit's result
+        data[at:at + len(result)] = result
+        with self.assertRaises(SystemExit) as raised:
+            Q.plan(bytes(data), self.RELEASE, overrides=False)
+        self.assertIn("family 'project-icon-size' does not match", str(raised.exception.code))
+        self.assertIn("anchor still outside it", str(raised.exception.code))
+        patched = bytearray(self.patched)  # the result twice: also no proof
+        data2 = patched[:]
+        data2[at:at + len(result)] = result
+        with self.assertRaises(SystemExit) as raised:
+            Q.plan(bytes(data2), self.RELEASE, overrides=False)
+        self.assertIn("result found 2x", str(raised.exception.code))
+
     # Value: protects=injected Tailwind classes exist in the release stylesheet (the bundle ships no JIT);
     # fails_when=a new className token has no CSS rule and renders unstyled.
     def test_injected_class_names_exist_in_the_stylesheet(self):
