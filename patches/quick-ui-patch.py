@@ -1140,6 +1140,24 @@ class Chunk:
         return body + b" " * (len(self.raw) - len(body))
 
 
+def _spans(body: bytes, shapes) -> list[tuple[int, int]]:
+    """Distinct places where any shape occurs; overlapping matches (e.g. a result and an
+    alt that shares its tail) are one place."""
+    found = []
+    for shape in shapes:
+        at = body.find(shape)
+        while at != -1:
+            found.append((at, at + len(shape)))
+            at = body.find(shape, at + 1)
+    places: list[tuple[int, int]] = []
+    for start, end in sorted(found):
+        if places and start < places[-1][1]:
+            places[-1] = (places[-1][0], max(places[-1][1], end))
+        else:
+            places.append((start, end))
+    return places
+
+
 def _apply_family(name, parts, files, data, chunks):
     """Return (staged {path: (body, done)}, already, errors) for one family without committing."""
     staged, already, errors = {}, [], []
@@ -1164,10 +1182,12 @@ def _apply_family(name, parts, files, data, chunks):
             olds = [norm(o) for o in (old if isinstance(old, tuple) else (old,))]
             # Applied = the result (or an alt) sits at exactly one place and no
             # anchor survives outside it; a result seen elsewhere is no proof.
-            shapes = [(m, body.count(m)) for m in (new, *map(norm, alts))]
-            seen = [(m, n) for m, n in shapes if n]
-            if seen:
-                m, n = seen[0]
+            # The result and every alt count together: two places (canonical
+            # here, an alt there) are no single target.
+            spans = _spans(body, [new, *map(norm, alts)])
+            if spans:
+                n = len(spans)
+                m = body[spans[0][0]:spans[0][1]]  # the whole place (result plus any overlapping alt)
                 stray = [o for o in olds if body.count(o) != m.count(o)]
                 if n != 1 or stray:
                     errors.append(f"{label}: result found {n}x in {path}" + (" with its anchor still outside it" if stray else "")

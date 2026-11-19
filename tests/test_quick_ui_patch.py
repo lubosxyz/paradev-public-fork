@@ -403,6 +403,27 @@ class ReleaseCases:
             Q.plan(bytes(data2), self.RELEASE, overrides=False)
         self.assertIn("result found 2x", str(raised.exception.code))
 
+    # Value: protects=the result and its alts count together (review r2): the canonical compact header grid at its
+    # place plus the one-row alt at another place is no single target and fails; fails_when=only the first shape seen
+    # is counted.
+    def test_result_and_alt_at_two_places_fail(self):
+        if "compact-sidebar" in self.pending:
+            self.skipTest("compact-sidebar is pending on this release")
+        fams, _, _, _ = Q.release_families(self.RELEASE, overrides=False)
+        (edit,) = [e for name, parts in fams if name == "compact-sidebar" for _, edits, _ in parts for e in edits
+                   if len(e) > 3 and e[0].startswith("compact: header grid")]
+        (path, off, size), = [f for f in Q.asar_files(self.stock) if Q.LAYOUT in self.stock[f[1]:f[1] + f[2]]]
+        writes, _ = Q.plan(self.stock, self.RELEASE, {"sidebar-one-row"}, overrides=False)
+        compact = bytearray(apply(self.stock, writes))  # canonical grid in place, one-row not applied
+        self.assertIn(Q.norm(edit[2]), bytes(compact[off:off + size]))
+        alt = Q.norm(edit[3][0])
+        at = off + 4096
+        compact[at:at + len(alt)] = alt
+        with self.assertRaises(SystemExit) as raised:
+            Q.plan(bytes(compact), self.RELEASE, {"sidebar-one-row"}, overrides=False)
+        self.assertIn("compact: header grid", str(raised.exception.code))
+        self.assertIn("result found 2x", str(raised.exception.code))
+
     # Value: protects=injected Tailwind classes exist in the release stylesheet (the bundle ships no JIT);
     # fails_when=a new className token has no CSS rule and renders unstyled.
     def test_injected_class_names_exist_in_the_stylesheet(self):
