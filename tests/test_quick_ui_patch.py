@@ -372,7 +372,7 @@ class QuickUiPatch2010Test(ReleaseCases, unittest.TestCase):
             self.assertIn(f"{name}: pending (not ported to 2.0.10 yet, skipped)", out)
 
     # Value: protects=the override loader: a same-name family replaces the built-in one (and leaves PENDING), a new
-    # name appends, an absent file is fine, a broken file fails naming itself, --no-overrides ignores them;
+    # name appends, fixed names load before globbed quick_2_0_10_*.py (sorted), an absent file is fine, a broken file fails naming itself, --no-overrides ignores them;
     # fails_when=an override is ignored, appended twice, or a broken one is silently skipped.
     def test_override_files_replace_and_append(self):
         overrides = self.dir / "overrides"
@@ -399,6 +399,11 @@ class QuickUiPatch2010Test(ReleaseCases, unittest.TestCase):
         self.assertEqual(states["fixture-extra"], "apply")
         self.assertIn(b"/* fixture extra */", apply(self.stock, writes))
         self.assertEqual(len(Q.plan(self.stock, self.RELEASE, overrides=False)[1]), len(self.names))
+        (overrides / "quick_2_0_10_zz_extra.py").write_text(  # picked up by the glob, after the fixed names
+            "FAMILIES = [('fixture-glob', [])]\n")
+        (overrides / "quick_2_0_10_aa_extra.py").write_text("FAMILIES = [('fixture-glob-first', [])]\n")
+        names = Q.families(self.RELEASE)
+        self.assertEqual(names[-3:], ["fixture-extra", "fixture-glob-first", "fixture-glob"])
         (overrides / "quick_2_0_10_lists.py").write_text("FAMILIES = [('broken',)]\n")
         with self.assertRaises(SystemExit) as raised:
             Q.release_families(self.RELEASE)

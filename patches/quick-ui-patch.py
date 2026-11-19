@@ -985,9 +985,12 @@ PENDING = {
 # Sibling files that export FAMILIES (and optionally REQUIRES) in the EDITS
 # family format: a family with an existing name replaces it, a new name is
 # appended. An absent file is fine; a file that fails to load is an error.
+# The fixed names load first, in this order, then any other
+# quick_<release with underscores>_*.py in sorted order.
 OVERRIDE_FILES = {
     "2.0.9": ("quick_automations_209.py",),
-    "2.0.10": ("quick_2_0_10_header.py", "quick_2_0_10_lists.py", "quick_automations_2_0_10.py"),
+    "2.0.10": ("quick_2_0_10_header.py", "quick_2_0_10_search_row.py", "quick_2_0_10_lists.py",
+               "quick_automations_2_0_10.py"),
 }
 OVERRIDE_DIR = HERE
 
@@ -1035,7 +1038,10 @@ def release_families(release: str, overrides: bool = True):
     fams = list(EDITS[release]) if release in EDITS else _derive(release)
     pending, requires, sources = set(PENDING.get(release, ())), dict(REQUIRES), {}
     if overrides and OVERRIDE_DIR is not None:
-        for filename in OVERRIDE_FILES.get(release, ()):
+        fixed = OVERRIDE_FILES.get(release, ())
+        pattern = f"quick_{release.replace('.', '_')}_*.py"
+        found = sorted(p.name for p in Path(OVERRIDE_DIR).glob(pattern) if p.name not in fixed)
+        for filename in (*fixed, *found):
             path = Path(OVERRIDE_DIR) / filename
             if not path.is_file():
                 continue
