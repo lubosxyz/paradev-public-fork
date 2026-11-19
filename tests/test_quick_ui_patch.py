@@ -351,6 +351,42 @@ class ReleaseCases:
         self.assertEqual(list(backups.iterdir()), [])
         self.assertEqual([p for p in self.dir.iterdir() if p.name.endswith(".patching")], [])
 
+    # Value: protects=every written file carries the `quick-ui-patch v` trailer whatever families ran (review r2), so
+    # a bundle from any family subset reads as quick-patched; fails_when=the marker lives only in one family's code.
+    def test_every_written_file_carries_the_marker(self):
+        for skip in (set(), {"status-chips"}):
+            writes, _ = Q.plan(self.stock, self.RELEASE, skip, overrides=False)
+            self.assertTrue(writes)
+            for path, _, body, _ in writes:
+                self.assertTrue(body.rstrip(b" ").endswith(Q.TRAILER), path)
+                self.assertIn(Q.QUICK_MARKER, Q.TRAILER)
+
+    def revert_after(self, skip: str):
+        target = self.dir / f"revert-{skip}.asar"
+        clone(self.STOCK, target)
+        backups = self.dir / f"revert-{skip}-backups"
+        backups.mkdir(exist_ok=True)
+        self.assertEqual(self.cli("--asar", str(target), "--backup-dir", str(backups), "--skip", skip)[0], 0)
+        partial = target.read_bytes()
+        self.assertIn(Q.QUICK_MARKER, partial)
+        code, out, err = self.cli("--asar", str(target), "--backup-dir", str(backups))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(target.read_bytes(), self.patched)
+        spec = importlib.util.spec_from_file_location("patch_asar_for_revert", ROOT / "patches" / "patch-asar.py")
+        pa = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pa)
+        pa.LOCK_ROOT = self.dir / "locks"  # never under ~/.superset
+        with redirect_stdout(io.StringIO()):
+            pa.revert(target, backups)
+        self.assertEqual(sha(target.read_bytes()), sha(self.stock))
+        return partial
+
+    # Value: protects=after `--skip status-chips` (no status-chips code, so only the trailer marks the bundle) one real
+    # patch-asar revert after the full run restores stock (review r2); fails_when=the second run backs up the partial
+    # bundle because it did not see a marker.
+    def test_one_revert_restores_stock_after_skip_status_chips(self):
+        self.revert_after("status-chips")
+
     # Value: protects=one real `patch-asar.py --revert` restores stock after a quick upgrade (review r1), and a
     # quick-patched bundle without a verified chain to stock is refused; fails_when=the upgrade backs up the earlier
     # quick generation, so revert lands on it.

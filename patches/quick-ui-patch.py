@@ -1121,16 +1121,24 @@ def families(release: str, overrides: bool = True) -> list[str]:
     return [name for name, _ in release_families(release, overrides)[0]]
 
 
+# Every file this script writes ends with this comment, whatever families ran:
+# "is quick-patched" is then the marker anywhere in the bundle, which decides
+# the stock-chain backup (one patch-asar.py --revert restores stock) and is
+# what the watcher's chain-end check searches for. Keep `quick-ui-patch v`.
+TRAILER = b"\n/* quick-ui-patch v2 */\n"
+
+
 class Chunk:
-    """One asar file, kept in canonical form: every PURE annotation dropped, trailing pad trimmed."""
+    """One asar file, kept in canonical form: every PURE annotation dropped, pad and trailer trimmed."""
 
     def __init__(self, path: str, off: int, raw: bytes):
         self.path, self.off, self.raw = path, off, raw
-        self.body = norm(raw).rstrip(b" ")
+        body = norm(raw).rstrip(b" ")
+        self.body = body[:-len(TRAILER)] if body.endswith(TRAILER) else body
         self.done: list[str] = []
 
     def final(self) -> bytes:
-        body = self.body
+        body = self.body + TRAILER
         for room in ROOM:
             if len(body) <= len(self.raw):
                 break
@@ -1275,7 +1283,7 @@ def sha(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
 
-QUICK_MARKER = b"quick-ui-patch v"  # the watcher detects a quick-patched bundle by these bytes
+QUICK_MARKER = b"quick-ui-patch v"  # in TRAILER; the watcher detects a quick-patched bundle by these bytes
 
 
 def target_app(asar: Path, app: Path | None) -> Path | None:
