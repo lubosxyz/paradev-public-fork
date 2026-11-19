@@ -734,7 +734,7 @@ EDITS: dict[str, list] = {
                  b"`https://github.com/${project.repoOwner}.png?size=64`",
                  b"`superset-icon://projects/${project.projectKey}?v=64`"),
             ], ()),
-            (b"iconUrl: project_0.repoOwner ? `https://github.com/", [
+            (b"\t\ticonUrl: project_0.repoOwner ? `", [  # marker survives the edit
                 ("custom icons: new workspace page",
                  b"`https://github.com/${project_0.repoOwner}.png?size=64`",
                  b"`superset-icon://projects/${project_0.projectKey}?v=64`"),
@@ -950,6 +950,9 @@ EDITS: dict[str, list] = {
     ],
 }
 
+# A family whose anchors are another family's output is left out with it.
+REQUIRES = {"sidebar-one-row": ("compact-sidebar",)}
+
 PURE = re.compile(rb"/\* @__PURE__ \*/ (?=\(0, )")
 # More room, taken in this order and only while a file still does not fit:
 # top-level JSDoc blocks, then Lingui `/** i18n */` extraction markers. Both
@@ -1045,9 +1048,15 @@ def plan(data: bytes, release: str, skip=()):
     chunks: dict[str, Chunk] = {}
     failed = []
     report = []
+    skip = set(skip)
     for name, parts in EDITS[release]:
         if name in skip:
             report.append((name, "skipped", []))
+            continue
+        needs = [dep for dep in REQUIRES.get(name, ()) if dep in skip]
+        if needs:
+            skip.add(name)
+            report.append((name, f"skipped (needs {', '.join(needs)})", []))
             continue
         trial = dict(chunks)
         staged, already, errors = _apply_family(name, parts, files, data, trial)
