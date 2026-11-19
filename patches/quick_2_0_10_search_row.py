@@ -10,8 +10,8 @@ STATUS_FILTER_FOLD_*_JS, STATUS_FILTER_SHOW_JS) and README.md, "Search",
 
 What it does on 2.0.10 (React Compiler output, so the state lives in module
 scope and every guard is a useSyncExternalStore hook):
-  * SsfSearch, a sticky row right below the chips (classic sidebar and shell
-    layout): upstream's DashboardSidebarProjectsFilterInput, always expanded,
+  * SsfSearch, a sticky row between the header and the chips (classic sidebar
+    and shell layout, the v5 order): upstream's DashboardSidebarProjectsFilterInput, always expanded,
     drives `projectFilterQuery` (upstream's project filter). The query also
     sets ssfQ / ssfHide, which hide the PINNED and SESSIONS rows whose
     workspace and project names do not contain it. Typing expands a collapsed
@@ -36,12 +36,13 @@ scope and every guard is a useSyncExternalStore hook):
     a collapsed override copy is registered in its ssfOpenC cache, so that
     hook returns it as is.
 
-Byte rules: no edit cuts into another family's output. SSF_JS is untouched and
-the module code goes right before DashboardSidebar (after SSF_JS and
-DashboardSidebarContent); every status-chips edit stays one contiguous span
-(lines go only before or after it), which is why the row sits below the
-chips: v5 put the search above them, between the header and the chips, where
-status-chips' row edit is one span. The device filter's header edit lists
+Byte rules: SSF_JS is untouched and the module code goes right before
+DashboardSidebar (after SSF_JS and DashboardSidebarContent). The row lands
+inside status-chips' header + chips span, so status-chips lists that shape as
+an alt (STATUS_CHIPS_ROW_ALTS, in quick-ui-patch.py); every other edit only
+adds lines before or after another family's output. A bundle patched by the
+first version (row below the chips, eba4ccbceb8a) is moved to the v5 order and
+reaches the bytes of a run from stock. The device filter's header edit lists
 this family's shape as an alt (quick_2_0_10_header.py).
 """
 
@@ -187,6 +188,17 @@ SORT_MENU_DEVICES = (b"\t\tt10 = (0, import_jsx_runtime.jsxs)(import_jsx_runtime
 SORT_MENU_ROW = (b"\t\tt10 = (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [null /* sidebar-search-row: SdfDevices */, "
                  b"(0, import_jsx_runtime.jsx)(DashboardSidebarProjectsSortMenu, {\n")
 
+# Header rows of DashboardSidebarContent: classic (C) and shell (S) layout.
+HEADER_C = b"(0, import_jsx_runtime.jsx)(DashboardSidebarHeader, { isCollapsed }),\n"
+CHIPS_C = b"\t\t\t\t(0, import_jsx_runtime.jsx)(SsfChips, {}),\n"
+SEARCH_C = b"\t\t\t\t(0, import_jsx_runtime.jsx)(SsfSearch, {}),\n"
+HEADER_S = b"!isChatSection && (0, import_jsx_runtime.jsx)(DashboardSidebarShellHeader, {}),\n"
+CHIPS_S = b"\t\t\t\t!isChatSection && (0, import_jsx_runtime.jsx)(SsfChips, {}),\n"
+SEARCH_S = b"\t\t\t\t!isChatSection && (0, import_jsx_runtime.jsx)(SsfSearch, {}),\n"
+FADE = b"\t\t\t\t(0, import_jsx_runtime.jsxs)(OverflowFadeContainer, {\n"
+# The shapes status-chips' two row edits list as alts in quick-ui-patch.py.
+STATUS_CHIPS_ROW_ALTS = (HEADER_C + SEARCH_C + CHIPS_C, HEADER_S + SEARCH_S + CHIPS_S)
+
 EDITS = [
     # --- module code and SSF_JS -------------------------------------------------
     ("search row: module code",
@@ -198,12 +210,17 @@ EDITS = [
      b"\tssfSet(displayedGroups, displayedPinnedWorkspaces, displayedSessionWorkspaces, navigate, isCollapsed);\n"
      b"\tssrSet(projectFilterQuery, setProjectFilterQuery, displayedGroups, workspacesListCollapsed, toggleProjectCollapsed, "
      b"toggleSectionCollapsed, sessionChildren, displayedPinnedWorkspaces, displayedSessionWorkspaces, groups);\n"),
-    ("search row: row below the chips (classic header)",
-     b"\t\t\t\t(0, import_jsx_runtime.jsx)(SsfChips, {}),\n",
-     b"\t\t\t\t(0, import_jsx_runtime.jsx)(SsfChips, {}),\n\t\t\t\t(0, import_jsx_runtime.jsx)(SsfSearch, {}),\n"),
-    ("search row: row below the chips (shell header)",
-     b"\t\t\t\t!isChatSection && (0, import_jsx_runtime.jsx)(SsfChips, {}),\n",
-     b"\t\t\t\t!isChatSection && (0, import_jsx_runtime.jsx)(SsfChips, {}),\n\t\t\t\t!isChatSection && (0, import_jsx_runtime.jsx)(SsfSearch, {}),\n"),
+    # v5 order: header, search row, chips. A bundle from the first 2.0.10 run has
+    # the row below the chips; the move edits turn that into the v5 order and
+    # find a fresh run by the chips followed by the scroller (their alt).
+    ("search row: move above the chips (classic header)",
+     CHIPS_C + SEARCH_C, SEARCH_C + CHIPS_C, (CHIPS_C + FADE,)),
+    ("search row: row above the chips (classic header)",
+     HEADER_C + CHIPS_C, HEADER_C + SEARCH_C + CHIPS_C),
+    ("search row: move above the chips (shell header)",
+     CHIPS_S + SEARCH_S, SEARCH_S + CHIPS_S, (CHIPS_S + FADE,)),
+    ("search row: row above the chips (shell header)",
+     HEADER_S + CHIPS_S, HEADER_S + SEARCH_S + CHIPS_S),
     # --- rows: PINNED and SESSIONS rows the search hides --------------------------
     ("search row: row hook",
      b"\tconst isSelected = t3 === void 0 ? false : t3;\n\tconst { _: _t } = useLingui();\n\tconst ssfH = ssfUseHide(",

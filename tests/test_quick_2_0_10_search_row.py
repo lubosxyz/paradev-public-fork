@@ -120,18 +120,47 @@ def test_patched_layout_shape(patched):
     Q.node_check(LAYOUT_PATH, body)
     assert body.count(b"/* quick-ui-patch v1: status chips */") == 1
     assert body.count(b"/* quick-ui-patch: sidebar search row (status filter v5) */") == 1
-    # the row sits right below the chips in both layouts
-    assert b"\t\t\t\t(0, import_jsx_runtime.jsx)(SsfChips, {}),\n\t\t\t\t(0, import_jsx_runtime.jsx)(SsfSearch, {}),\n" in body
-    assert b"!isChatSection && (0, import_jsx_runtime.jsx)(SsfChips, {}),\n\t\t\t\t!isChatSection && (0, import_jsx_runtime.jsx)(SsfSearch, {}),\n" in body
+    # v5 order in both layouts: header, search row, chips (the shapes status-chips lists as alts)
+    for shape in R.STATUS_CHIPS_ROW_ALTS:
+        assert body.count(shape) == 1
+    assert R.CHIPS_C + R.SEARCH_C not in body and R.CHIPS_S + R.SEARCH_S not in body
     # PROJECTS header: label kept, no filter input, no device icon
     assert b"children: [t10, t33] /* sidebar-search-row: t9 */" in body
     assert R.SORT_MENU_ROW in body and b"jsx)(SdfDevices, {}), (0, import_jsx_runtime.jsx)(DashboardSidebarProjectsSortMenu" not in body
-    # status-chips output stays whole (every one of its `new` spans is still present)
+    # status-chips output stays whole: each `new` span, or the alt that lists this family's row
     chips = dict(Q.release_families("2.0.10")[0])["status-chips"]
     for _, edits, _ in chips:
         for edit in edits:
             if edit[0].startswith("status chips"):
-                assert Q.norm(edit[2]) in body, edit[0]
+                shapes = [edit[2], *(edit[3] if len(edit) > 3 else ())]
+                assert any(Q.norm(shape) in body for shape in shapes), edit[0]
+
+
+def test_status_chips_lists_the_row_shapes_as_alts():
+    chips = dict(Q.release_families("2.0.10")[0])["status-chips"]
+    alts = {edit[0]: edit[3] for _, edits, _ in chips for edit in edits if len(edit) > 3}
+    assert R.STATUS_CHIPS_ROW_ALTS[0] in alts["status chips: row (classic header)"]
+    assert R.STATUS_CHIPS_ROW_ALTS[1] in alts["status chips: row (shell header)"]
+
+
+def test_upgrade_moves_a_row_below_the_chips_above_them(copy, patched):
+    """A bundle from the first sidebar-search-row (row below the chips) reaches the bytes of a run from stock."""
+    asar, backups = copy
+    code, _, err = run_cli(asar, backups)
+    assert code == 0, err
+    data = bytearray(asar.read_bytes())
+    for path, off, size in Q.asar_files(bytes(data)):
+        if path == LAYOUT_PATH:
+            body = bytes(data[off:off + size])
+            for search, chips in ((R.SEARCH_C, R.CHIPS_C), (R.SEARCH_S, R.CHIPS_S)):
+                assert body.count(search + chips) == 1
+                body = body.replace(search + chips, chips + search)
+            data[off:off + size] = body
+    asar.write_bytes(bytes(data))
+    code, out, err = run_cli(asar, backups)
+    assert code == 0, err
+    assert "search row: move above the chips (classic header)" in out
+    assert asar.read_bytes() == patched[0]
 
 
 def test_needs_status_chips(copy):
