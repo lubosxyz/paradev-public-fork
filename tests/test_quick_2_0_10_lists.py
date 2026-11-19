@@ -381,6 +381,15 @@ def test_installed_bundle_upgrades_to_the_stock_result(tmp_path, copy):
     subprocess.run(["cp", "-c", str(LIVE), str(live)], check=True)
     code, _, err = run_cli(fresh, backups, release="2.0.10")
     assert code == 0, err
-    code, _, err = run_cli(live, backups, release="2.0.10")
+    # The quick patch refuses a quick-patched input without a verified backup chain to stock:
+    # a stock backup whose patch-asar.py manifest records the live copy's digest.
+    live_backups = tmp_path / "live-backups"
+    live_backups.mkdir()
+    backup = live_backups / "app.asar.backup-pre-ui-patch-00000000-000000-installed"
+    subprocess.run(["cp", "-c", str(STOCK), str(backup)], check=True)
+    data = live.read_bytes()
+    manifest = {"backup_sha256": sha(STOCK.read_bytes()), "format": 1, "patched_sha256": sha(data), "size": len(data)}
+    backup.with_name(backup.name + ".json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    code, _, err = run_cli(live, live_backups, release="2.0.10")
     assert code == 0, err
     assert sha(live.read_bytes()) == sha(fresh.read_bytes())
