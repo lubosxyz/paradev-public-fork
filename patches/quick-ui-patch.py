@@ -209,6 +209,35 @@ SIDEBAR_NAMES = (
 ROW_ITEM = b"DashboardSidebarWorkspaceItem/index.ts\n"
 PROJECT_ITEM = b"DashboardSidebarProjectSection/index.ts\n"
 
+
+def _compact_cell(title: bytes, on_click: bytes, cls: bytes, state: bytes, label_id: bytes, aria: bytes = b""):
+    """Turn one expanded header row button into an icon cell with an sr-only label and a hover title."""
+    row = b'"flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] font-medium transition-colors"'
+    name = title.decode()
+    return [
+        (f"compact: {name} cell",
+         b"\t\t" + cls + b" = cn(" + row + b", " + state + b");",
+         b"\t\t" + cls + b' = cn("relative flex w-full justify-center rounded-md p-1", ' + state + b");"),
+        (f"compact: {name} title",
+         b"\t\t\tonClick: " + on_click + b",\n" + aria,
+         b"\t\t\tonClick: " + on_click + b",\n\t\t\ttitle: " + title + b",\n" + aria),
+        (f"compact: {name} label sr-only",
+         b'\t\t\tclassName: "flex-1 text-left",\n\t\t\tchildren: (0, import_jsx_runtime.jsx)(Trans, { id: "' + label_id + b'" })',
+         b'\t\t\tclassName: "sr-only",\n\t\t\tchildren: (0, import_jsx_runtime.jsx)(Trans, { id: "' + label_id + b'" })'),
+    ]
+
+
+COMPACT_CELLS = (
+    _compact_cell(b'"Workspaces"', b"t15", b"t17", b"t16", b"pmt7u4", b"\t\t\tclassName: t17,\n"),
+    _compact_cell(b'"Automations"', b"t21", b"t23", b"t22", b"EF-M0w", b"\t\t\tclassName: t23,\n"),
+    _compact_cell(b"t30", b"t29", b"t33", b"t32", b"GtycJ_", b'\t\t\t"aria-label": t30,\n'),
+    _compact_cell(b"t38", b"t37", b"t41", b"t40", b"6tMqGq", b'\t\t\t"aria-label": t38,\n'),
+    _compact_cell(b"t47", b"t46", b"t50", b"t49", b"wRR604", b'\t\t\t"aria-label": t47,\n'),
+)
+# --sidebar-one-row: the title bar and the icons share one grid row.
+ONE_ROW_GRID = b'\t\t\tclassName: "grid items-center gap-1 px-2 pt-2 pb-2",\n\t\t\tstyle: { ...t3, gridTemplateColumns: "1fr repeat(4,auto)" },\n'
+ONE_ROW_TITLE = b'\t\t\tclassName: "-mx-2 flex h-8 min-w-0 items-center",\n\t\t\tstyle: t4,\n'
+
 # Files are named by a content marker (chunk hashes change per build).
 LAYOUT = b"var DashboardSidebarContent = (0, import_react.memo)(function DashboardSidebarContent(t0) {"
 HOTKEYS = b"\tTOGGLE_TERMINAL_RICH_INPUT: {\n"
@@ -292,7 +321,7 @@ EDITS: dict[str, list] = {
             (LAYOUT, [
                 ("project icon: thumbnail size-6, kept on hover",
                  b'className: "size-4 group-hover:hidden"',
-                 b'className: "size-6 group-hover:!block"'),
+                 b'className: "size-6"'),  # the 2.0.9 CSS ships no group-hover:!block
                 ("project icon: hover chevron hidden",
                  b't9 = cn("hidden size-4 text-muted-foreground transition-transform group-hover:block", t8);',
                  b't9 = cn("hidden size-6 text-muted-foreground transition-transform", t8);'),
@@ -333,6 +362,67 @@ EDITS: dict[str, list] = {
                 ("tray: never created",
                  b"function initTray() {\n\tif (tray) {",
                  b"function initTray() {\n\tif (true) {"),
+            ], ()),
+        ]),
+        ("compact-sidebar", [
+            (LAYOUT, [
+                ("compact: header grid",
+                 b'\t\t\tclassName: "flex flex-col gap-px px-2 pt-2 pb-2",\n\t\t\tstyle: t3,\n',
+                 b'\t\t\tclassName: "grid gap-1 px-2 pt-2 pb-2",\n\t\t\tstyle: { ...t3, gridTemplateColumns: "repeat(4,1fr)" },\n',
+                 (ONE_ROW_GRID,)),
+                ("compact: title bar spans the row",
+                 b'\t\t\tclassName: "-mx-2 mb-3 flex h-8 items-center pr-3",\n\t\t\tstyle: t4,\n',
+                 b'\t\t\tclassName: "-mx-2 mb-1 flex h-8 items-center pr-3",\n\t\t\tstyle: { ...t4, gridColumn: "1 / -1" },\n',
+                 (ONE_ROW_TITLE,)),
+                ("compact: New Workspace and Search keep full rows",
+                 b"\t\tt13 = (0, import_jsx_runtime.jsx)(SidebarNewWorkspaceButton, {});\n"
+                 b"\t\tt14 = (0, import_jsx_runtime.jsx)(SidebarSearchButton, {});\n",
+                 b'\t\tt13 = (0, import_jsx_runtime.jsx)("div", { style: { gridColumn: "1 / -1" }, children: (0, import_jsx_runtime.jsx)(SidebarNewWorkspaceButton, {}) });\n'
+                 b'\t\tt14 = (0, import_jsx_runtime.jsx)("div", { style: { gridColumn: "1 / -1" }, children: (0, import_jsx_runtime.jsx)(SidebarSearchButton, {}) });\n'),
+            ] + [edit for cell in COMPACT_CELLS for edit in cell] + [
+                ("compact: Usage cell",
+                 b'\t\t\tonClick: navigation.openUsage,\n\t\t\t"aria-label": _t({ id: "7FaY4u" }),\n'
+                 b'\t\t\tclassName: "flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] font-medium text-muted-foreground transition-colors hover:bg-fill-hover hover:text-foreground",\n',
+                 b'\t\t\tonClick: navigation.openUsage,\n\t\t\t"aria-label": _t({ id: "7FaY4u" }),\n\t\t\ttitle: _t({ id: "7FaY4u" }),\n'
+                 b'\t\t\tclassName: "relative flex w-full items-center justify-center rounded-md p-1 text-muted-foreground hover:bg-fill-hover hover:text-foreground",\n'),
+                ("compact: Usage label sr-only",
+                 b'\t\t\t\tclassName: "flex-1 text-left",\n\t\t\t\tchildren: (0, import_jsx_runtime.jsx)(Trans, { id: "7FaY4u" })',
+                 b'\t\t\t\tclassName: "sr-only",\n\t\t\t\tchildren: (0, import_jsx_runtime.jsx)(Trans, { id: "7FaY4u" })'),
+                ("compact: Plugins cell",
+                 b'\t\t\t"aria-label": _t({ id: "ohUJJM" }),\n\t\t\t"aria-current": navigation.isPluginsOpen ? "page" : void 0,\n'
+                 b'\t\t\tclassName: cn("flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] font-medium transition-colors", navigation.isPluginsOpen',
+                 b'\t\t\t"aria-label": _t({ id: "ohUJJM" }),\n\t\t\ttitle: _t({ id: "ohUJJM" }),\n\t\t\t"aria-current": navigation.isPluginsOpen ? "page" : void 0,\n'
+                 b'\t\t\tclassName: cn("relative flex w-full justify-center rounded-md p-1", navigation.isPluginsOpen'),
+                ("compact: Plugins label sr-only",
+                 b'\t\t\t\tclassName: "flex-1 text-left",\n\t\t\t\tchildren: (0, import_jsx_runtime.jsx)(Trans, { id: "ohUJJM" })',
+                 b'\t\t\t\tclassName: "sr-only",\n\t\t\t\tchildren: (0, import_jsx_runtime.jsx)(Trans, { id: "ohUJJM" })'),
+                ("compact: failed automations badge on the corner",
+                 b'className: "absolute right-2 top-1/2 flex h-4 min-w-4 -translate-y-1/2 items-center justify-center rounded-full bg-red-500/15 px-1 text-[10px] font-medium tabular-nums',
+                 b'className: "absolute -right-1 -top-1 flex size-4 items-center justify-center rounded-full bg-red-500/15 text-[10px] tabular-nums'),
+            ], ()),
+        ]),
+        ("hide-nav-buttons", [
+            (LAYOUT, [
+                ("nav: hide New Workspace, Search, Workspaces and Pages",
+                 b"\t\t\tchildren: [\n\t\t\t\tt12,\n\t\t\t\tt13,\n\t\t\t\tt14,\n\t\t\t\tt20,\n\t\t\t\tt28,\n\t\t\t\tt36,\n\t\t\t\tt44,\n\t\t\t\tt45,\n\t\t\t\tt53,\n\t\t\t\tt54\n\t\t\t]\n",
+                 b"\t\t\tchildren: [t12, t28, t36, t44, t54, t45] /* hidden: t13 t14 t20 t53 */\n"),
+            ], ()),
+        ]),
+        ("hide-sidebar-footer", [
+            (LAYOUT, [
+                ("footer: hidden in the expanded sidebar",
+                 b'className: cn(isCollapsed ? "flex flex-col items-center gap-2 py-2" : "flex items-center gap-1 p-2"),',
+                 b'className: cn(isCollapsed ? "flex flex-col items-center gap-2 py-2" : "hidden"),'),
+            ], ()),
+        ]),
+        ("pinned-icon-only", [
+            (LAYOUT, [
+                ("pinned: no project name prefix",
+                 b'prefix: pinnedContext ? pinnedContext.projectName ?? _t({ id: "CqO9qC" }) : void 0,',
+                 b"prefix: /* pinned-icon-only */ void 0,"),
+                ("pinned: project icon size-5",
+                 b'className: "size-3.5 text-[8px]"',
+                 b'className: "size-5 text-[11px]"'),
             ], ()),
         ]),
     ],
