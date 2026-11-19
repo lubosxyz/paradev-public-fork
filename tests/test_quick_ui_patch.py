@@ -366,14 +366,23 @@ class QuickUiPatch209Test(ReleaseCases, unittest.TestCase):
         self.assertTrue(sha(target.read_bytes()).startswith(QUICK_V1_SHA256_PREFIX))
         return target
 
+    # Value: protects=a chip hotkey opens the first workspace of the status it turned on (review r1), and older
+    # outputs with the union-mask lookup are moved to it; fails_when=the lookup tests the whole mask again or the
+    # migration anchor is lost (the quick-v1 upgrade below would then insert SSF_JS twice).
+    def test_chip_hotkey_opens_the_toggled_status(self):
+        self.assertIn(b"ssfAll().find((w) => (ssfBits(st.get(w.id).status, w.pullRequest?.state) & bit) !== 0);", Q.SSF_JS)
+        self.assertNotIn(b"ssfAll().find((w) => ssfHit(st, w))", self.patched)
+        self.assertEqual(self.patched.count(b"/* quick-ui-patch v1: status chips */"), 1)
+
     # Value: protects=the quick-v1 bundle upgrades in place to the bytes of a run from stock;
     # fails_when=canonical form, room order or an alt makes the two paths diverge.
     def test_upgrade_from_quick_v1_matches_run_from_stock(self):
         target = self.quick_v1_copy()
         _, report = Q.plan(target.read_bytes(), self.RELEASE, overrides=False)
-        states = {row[0]: row[1] for row in report}
-        for name in ("status-chips", "palette-cmd-k", "sound-waiting"):  # quick-v1 is not redone
-            self.assertEqual(states[name], "already applied")
+        states = {row[0]: row[1:] for row in report}
+        for name in ("palette-cmd-k", "sound-waiting"):  # quick-v1 is not redone
+            self.assertEqual(states[name][0], "already applied")
+        self.assertEqual(states["status-chips"], ("apply", ["status chips: module code"]))  # only the hotkey lookup moves
         code, out, err = self.cli("--asar", str(target), "--backup-dir", str(self.dir))
         self.assertEqual(code, 0, err)
         self.assertEqual(sha(target.read_bytes()), sha(self.patched))

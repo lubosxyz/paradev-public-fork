@@ -151,7 +151,7 @@ function SsfChips() {
 			const [st, cnt] = ssfSeen, on = !(ssfMask & bit);
 			if (e.repeat || on && !cnt?.[Math.log2(bit)]) return;
 			ssfToggle(bit, false);
-			const first = on && st && ssfAll().find((w) => ssfHit(st, w));
+			const first = on && st && ssfAll().find((w) => (ssfBits(st.get(w.id).status, w.pullRequest?.state) & bit) !== 0);
 			first && ssfData && navigateToV2Workspace(first.id, ssfData[3]);
 		};
 		addEventListener("keydown", onKey, true);
@@ -207,6 +207,14 @@ function SsfChip({ bit, name, hue, pr, mask, count }) {
 	});
 }
 '''
+
+# The chip hotkey opens the first workspace of the status it turned on, not of
+# the whole mask (review r1). Earlier outputs (quick-v1 included) carry the
+# union-mask line; the module-code edit moves them to this one.
+SSF_JS_UNION_HIT = SSF_JS.replace(
+    b"ssfAll().find((w) => (ssfBits(st.get(w.id).status, w.pullRequest?.state) & bit) !== 0);",
+    b"ssfAll().find((w) => ssfHit(st, w));")
+assert SSF_JS_UNION_HIT != SSF_JS
 
 SIDEBAR_NAMES = (
     b"StatusStoreContext", b"getProjectChildrenWorkspaces", b"navigateToV2Workspace", b"Tooltip",
@@ -661,7 +669,7 @@ EDITS: dict[str, list] = {
         ("status-chips", [
             (LAYOUT, [
                 ("status chips: module code",
-                 LAYOUT,
+                 (SSF_JS_UNION_HIT + LAYOUT, LAYOUT),
                  SSF_JS + LAYOUT),
                 ("status chips: sidebar data",
                  b'\tconst isFilterActive = trimmedFilterQuery !== "" || hostFilter !== "all";\n',
