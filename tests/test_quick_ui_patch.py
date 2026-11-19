@@ -540,13 +540,19 @@ class QuickUiPatch209Test(ReleaseCases, unittest.TestCase):
     STOCK_SHA256_PREFIX = "fae8f19f7554"
     COLLECTION_KEYS = ("v2WorkspaceLocalState", "v2TerminalPresets", "v2UserPreferences")
 
+    def quick_v1_source(self) -> bytes:
+        try:
+            return subprocess.run(["git", "-C", str(ROOT), "show", f"{QUICK_V1_COMMIT}:patches/quick-ui-patch.py"],
+                                  check=True, capture_output=True).stdout
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest(f"quick-v1 source needs a git checkout with commit {QUICK_V1_COMMIT} (not in {ROOT})")
+
     def quick_v1_copy(self) -> Path:
         v1_dir = self.dir / "v1"
         v1_dir.mkdir(exist_ok=True)
         (v1_dir / "patch-asar.py").write_bytes((ROOT / "patches" / "patch-asar.py").read_bytes())  # v1 imports it
         v1 = v1_dir / "quick-ui-patch.py"
-        v1.write_bytes(subprocess.run(["git", "-C", str(ROOT), "show", f"{QUICK_V1_COMMIT}:patches/quick-ui-patch.py"],
-                                      check=True, capture_output=True).stdout)
+        v1.write_bytes(self.quick_v1_source())
         target = self.dir / "quick-v1.asar"
         clone(self.STOCK, target)
         backups = self.dir / "v1-backups"

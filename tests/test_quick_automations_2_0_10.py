@@ -26,8 +26,12 @@ STOCK = Path(os.environ.get("SUPERSET_2010_STOCK_ASAR") or SCRATCH / "stock-2.0.
 LIVE = Path("/Applications/Superset.app/Contents/Resources/app.asar")
 RELEASE = "2.0.10"
 MINE = ("automations-header", "automations-view")
-AUTOMATIONS_ONLY_SHA256 = "063efe006c52b8041d0412963588d295cc5dba6c700118d544fe665a4b2bd5c5"
-HEADER_ONLY_SHA256_PREFIX = "c4443e689607"
+AUTOMATIONS_ONLY_SHA256 = "8624f097aa3d4b915568d2d124ce2df7170cbd08919fae9804bdeb2b92c1c5e7"
+HEADER_ONLY_SHA256_PREFIX = "11df6f4857f3"
+# The same runs before quick-ui-patch.py's per-file trailer (1888a2fd84): stripping the trailer and re-padding must
+# give these bytes back, so the trailer is the only change of the pinned outputs.
+AUTOMATIONS_ONLY_PRE_TRAILER_SHA256 = "063efe006c52b8041d0412963588d295cc5dba6c700118d544fe665a4b2bd5c5"
+HEADER_ONLY_PRE_TRAILER_SHA256_PREFIX = "c4443e689607"
 
 
 def load(name, path):
@@ -44,6 +48,17 @@ HARNESS = load("test_quick_automations_209_harness", Path(__file__).with_name("t
 
 def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def without_trailer(data: bytes) -> bytes:
+    """`data` with quick-ui-patch.py's per-file trailer removed and each file re-padded with spaces."""
+    out = bytearray(data)
+    for _path, off, size in Q.asar_files(data):
+        body = bytes(out[off:off + size]).rstrip(b" ")
+        if body.endswith(Q.TRAILER):
+            body = body[:-len(Q.TRAILER)]
+            out[off:off + size] = body + b" " * (size - len(body))
+    return bytes(out)
 
 
 def others():
@@ -118,6 +133,7 @@ class QuickAutomations2010Test(unittest.TestCase):
         data = self.asar.read_bytes()
         self.assertEqual(len(data), STOCK.stat().st_size)
         self.assertEqual(sha(data), AUTOMATIONS_ONLY_SHA256)
+        self.assertEqual(sha(without_trailer(data)), AUTOMATIONS_ONLY_PRE_TRAILER_SHA256)  # only the trailer changed
         self.assert_noop(others())
         self.assert_noop(others() + ["automations-view"])
 
@@ -131,6 +147,7 @@ class QuickAutomations2010Test(unittest.TestCase):
     def test_header_then_view_matches_direct(self):
         self.assert_applied(others() + ["automations-view"])
         self.assertTrue(sha(self.asar.read_bytes()).startswith(HEADER_ONLY_SHA256_PREFIX))
+        self.assertTrue(sha(without_trailer(self.asar.read_bytes())).startswith(HEADER_ONLY_PRE_TRAILER_SHA256_PREFIX))
         self.assert_noop(others() + ["automations-view"])
         self.assert_applied(others())
         self.assertEqual(sha(self.asar.read_bytes()), AUTOMATIONS_ONLY_SHA256)
