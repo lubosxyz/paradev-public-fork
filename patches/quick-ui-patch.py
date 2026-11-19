@@ -316,6 +316,151 @@ PALETTE_NAMES = (
     b"useIsV2CloudEnabled", b"ROW_CLASS", b"import_react", b"import_jsx_runtime",
 )
 
+# --- sidebar device filter, PINNED and project order (layout chunk) ----------
+
+SDF_JS = b'''/* quick-ui-patch: sidebar device filter */
+let sdfHost = null, sdfIds = [];
+const sdfL = new Set();
+const SDF_CLOUD = "cloud";
+try {
+	sdfHost = localStorage.getItem("sdf-sidebar-device") || null;
+} catch {}
+function sdfEmit() {
+	for (const l of [...sdfL]) l();
+}
+function sdfSub(l) {
+	sdfL.add(l);
+	return () => sdfL.delete(l);
+}
+function sdfSet(host) {
+	sdfHost = host;
+	try {
+		host ? localStorage.setItem("sdf-sidebar-device", host) : localStorage.removeItem("sdf-sidebar-device");
+	} catch {}
+	sdfEmit();
+}
+function sdfUseFilter(up, groups, pinned, sessions) {
+	const host = (0, import_react.useSyncExternalStore)(sdfSub, () => sdfHost);
+	const ids = (0, import_react.useMemo)(() => {
+		const rows = [...pinned, ...sessions, ...groups.flatMap((p) => getProjectChildrenWorkspaces(p.children))];
+		const hosts = [...new Set(rows.filter((w) => w.hostType !== "cloud").map((w) => w.hostId))].sort();
+		return [...hosts, ...rows.some((w) => w.hostType === "cloud") ? [SDF_CLOUD] : []].join("\\n");
+	}, [groups, pinned, sessions]);
+	(0, import_react.useEffect)(() => {
+		sdfIds = ids ? ids.split("\\n") : [];
+		sdfEmit();
+	}, [ids]);
+	return host === null ? up : `sdf\\n${host}\\n${up}`;
+}
+function sdfMatch(workspace, filter) {
+	const [, host, up] = filter.split("\\n");
+	return (host === SDF_CLOUD ? workspace.hostType === "cloud" : workspace.hostType !== "cloud" && workspace.hostId === host) && matchesHostFilter(workspace, up);
+}
+function SdfDevices() {
+	const host = (0, import_react.useSyncExternalStore)(sdfSub, () => sdfHost);
+	const ids = (0, import_react.useSyncExternalStore)(sdfSub, () => sdfIds);
+	const { machineId } = useLocalHostService();
+	const { hosts } = useKnownHosts();
+	const devices = (0, import_react.useMemo)(() => {
+		const list = [...new Set([machineId, ...ids, host].filter((id) => id && id !== SDF_CLOUD))].map((id) => [id, hosts.find((row) => row.machineId === id)?.name || id.slice(0, 8), id === machineId ? LuLaptop : LuMonitor]).sort((a, b) => (b[0] === machineId) - (a[0] === machineId) || a[1].localeCompare(b[1]));
+		return ids.includes(SDF_CLOUD) || host === SDF_CLOUD ? [...list, [SDF_CLOUD, "Cloud", TbCloud]] : list;
+	}, [host, ids, machineId, hosts]);
+	if (devices.length < 2 && host === null) return null;
+	const { jsx, jsxs } = import_jsx_runtime;
+	const current = devices.find(([id]) => id === host);
+	const Icon = current?.[2] ?? LuLayers;
+	const label = current ? current[1] : "Filter by device";
+	const stop = (e) => e.stopPropagation();
+	return jsxs(DropdownMenu, { children: [
+		jsxs(Tooltip, { delayDuration: 700, children: [
+			jsx(TooltipTrigger, { asChild: true, children: jsx(DropdownMenuTrigger, { asChild: true, children: jsx("button", { type: "button", "aria-label": label, onClick: stop, onKeyDown: stop, className: cn("flex size-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-fill-hover hover:text-foreground", current ? "bg-fill-selected text-foreground" : "text-muted-foreground"), children: jsx(Icon, { className: "size-3.5" }) }) }) }),
+			jsx(TooltipContent, { side: "bottom", children: label })
+		] }),
+		jsx(DropdownMenuContent, { align: "end", className: "w-56", onClick: stop, onKeyDown: stop, onCloseAutoFocus: (e) => e.preventDefault(), children: jsxs(DropdownMenuRadioGroup, { value: host ?? "", onValueChange: (value) => sdfSet(value || null), children: [
+			jsx(DropdownMenuRadioItem, { value: "", children: "All devices" }),
+			jsx(DropdownMenuSeparator, {}),
+			devices.map(([id, name, I]) => jsxs(DropdownMenuRadioItem, { value: id, className: "gap-2", children: [jsx(I, { className: "size-3.5 shrink-0" }), jsx("span", { className: "truncate", children: name })] }, id))
+		] }) })
+	] });
+}
+'''
+SDF_NAMES = (
+    b"getProjectChildrenWorkspaces", b"matchesHostFilter", b"useLocalHostService", b"useKnownHosts", b"LuLaptop",
+    b"LuMonitor", b"LuLayers", b"TbCloud", b"DropdownMenu", b"DropdownMenuTrigger", b"DropdownMenuContent",
+    b"DropdownMenuRadioGroup", b"DropdownMenuRadioItem", b"DropdownMenuSeparator", b"Tooltip", b"TooltipTrigger",
+    b"TooltipContent", b"cn", b"import_react", b"import_jsx_runtime",
+)
+MATCHES_HOST = b'function matchesHostFilter(workspace, filter) {\n\tif (filter === "all") return true;\n'
+
+PAS_JS = b'''/* quick-ui-patch: PINNED follows the sort mode */
+function pasUseSorted(rows, mode) {
+	return (0, import_react.useMemo)(() => {
+		if (mode === "manual") return rows;
+		const sorted = [...rows].sort(makeStableComparator((workspace) => getWorkspaceTimestamp(workspace, mode), (workspace) => workspace.name, (workspace) => workspace.id));
+		return haveSameItems(sorted, rows) ? rows : sorted;
+	}, [rows, mode]);
+}
+'''
+LPP_JS = b'''/* quick-ui-patch: projects follow the sort mode and pin on top */
+const lppL = new Set();
+function lppRead(key, parse) {
+	try {
+		return parse(localStorage.getItem(`lubos-patch:${key}`));
+	} catch {
+		return null;
+	}
+}
+let lppState = [lppRead("sort-projects", (value) => value === "1") ?? false, lppRead("pinned-projects", (value) => JSON.parse(value).filter((id, index, all) => typeof id === "string" && all.indexOf(id) === index)) ?? []];
+function lppSet(sort, pins) {
+	lppState = [sort, pins];
+	try {
+		localStorage.setItem("lubos-patch:sort-projects", sort ? "1" : "0");
+		localStorage.setItem("lubos-patch:pinned-projects", JSON.stringify(pins));
+	} catch {}
+	for (const l of [...lppL]) l();
+}
+const lppSub = (l) => (lppL.add(l), () => lppL.delete(l));
+const lppUseState = () => (0, import_react.useSyncExternalStore)(lppSub, () => lppState);
+function lppUse(groups, mode) {
+	const [sort, pins] = lppUseState();
+	return (0, import_react.useMemo)(() => {
+		const sorted = sort && mode !== "manual" && typeof LppSortItem === "function";
+		const time = (project) => mode === "created" ? toTime(project.createdAt) : newest(project.children.map((child) => getChildTimestamp(child, mode)));
+		const rows = sorted ? [...groups].sort(makeStableComparator(time, (project) => project.name, (project) => project.id)) : groups;
+		const pinned = typeof LppPinItem === "function" ? pins.flatMap((id) => rows.filter((project) => project.id === id)) : [];
+		const order = [...pinned, ...rows.filter((project) => !pinned.includes(project))];
+		return [haveSameItems(order, groups) ? groups : order, sorted || pinned.length > 0];
+	}, [groups, mode, sort, pins]);
+}
+'''
+LPP_SORT_JS = b'''/* quick-ui-patch: sort projects checkbox */
+function LppSortItem() {
+	const [sort, pins] = lppUseState();
+	const { jsx, jsxs, Fragment } = import_jsx_runtime;
+	return jsxs(Fragment, { children: [jsx(DropdownMenuSeparator, {}), jsxs(DropdownMenuItem, { role: "menuitemcheckbox", "aria-checked": sort, onSelect: (event) => (event.preventDefault(), lppSet(!sort, pins)), children: [jsx(LuCheck, { className: cn("size-4", !sort && "invisible") }), "Sort projects too"] })] });
+}
+'''
+LPP_PIN_JS = b'''/* quick-ui-patch: pin project menu item */
+function LppPinItem({ projectId }) {
+	const [sort, pins] = lppUseState(), pinned = pins.includes(projectId);
+	const { jsx, jsxs } = import_jsx_runtime;
+	return jsxs(ContextMenuItem, { onSelect: () => lppSet(sort, pinned ? pins.filter((id) => id !== projectId) : [...pins, projectId]), children: [jsx(pinned ? LuPinOff : LuPin, { className: "size-4 mr-2" }), pinned ? "Unpin project" : "Pin project"] });
+}
+'''
+ORDER_NAMES = (b"toTime", b"newest", b"getChildTimestamp", b"makeStableComparator", b"haveSameItems", b"import_react")
+ORDER_SHARED = (
+    ("project order: store and order hook",
+     b"function sortDashboardSidebarProjects(projects, mode) {\n",
+     LPP_JS + b"function sortDashboardSidebarProjects(projects, mode) {\n"),
+    ("project order: displayed projects",
+     b"\tconst sortedGroups = t11;\n",
+     b"\tconst [sortedGroups, lppDrag] = lppUse(t11, sortMode);\n"),
+    ("project order: no project drag while the order moves",
+     b"\tconst isProjectDragDisabled = isFilterActive;\n",
+     b"\tconst isProjectDragDisabled = isFilterActive || lppDrag;\n"),
+)
+RESOLVE_IMPORT = b'import { n as resolveProjectIconUrl } from "./resolveProjectIconUrl-CcUkJ5FA.js";\n'
+
 ROW_ITEM = b"DashboardSidebarWorkspaceItem/index.ts\n"
 PROJECT_ITEM = b"DashboardSidebarProjectSection/index.ts\n"
 
@@ -551,6 +696,82 @@ EDITS: dict[str, list] = {
                  b"\tif (true) {\n\t\tt5 = (0, import_jsx_runtime.jsxs)(CommandList, { children: [\n\t\t\tt2,\n"
                  b'\t\t\t(0, import_jsx_runtime.jsx)(SspPaletteSearch, { query, onSelect }, "ssp"),\n\t\t\tt3,\n'),
             ], PALETTE_NAMES),
+        ]),
+        ("sidebar-device-filter", [
+            (LAYOUT, [
+                ("device filter: module code and row match",
+                 MATCHES_HOST,
+                 SDF_JS + MATCHES_HOST.replace(b"{\n", b'{\n\tif (filter.startsWith("sdf\\n")) return sdfMatch(workspace, filter);\n', 1)),
+                ("device filter: sidebar data",
+                 b'\tconst hostFilter = isCloudEnabled && !isCollapsed ? preferences.sidebarProjectHostFilter : "all";\n',
+                 b'\tconst sdfUp = isCloudEnabled && !isCollapsed ? preferences.sidebarProjectHostFilter : "all";\n'
+                 b"\tconst hostFilter = sdfUseFilter(sdfUp, groups, pinnedWorkspaces, sessionWorkspaces);\n"),
+                ("device filter: sort menu keeps the upstream host filter",
+                 b"\t\t\t\t\thostFilter: isCloudEnabled ? hostFilter : null,\n",
+                 b"\t\t\t\t\thostFilter: isCloudEnabled ? sdfUp : null,\n"),
+                ("device filter: Clear filter clears the device",
+                 b'\t\t\tsetProjectFilterQuery("");\n\t\t\tsetSidebarProjectHostFilter("all");\n',
+                 b'\t\t\tsetProjectFilterQuery("");\n\t\t\tsetSidebarProjectHostFilter("all");\n\t\t\tsdfSet(null);\n'),
+                ("device filter: dropdown in the Projects header",
+                 b"\t\tt10 = (0, import_jsx_runtime.jsx)(DashboardSidebarProjectsSortMenu, {\n",
+                 b"\t\tt10 = (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [(0, import_jsx_runtime.jsx)(SdfDevices, {}), (0, import_jsx_runtime.jsx)(DashboardSidebarProjectsSortMenu, {\n"),
+                ("device filter: dropdown in the Projects header (close)",
+                 b"\t\t\tonHostFilterChange\n\t\t});\n\t\t$[28] = hostFilter;\n",
+                 b"\t\t\tonHostFilterChange\n\t\t})] });\n\t\t$[28] = hostFilter;\n"),
+            ], SDF_NAMES),
+        ]),
+        ("sidebar-one-row", [
+            (LAYOUT, [
+                ("one row: title bar and icons share the grid row",
+                 b'\t\t\tclassName: "grid gap-1 px-2 pt-2 pb-2",\n\t\t\tstyle: { ...t3, gridTemplateColumns: "repeat(4,1fr)" },\n',
+                 ONE_ROW_GRID),
+                ("one row: title bar in the first track",
+                 b'\t\t\tclassName: "-mx-2 mb-1 flex h-8 items-center pr-3",\n\t\t\tstyle: { ...t4, gridColumn: "1 / -1" },\n',
+                 ONE_ROW_TITLE),
+                ("one row: no sidebar toggle in the expanded header",
+                 b"\t\tt6 = (0, import_jsx_runtime.jsx)(SidebarToggle, {});\n\t\tt7 = (0, import_jsx_runtime.jsx)(NavigationControls, {});\n",
+                 b"\t\tt6 = null /* sidebar-one-row: Cmd+B */;\n\t\tt7 = (0, import_jsx_runtime.jsx)(NavigationControls, {});\n"),
+            ], ()),
+        ]),
+        ("pinned-activity-sort", [
+            (LAYOUT, [
+                ("pinned sort: helper",
+                 b"function haveSameItems(left, right) {\n",
+                 PAS_JS + b"function haveSameItems(left, right) {\n"),
+                ("pinned sort: raw pinned rows",
+                 b"\tconst { groups, hiddenProjects, pinnedWorkspaces, sessionWorkspaces, sessionChildren,",
+                 b"\tconst { groups, hiddenProjects, pinnedWorkspaces: pasRows, sessionWorkspaces, sessionChildren,"),
+                ("pinned sort: sorted pinned rows",
+                 b"\tconst { preferences, setSidebarProjectSortMode, setSidebarProjectHostFilter } = useV2UserPreferences();\n"
+                 b"\tconst sortMode = preferences.sidebarProjectSortMode;\n",
+                 b"\tconst { preferences, setSidebarProjectSortMode, setSidebarProjectHostFilter } = useV2UserPreferences();\n"
+                 b"\tconst sortMode = preferences.sidebarProjectSortMode;\n"
+                 b"\tconst pinnedWorkspaces = pasUseSorted(pasRows, sortMode);\n"),
+            ], (b"makeStableComparator", b"getWorkspaceTimestamp", b"haveSameItems", b"import_react")),
+        ]),
+        ("sort-projects", [
+            (LAYOUT, list(ORDER_SHARED) + [
+                ("sort projects: checkbox",
+                 b"function sortDashboardSidebarProjectChildren(children, mode) {\n",
+                 LPP_SORT_JS + b"function sortDashboardSidebarProjectChildren(children, mode) {\n"),
+                ("sort projects: checkbox in the sort menu",
+                 b"\t\t\tchildren: [\n\t\t\t\tt8,\n\t\t\t\tt11,\n\t\t\t\tt12,\n\t\t\t\tt13\n\t\t\t]\n",
+                 b"\t\t\tchildren: [\n\t\t\t\tt8,\n\t\t\t\tt11,\n\t\t\t\tt12,\n\t\t\t\tt13,\n\t\t\t\t(0, import_jsx_runtime.jsx)(LppSortItem, {}, \"lpp\")\n\t\t\t]\n"),
+            ], ORDER_NAMES + (b"DropdownMenuSeparator", b"DropdownMenuItem", b"LuCheck", b"cn")),
+        ]),
+        ("pin-projects", [
+            (LAYOUT, list(ORDER_SHARED) + [
+                ("pin projects: LuPin import",
+                 RESOLVE_IMPORT,
+                 RESOLVE_IMPORT + b'import { qn as LuPin } from "./lu-DtqKlf1H.js";\n'),
+                ("pin projects: menu item",
+                 b"function getChildTimestamp(child, mode) {\n",
+                 LPP_PIN_JS + b"function getChildTimestamp(child, mode) {\n"),
+                ("pin projects: item after Import worktrees",
+                 b'(0, import_jsx_runtime.jsx)(LuFolderInput, { className: "size-4 mr-2" }), (0, import_jsx_runtime.jsx)(Trans, { id: "LhpIB7" })]\n\t\t\t}),\n',
+                 b'(0, import_jsx_runtime.jsx)(LuFolderInput, { className: "size-4 mr-2" }), (0, import_jsx_runtime.jsx)(Trans, { id: "LhpIB7" })]\n\t\t\t}),\n'
+                 b"\t\t\t(0, import_jsx_runtime.jsx)(LppPinItem, { projectId }),\n"),
+            ], ORDER_NAMES + (b"ContextMenuItem", b"LuPinOff")),
         ]),
     ],
 }
