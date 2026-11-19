@@ -1255,9 +1255,37 @@ def sha(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
 
+QUICK_MARKER = b"quick-ui-patch v"  # the watcher detects a quick-patched bundle by these bytes
+
+
+def target_app(asar: Path, app: Path | None) -> Path | None:
+    """The app whose fuse and Apple seal the write affects: --app, else the .app holding the asar."""
+    if app is not None:
+        return app.expanduser().resolve()
+    p = asar.expanduser().resolve()
+    contents = p.parent.parent
+    if p.parent.name == "Resources" and contents.name == "Contents" and contents.parent.suffix == ".app":
+        return contents.parent
+    return None
+
+
+def _file_sha(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _identity(st: os.stat_result):
+    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--asar", type=Path, default=DEFAULT_ASAR)
+    ap.add_argument("--app", type=Path, help="the real app whose fuse and signature the result affects "
+                                             "(when --asar is a staged copy)")
     ap.add_argument("--release", help="override CFBundleShortVersionString")
     ap.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
     ap.add_argument("--dry-run", action="store_true")
@@ -1267,7 +1295,8 @@ def main(argv=None) -> int:
     ap.add_argument("--ack-invalid-apple-signature", action="store_true")
     args = ap.parse_args(argv)
 
-    release = args.release or release_of(args.asar)
+    app = target_app(args.asar, args.app)
+    release = args.release or release_of(app / "Contents" / "Resources" / "app.asar" if app else args.asar)
     if release not in releases():
         print(f"error: no quick patch for desktop {release!r} (known: {', '.join(releases())})", file=sys.stderr)
         return 2
@@ -1289,10 +1318,16 @@ def main(argv=None) -> int:
     spec = importlib.util.spec_from_file_location("patch_asar", HERE / "patch-asar.py")
     pa = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(pa)
-    if args.asar == DEFAULT_ASAR:
-        pa.require_asar_integrity_fuse_disabled(args.asar)
+    if app is not None:
+        try:
+            pa.require_asar_integrity_fuse_disabled(app / "Contents" / "Resources" / "app.asar")
+        except (OSError, RuntimeError) as exc:
+            print(f"error: {app}: {exc}", file=sys.stderr)
+            return 1
 
-    data = args.asar.read_bytes()
+    asar = args.asar
+    before = _identity(os.stat(asar))
+    data = asar.read_bytes()
     writes, report = plan(data, release, set(args.skip), overrides)
     for name, state, _ in report:
         print(f"{name}: {state}")
@@ -1306,8 +1341,8 @@ def main(argv=None) -> int:
     if args.dry_run:
         print(f"dry run: {len(writes)} files would change")
         return 0
-    if args.asar == DEFAULT_ASAR and not args.ack_invalid_apple_signature:
-        print("error: refusing to modify the signed bundle without --ack-invalid-apple-signature", file=sys.stderr)
+    if app is not None and not args.ack_invalid_apple_signature:
+        print(f"error: refusing to modify the signed bundle of {app} without --ack-invalid-apple-signature", file=sys.stderr)
         return 1
 
     out = bytearray(data)
@@ -1316,19 +1351,49 @@ def main(argv=None) -> int:
     out = bytes(out)
     assert len(out) == len(data)
 
+    # The backup is what one `patch-asar.py --revert` restores. For a bundle a
+    # quick patch already changed, that is the unpatched release at the end of
+    # the verified manifest chain, never the earlier quick generation.
+    base = data
+    if QUICK_MARKER in data:
+        root = pa.stock_snapshot(asar, args.backup_dir)
+        if root.resolve() == asar.expanduser().resolve():
+            print("error: the bundle is quick-patched but no verified backup chain leads to its unpatched "
+                  f"release in {args.backup_dir}; refusing (restore stock first)", file=sys.stderr)
+            return 1
+        base = root.read_bytes()
+        if QUICK_MARKER in base or len(base) != len(data):
+            print(f"error: the backup chain ends at {root}, which is not an unpatched release; refusing", file=sys.stderr)
+            return 1
+
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f") + "000"
     backup = args.backup_dir / f"app.asar.backup-pre-ui-patch-{stamp}"
-    backup.write_bytes(data)
-    manifest = {"backup_sha256": sha(data), "format": 1, "patched_sha256": sha(out), "size": len(data)}
-    mpath = backup.with_name(backup.name + ".json")
-    mpath.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-    os.chmod(mpath, 0o600)
-
-    tmp = args.asar.with_name(f".{args.asar.name}.quick.patching")
-    tmp.write_bytes(out)
-    os.chmod(tmp, os.stat(args.asar).st_mode & 0o777)
-    os.replace(tmp, args.asar)
-    print(f"patched {args.asar} ({len(writes)} files), {sha(data)[:12]} -> {sha(out)[:12]}; backup {backup}")
+    manifest = {"backup_sha256": sha(base), "format": 1, "patched_sha256": sha(out), "size": len(base)}
+    fd, tmp_name = tempfile.mkstemp(dir=asar.parent, prefix=f".{asar.name}.", suffix=".patching")
+    tmp = Path(tmp_name)
+    published = False
+    try:
+        backup.write_bytes(base)
+        pa._write_manifest(backup, manifest)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(out)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, os.stat(asar).st_mode & 0o777)
+        # The target must still be the bundle that was read and planned: an
+        # updater may have replaced it meanwhile.
+        if _identity(os.stat(asar)) != before or _file_sha(asar) != sha(data):
+            print(f"error: {asar} changed while patching; nothing written", file=sys.stderr)
+            return 1
+        os.replace(tmp, asar)
+        published = True
+    finally:
+        tmp.unlink(missing_ok=True)
+        if not published:
+            backup.unlink(missing_ok=True)
+            pa._manifest_path(backup).unlink(missing_ok=True)
+    print(f"patched {asar} ({len(writes)} files), {sha(data)[:12]} -> {sha(out)[:12]}; backup {backup}"
+          + (" (unpatched release)" if base is not data else ""))
     return 0
 
 

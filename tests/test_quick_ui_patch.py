@@ -192,6 +192,8 @@ class ReleaseCases:
             self.assertIn(f"{name}: pending" if name in self.pending else f"{name}: apply", out)
         self.assertNotEqual(self.patched, self.stock)
         self.assertIn(b"quick-ui-patch v", self.patched)
+        self.assertNotIn(b"quick-ui-patch v", self.stock)
+        self.assertEqual([p for p in self.dir.iterdir() if p.name.endswith(".patching")], [])
         (backup,) = [p for p in self.backups.iterdir() if not p.name.endswith(".json")]
         self.assertEqual(backup.read_bytes(), self.stock)
         manifest = json.loads(backup.with_name(backup.name + ".json").read_text())
@@ -281,6 +283,102 @@ class ReleaseCases:
         self.assertEqual(target.read_bytes(), bytes(data))
         code, out, err = self.cli("--asar", str(target), "--skip", "hide-tray", "--dry-run")
         self.assertEqual(code, 0, err)
+
+    def fake_app(self, name: str, fuse: bytes) -> Path:
+        """A minimal X.app: the stock asar, an Info.plist-less Contents and an Electron binary with one fuse wire."""
+        app = self.dir / f"{name}.app"
+        (app / "Contents" / "Resources").mkdir(parents=True, exist_ok=True)
+        framework = app / "Contents" / "Frameworks" / "Electron Framework.framework"
+        framework.mkdir(parents=True, exist_ok=True)
+        wire = b"1111" + fuse + b"111"
+        (framework / "Electron Framework").write_bytes(b"\0" * 64 + b"dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX" + b"\x01" + bytes([len(wire)]) + wire)
+        asar = app / "Contents" / "Resources" / "app.asar"
+        if not asar.exists():
+            clone(self.STOCK, asar)
+        return app
+
+    # Value: protects=fuse and signature checks follow the real target app, not the spelling of --asar (review r1):
+    # an asar inside X.app needs --ack-invalid-apple-signature and a disabled integrity fuse, and a staged copy named
+    # with --app is checked against that app; fails_when=a non-default app path or a staged copy skips the checks.
+    def test_fuse_and_signature_follow_the_target_app(self):
+        backups = self.dir / "app-backups"
+        backups.mkdir(exist_ok=True)
+        app = self.fake_app("Disabled", b"0")
+        asar = app / "Contents" / "Resources" / "app.asar"
+        code, _, err = self.cli("--asar", str(asar), "--backup-dir", str(backups))
+        self.assertEqual(code, 1)
+        self.assertIn("--ack-invalid-apple-signature", err)
+        self.assertEqual(self.cli("--asar", str(asar), "--backup-dir", str(backups), "--dry-run")[0], 0)
+        self.assertEqual(asar.read_bytes(), self.stock)
+        enabled = self.fake_app("Enabled", b"1")
+        staged = self.dir / "staged.asar"
+        clone(self.STOCK, staged)
+        for target, extra in ((enabled / "Contents" / "Resources" / "app.asar", ()), (staged, ("--app", str(enabled)))):
+            code, _, err = self.cli("--asar", str(target), "--backup-dir", str(backups), "--ack-invalid-apple-signature", *extra)
+            self.assertEqual(code, 1)
+            self.assertIn("EnableEmbeddedAsarIntegrityValidation", err)
+        code, _, err = self.cli("--asar", str(staged), "--backup-dir", str(backups), "--app", str(app))
+        self.assertEqual(code, 1)
+        self.assertIn("--ack-invalid-apple-signature", err)
+        self.assertEqual(staged.read_bytes(), self.stock)
+        code, _, err = self.cli("--asar", str(staged), "--backup-dir", str(backups), "--app", str(app),
+                                "--ack-invalid-apple-signature")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(staged.read_bytes(), self.patched)
+
+    # Value: protects=no write over a bundle that changed after it was read (an updater swapping the release in);
+    # fails_when=the target is replaced without re-verifying its identity, or a backup/temp file is left behind.
+    def test_target_changed_while_patching_is_not_overwritten(self):
+        target = self.dir / "racing.asar"
+        clone(self.STOCK, target)
+        backups = self.dir / "race-backups"
+        backups.mkdir(exist_ok=True)
+        check = Q.node_check
+        swapped = bytearray(self.stock)
+        swapped[-1:] = b"#"
+
+        def node_check(path, body):  # runs after the read, before any write: the "updater" strikes here
+            if target.read_bytes() != bytes(swapped):
+                target.write_bytes(bytes(swapped))
+            check(path, body)
+
+        Q.node_check = node_check
+        self.addCleanup(setattr, Q, "node_check", check)
+        code, _, err = self.cli("--asar", str(target), "--backup-dir", str(backups))
+        self.assertEqual(code, 1)
+        self.assertIn("changed while patching", err)
+        self.assertEqual(target.read_bytes(), bytes(swapped))
+        self.assertEqual(list(backups.iterdir()), [])
+        self.assertEqual([p for p in self.dir.iterdir() if p.name.endswith(".patching")], [])
+
+    # Value: protects=one real `patch-asar.py --revert` restores stock after a quick upgrade (review r1), and a
+    # quick-patched bundle without a verified chain to stock is refused; fails_when=the upgrade backs up the earlier
+    # quick generation, so revert lands on it.
+    def test_one_revert_restores_stock_after_an_upgrade(self):
+        target = self.dir / "revert.asar"
+        clone(self.STOCK, target)
+        backups = self.dir / "revert-backups"
+        backups.mkdir(exist_ok=True)
+        self.assertEqual(self.cli("--asar", str(target), "--backup-dir", str(backups), "--skip", "hide-tray")[0], 0)
+        partial = target.read_bytes()
+        orphan = self.dir / "orphan.asar"
+        orphan.write_bytes(partial)
+        empty = self.dir / "no-backups"
+        empty.mkdir(exist_ok=True)
+        code, _, err = self.cli("--asar", str(orphan), "--backup-dir", str(empty))
+        self.assertEqual(code, 1)
+        self.assertIn("no verified backup chain", err)
+        self.assertEqual(orphan.read_bytes(), partial)
+        code, out, err = self.cli("--asar", str(target), "--backup-dir", str(backups))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(target.read_bytes(), self.patched)
+        spec = importlib.util.spec_from_file_location("patch_asar_for_revert", ROOT / "patches" / "patch-asar.py")
+        pa = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pa)
+        pa.LOCK_ROOT = self.dir / "locks"  # never under ~/.superset
+        with redirect_stdout(io.StringIO()):
+            pa.revert(target, backups)
+        self.assertEqual(sha(target.read_bytes()), sha(self.stock))
 
     # Value: protects=a result seen elsewhere is no proof that an edit ran (review r1): the original icon anchor kept
     # plus the edit's result text at another place, or the result twice, fails the family instead of "already applied";
@@ -383,9 +481,11 @@ class QuickUiPatch209Test(ReleaseCases, unittest.TestCase):
         for name in ("palette-cmd-k", "sound-waiting"):  # quick-v1 is not redone
             self.assertEqual(states[name][0], "already applied")
         self.assertEqual(states["status-chips"], ("apply", ["status chips: module code"]))  # only the hotkey lookup moves
-        code, out, err = self.cli("--asar", str(target), "--backup-dir", str(self.dir))
+        backups = self.dir / "v1-backups"
+        code, out, err = self.cli("--asar", str(target), "--backup-dir", str(backups))
         self.assertEqual(code, 0, err)
         self.assertEqual(sha(target.read_bytes()), sha(self.patched))
+        self.assertIn("(unpatched release)", out)  # the new backup is stock, not the quick-v1 bytes
 
 
 @unittest.skipUnless(STOCK_2010.is_file(), "stock 2.0.10 app.asar not found (set SUPERSET_2010_STOCK_ASAR)")
