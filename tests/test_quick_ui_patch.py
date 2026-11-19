@@ -335,6 +335,35 @@ class ReleaseCases:
         self.assertEqual(code, 0, err)
         self.assertEqual(staged.read_bytes(), self.patched)
 
+    # Value: protects=review r3: the bundle is recognised whatever the case of `.app` and --app is compared by file
+    # identity: an asar addressed through `X.APP` still gets the fuse check and needs the ack, `--app X.app` for it is
+    # the same app, a missing or non-bundle --app is refused; fails_when=only the exact suffix ".app" or string
+    # equality identifies the app.
+    def test_app_identity_ignores_case_and_spelling(self):
+        backups = self.dir / "case-backups"
+        backups.mkdir(exist_ok=True)
+        for extra in (("--app", str(self.dir / "Missing.app")), ("--app", str(self.dir))):
+            self.assertEqual(self.cli("--asar", str(self.STOCK), "--dry-run", *extra)[0], 1)
+        enabled = self.fake_app("CaseOn", b"1")
+        disabled = self.fake_app("CaseOff", b"0")
+        upper_on, upper_off = self.dir / "CaseOn.APP", self.dir / "CaseOff.APP"
+        if not upper_on.exists():
+            self.skipTest(f"{self.dir} is on a case-sensitive volume")
+        asar_on = upper_on / "Contents" / "Resources" / "app.asar"
+        asar_off = upper_off / "Contents" / "Resources" / "app.asar"
+        code, _, err = self.cli("--asar", str(asar_on), "--dry-run")
+        self.assertEqual(code, 1)
+        self.assertIn("EnableEmbeddedAsarIntegrityValidation", err)
+        code, _, err = self.cli("--asar", str(asar_off), "--backup-dir", str(backups))
+        self.assertEqual(code, 1)
+        self.assertIn("--ack-invalid-apple-signature", err)
+        self.assertEqual(self.cli("--asar", str(asar_off), "--dry-run", "--app", str(disabled))[0], 0)  # same app
+        code, _, err = self.cli("--asar", str(asar_on), "--dry-run", "--app", str(disabled))
+        self.assertEqual(code, 1)
+        self.assertIn("lies inside", err)
+        self.assertEqual((enabled / "Contents" / "Resources" / "app.asar").read_bytes(), self.stock)
+        self.assertEqual((disabled / "Contents" / "Resources" / "app.asar").read_bytes(), self.stock)
+
     # Value: protects=no write over a bundle that changed after it was read (an updater swapping the release in);
     # fails_when=the target is replaced without re-verifying its identity, or a backup/temp file is left behind.
     def test_target_changed_while_patching_is_not_overwritten(self):

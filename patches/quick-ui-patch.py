@@ -34,6 +34,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import mmap
 import os
 import re
 import struct
@@ -1286,17 +1287,43 @@ def sha(b: bytes) -> str:
 QUICK_MARKER = b"quick-ui-patch v"  # in TRAILER; the watcher detects a quick-patched bundle by these bytes
 
 
+def _is_app(path: Path) -> bool:
+    return path.suffix.casefold() == ".app"  # `Superset.APP` names the same bundle on a case-insensitive volume
+
+
 def target_app(asar: Path, app: Path | None) -> Path | None:
     """The app whose fuse and Apple seal the write affects.
 
-    An asar inside X.app belongs to X.app: --app may only name that same app
-    (realpath). A different --app is for a staged copy outside any bundle.
+    An asar inside X.app belongs to X.app: --app may only name that same
+    directory (os.path.samefile). A different --app is for a staged copy
+    outside any bundle. A missing or non-bundle --app is an error.
     """
-    inside = next((parent for parent in asar.expanduser().resolve().parents if parent.suffix == ".app"), None)
-    named = app.expanduser().resolve() if app is not None else None
-    if inside is not None and named is not None and named != inside:
+    inside = next((parent for parent in asar.expanduser().resolve().parents if _is_app(parent)), None)
+    if app is None:
+        return inside
+    named = app.expanduser().resolve()
+    if not named.is_dir() or not _is_app(named):
+        raise SystemExit(f"error: --app {app} is not an app bundle")
+    if inside is not None and not os.path.samefile(named, inside):
         raise SystemExit(f"error: --asar lies inside {inside} but --app names {named}")
-    return named or inside
+    return named
+
+
+def require_fuse_disabled(pa, app: Path) -> None:
+    """patch-asar.py's fuse check for `app` itself, whatever the case of its name."""
+    binary = app / "Contents" / "Frameworks" / "Electron Framework.framework" / "Electron Framework"
+    with binary.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+        offsets = pa._find_all(data, pa.ELECTRON_FUSE_SENTINEL)
+        wire = b""
+        if len(offsets) == 1:
+            start = offsets[0] + len(pa.ELECTRON_FUSE_SENTINEL)
+            wire = data[start:start + 2 + 32]
+    if len(wire) < 2 or wire[0] != 1 or wire[1] <= pa.ELECTRON_FUSE_ASAR_INTEGRITY:
+        raise RuntimeError(f"unrecognised Electron fuse wire in {binary}; refusing in-place ASAR edits")
+    state = wire[2 + pa.ELECTRON_FUSE_ASAR_INTEGRITY:3 + pa.ELECTRON_FUSE_ASAR_INTEGRITY]
+    if state not in (b"0", b"r"):
+        raise RuntimeError("EnableEmbeddedAsarIntegrityValidation fuse is enabled; in-place ASAR edits "
+                           "would fail Electron's per-file integrity check")
 
 
 def _fd_sha(fd: int) -> str:
@@ -1372,7 +1399,7 @@ def main(argv=None) -> int:
     spec.loader.exec_module(pa)
     if app is not None:
         try:
-            pa.require_asar_integrity_fuse_disabled(app / "Contents" / "Resources" / "app.asar")
+            require_fuse_disabled(pa, app)
         except (OSError, RuntimeError) as exc:
             print(f"error: {app}: {exc}", file=sys.stderr)
             return 1
