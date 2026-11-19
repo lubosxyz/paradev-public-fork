@@ -19,6 +19,13 @@ by dropping `/* @__PURE__ */` annotations (tree-shaking hints, no runtime
 effect) in the same file, the rest is padded with spaces at the end of the
 file. The asar header, offsets and sizes stay untouched. State and backups use
 the patch-asar.py format, so `patch-asar.py --revert` restores stock.
+
+Edits are grouped in families (`--list`, `--skip FAMILY`); every edit is
+skipped when its result is already there, so a rerun or an upgrade of an older
+quick patch writes only what is missing and ends at the bytes of a run from
+stock. A derived release (DERIVED: 2.0.10 from 2.0.9) reuses the families
+through byte substitutions; PENDING families are left out with a notice until
+an override file (OVERRIDE_FILES, `--no-overrides` to ignore) supplies them.
 """
 
 from __future__ import annotations
