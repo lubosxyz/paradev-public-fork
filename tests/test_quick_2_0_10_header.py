@@ -159,8 +159,10 @@ def test_one_row_needs_compact_sidebar(copy):
 
 
 def test_wired_release_uses_these_families():
-    wired = dict(Q.EDITS.get("2.0.10", []))
-    if not wired:
-        pytest.skip("quick-ui-patch.py has no EDITS['2.0.10'] yet")
+    # 2.0.10 is derived from 2.0.9 (not in EDITS); this file overrides the derived families.
+    fams, pending, _, sources = Q.release_families("2.0.10")
+    wired = dict(fams)
     for name, parts in H.FAMILIES:
         assert wired.get(name) == parts, name
+        assert sources.get(name) == "quick_2_0_10_header.py", name
+        assert name not in pending, name
