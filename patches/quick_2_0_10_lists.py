@@ -31,13 +31,41 @@ palette-workspace-search (commandPalette-*.js, its own chunk since 2.0.10):
 pinned-activity-sort: 2.0.9's edits with useV2UserPreferences renamed to
 useUserPreferences.
 
+Activity order by default (projects, PINNED and SESSIONS, most recently active
+on top). Activity is upstream's `getWorkspaceActivityTime` (the host's
+`lastActivityAt`, else `updatedAt`) through `getWorkspaceTimestamp`, the same
+measure upstream sorts a project's children by.
+
+sort-projects (replaces the derived 2.0.9 family): "Sort projects too" is on
+unless `lubos-patch:sort-projects` is "0" (an absent key reads as on; the
+checkbox still writes "1"/"0"). The edit rewrites one line of the project-order
+store, so a bundle patched before (LIVE 59150a088978) upgrades in place.
+
+sort-active-default (layout chunk): upstream stores `sidebarProjectSortMode`
+in the `userPreferences` collection with default "manual", and every first
+preference write inserts the whole default row, so a stored "manual" does not
+tell a choice from the default. The layout chunk's useUserPreferences() (its
+import renamed, a wrapper in its place) therefore reads "manual" as "active"
+(Last active) until the user picks a mode after this patch: the sort menu or
+the "switch to manual order" prompt sets `lubos-patch:sort-mode-picked` = "1"
+and then the stored value rules, Manual included. Nothing is written to the
+preferences until that pick.
+
+sort-sessions (needs pinned-activity-sort): SESSIONS rows follow the sort mode
+too. Loose session workspaces and session sections use upstream's
+`sortDashboardSidebarProjectChildren` (what a project's children get), and the
+flat list for the collapsed rail uses the same comparator as PINNED. Manual
+mode keeps upstream's order, and child drag stays disabled outside manual, as
+upstream does.
+
 pin-projects: 2.0.10's layout chunk imports LuPin itself, so the LuPin import
 edit is gone (a second `LuPin` binding would not parse); LuPin is a required
 name instead.
 
-The project-order code (ORDER_SHARED, LPP_JS) is shared with sort-projects and
-must stay byte-identical to quick-ui-patch.py, so a run with both families
-finds it applied once; tests/test_quick_2_0_10_lists.py checks the copies.
+The project-order code (ORDER_SHARED) is shared by sort-projects and
+pin-projects. Its store edit lists the pre-default shape (quick-ui-patch.py's
+LPP_JS) as an alt, so neither family inserts it a second time;
+tests/test_quick_2_0_10_lists.py checks the copies against quick-ui-patch.py.
 """
 
 from __future__ import annotations
@@ -199,11 +227,29 @@ function LppPinItem({ projectId }) {
 	return jsxs(ContextMenuItem, { onSelect: () => lppSet(sort, pinned ? pins.filter((id) => id !== projectId) : [...pins, projectId]), children: [jsx(pinned ? LuPinOff : LuPin, { className: "size-4 mr-2" }), pinned ? "Unpin project" : "Pin project"] });
 }
 '''
+LPP_SORT_JS = b'''/* quick-ui-patch: sort projects checkbox */
+function LppSortItem() {
+	const [sort, pins] = lppUseState();
+	const { jsx, jsxs, Fragment } = import_jsx_runtime;
+	return jsxs(Fragment, { children: [jsx(DropdownMenuSeparator, {}), jsxs(DropdownMenuItem, { role: "menuitemcheckbox", "aria-checked": sort, onSelect: (event) => (event.preventDefault(), lppSet(!sort, pins)), children: [jsx(LuCheck, { className: cn("size-4", !sort && "invisible") }), "Sort projects too"] })] });
+}
+'''
 ORDER_NAMES = (b"toTime", b"newest", b"getChildTimestamp", b"makeStableComparator", b"haveSameItems", b"import_react")
+ORDER_STORE = b"function sortDashboardSidebarProjects(projects, mode) {\n"
+
+# --- 2.0.10: activity order by default ----------------------------------------
+
+LPP_SORT_OFF = b'let lppState = [lppRead("sort-projects", (value) => value === "1") ?? false,'
+LPP_SORT_ON = b'let lppState = [lppRead("sort-projects", (value) => value !== "0") ?? true,'
+assert LPP_JS.count(LPP_SORT_OFF) == 1
+LPP_JS_ON = LPP_JS.replace(LPP_SORT_OFF, LPP_SORT_ON)
 ORDER_SHARED = (
+    # A bundle patched with the pre-default store (LPP_JS) counts as applied;
+    # "sort projects: on by default" then rewrites its one line.
     ("project order: store and order hook",
-     b"function sortDashboardSidebarProjects(projects, mode) {\n",
-     LPP_JS + b"function sortDashboardSidebarProjects(projects, mode) {\n"),
+     ORDER_STORE,
+     LPP_JS_ON + ORDER_STORE,
+     (LPP_JS + ORDER_STORE,)),
     ("project order: displayed projects",
      b"\tconst sortedGroups = t11;\n",
      b"\tconst [sortedGroups, lppDrag] = lppUse(t11, sortMode);\n"),
@@ -211,6 +257,66 @@ ORDER_SHARED = (
      b"\tconst isProjectDragDisabled = isFilterActive;\n",
      b"\tconst isProjectDragDisabled = isFilterActive || lppDrag;\n"),
 )
+
+PREFS_IMPORT = b'import { t as useUserPreferences } from "./useUserPreferences-DiRvN7wO.js";\n'
+PREFS_IMPORT_SSM = b'import { t as ssmUseUserPreferences } from "./useUserPreferences-DiRvN7wO.js";\n'
+# The hook's own chunk has no room (no PURE annotations), so the layout chunk
+# wraps its import: every useUserPreferences() call of the layout chunk (the
+# sidebar is the only reader of sidebarProjectSortMode) gets the view.
+SSM_JS = b'''/* quick-ui-patch: the sidebar sort mode reads Last active until one is picked */
+let ssmPicked = false;
+try {
+	ssmPicked = localStorage.getItem("lubos-patch:sort-mode-picked") === "1";
+} catch {}
+const ssmL = new Set();
+const ssmSub = (l) => (ssmL.add(l), () => ssmL.delete(l));
+const ssmGet = () => ssmPicked;
+function ssmPick() {
+	if (ssmPicked) return;
+	ssmPicked = true;
+	try {
+		localStorage.setItem("lubos-patch:sort-mode-picked", "1");
+	} catch {}
+	for (const l of [...ssmL]) l();
+}
+function useUserPreferences() {
+	const result = ssmUseUserPreferences();
+	const picked = (0, import_react.useSyncExternalStore)(ssmSub, ssmGet);
+	return (0, import_react.useMemo)(() => {
+		const set = result.setSidebarProjectSortMode;
+		const preferences = picked || result.preferences.sidebarProjectSortMode !== "manual" ? result.preferences : {
+			...result.preferences,
+			sidebarProjectSortMode: "active"
+		};
+		return {
+			...result,
+			preferences,
+			setSidebarProjectSortMode: (mode) => {
+				ssmPick();
+				set(mode);
+			}
+		};
+	}, [result, picked]);
+}
+'''
+
+SSS_JS = b'''/* quick-ui-patch: SESSIONS follow the sort mode */
+function sssUseSorted(rows, children, mode) {
+	return (0, import_react.useMemo)(() => {
+		if (mode === "manual") return [rows, children];
+		const sorted = [...rows].sort(makeStableComparator((workspace) => getWorkspaceTimestamp(workspace, mode), (workspace) => workspace.name, (workspace) => workspace.id));
+		return [haveSameItems(sorted, rows) ? rows : sorted, sortDashboardSidebarProjectChildren(children, mode)];
+	}, [rows, children, mode]);
+}
+'''
+HAVE_SAME_ITEMS = (
+    b"function haveSameItems(left, right) {\n"
+    b"\treturn left.length === right.length && left.every((item, index) => item === right[index]);\n"
+    b"}\n"
+)
+PAS_RAW = b"\tconst { groups, hiddenProjects, pinnedWorkspaces: pasRows, sessionWorkspaces, sessionChildren,"
+SSS_RAW = b"\tconst { groups, hiddenProjects, pinnedWorkspaces: pasRows, sessionWorkspaces: sssRows, sessionChildren: sssChildren,"
+PAS_SORTED = b"\tconst pinnedWorkspaces = pasUseSorted(pasRows, sortMode);\n"
 
 # --- families -----------------------------------------------------------------
 
@@ -235,14 +341,28 @@ FAMILIES = [
              PAS_JS + b"function haveSameItems(left, right) {\n"),
             ("pinned sort: raw pinned rows",
              b"\tconst { groups, hiddenProjects, pinnedWorkspaces, sessionWorkspaces, sessionChildren,",
-             b"\tconst { groups, hiddenProjects, pinnedWorkspaces: pasRows, sessionWorkspaces, sessionChildren,"),
+             PAS_RAW,
+             (SSS_RAW,)),  # sort-sessions renames the session rows too
             ("pinned sort: sorted pinned rows",
              b"\tconst { preferences, setSidebarProjectSortMode, setSidebarProjectHostFilter } = useUserPreferences();\n"
              b"\tconst sortMode = preferences.sidebarProjectSortMode;\n",
              b"\tconst { preferences, setSidebarProjectSortMode, setSidebarProjectHostFilter } = useUserPreferences();\n"
              b"\tconst sortMode = preferences.sidebarProjectSortMode;\n"
-             b"\tconst pinnedWorkspaces = pasUseSorted(pasRows, sortMode);\n"),
+             + PAS_SORTED),
         ], (b"makeStableComparator", b"getWorkspaceTimestamp", b"haveSameItems", b"import_react")),
+    ]),
+    ("sort-projects", [
+        (LAYOUT, list(ORDER_SHARED) + [
+            ("sort projects: on by default",
+             LPP_SORT_OFF,
+             LPP_SORT_ON),
+            ("sort projects: checkbox",
+             b"function sortDashboardSidebarProjectChildren(children, mode) {\n",
+             LPP_SORT_JS + b"function sortDashboardSidebarProjectChildren(children, mode) {\n"),
+            ("sort projects: checkbox in the sort menu",
+             b"\t\t\tchildren: [\n\t\t\t\tt8,\n\t\t\t\tt11,\n\t\t\t\tt12,\n\t\t\t\tt13\n\t\t\t]\n",
+             b"\t\t\tchildren: [\n\t\t\t\tt8,\n\t\t\t\tt11,\n\t\t\t\tt12,\n\t\t\t\tt13,\n\t\t\t\t(0, import_jsx_runtime.jsx)(LppSortItem, {}, \"lpp\")\n\t\t\t]\n"),
+        ], ORDER_NAMES + (b"DropdownMenuSeparator", b"DropdownMenuItem", b"LuCheck", b"cn")),
     ]),
     ("pin-projects", [
         (LAYOUT, list(ORDER_SHARED) + [
@@ -255,4 +375,27 @@ FAMILIES = [
              b"\t\t\t(0, import_jsx_runtime.jsx)(LppPinItem, { projectId }),\n"),
         ], ORDER_NAMES + (b"ContextMenuItem", b"LuPin", b"LuPinOff")),
     ]),
+    ("sort-active-default", [
+        (LAYOUT, [
+            ("sort mode: Last active until picked",
+             PREFS_IMPORT,
+             PREFS_IMPORT_SSM + SSM_JS),
+        ], (b"import_react",)),
+    ]),
+    ("sort-sessions", [
+        (LAYOUT, [
+            ("sessions sort: helper",
+             HAVE_SAME_ITEMS,
+             HAVE_SAME_ITEMS + SSS_JS),
+            ("sessions sort: raw session rows",
+             PAS_RAW,
+             SSS_RAW),
+            ("sessions sort: sorted session rows",
+             PAS_SORTED,
+             PAS_SORTED + b"\tconst [sessionWorkspaces, sessionChildren] = sssUseSorted(sssRows, sssChildren, sortMode);\n"),
+        ], (b"makeStableComparator", b"getWorkspaceTimestamp", b"haveSameItems", b"sortDashboardSidebarProjectChildren",
+            b"pasUseSorted", b"import_react")),
+    ]),
 ]
+
+REQUIRES = {"sort-sessions": ("pinned-activity-sort",)}
