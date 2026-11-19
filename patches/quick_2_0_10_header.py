@@ -51,6 +51,10 @@ COMPACT_CELLS = (
 ONE_ROW_GRID = b'\t\t\tclassName: "grid items-center gap-1 px-2 pt-2 pb-2",\n\t\t\tstyle: { ...t3, gridTemplateColumns: "1fr repeat(4,auto)" },\n'
 ONE_ROW_TITLE = b'\t\t\tclassName: "-mx-2 flex h-8 min-w-0 items-center",\n\t\t\tstyle: t4,\n'
 
+# The Projects header shape sidebar-search-row (quick_2_0_10_search_row.py)
+# leaves behind when it moves the device icon into the search row.
+SORT_MENU_ROW = (b"\t\tt10 = (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [null /* sidebar-search-row: SdfDevices */, "
+                 b"(0, import_jsx_runtime.jsx)(DashboardSidebarProjectsSortMenu, {\n")
 LU_IMPORT = b'zt as LuGithub } from "./lu-DcYwd4je.js";\n'
 
 SDF_JS = b'''/* quick-ui-patch: sidebar device filter */
@@ -186,7 +190,8 @@ FAMILIES = [
              b'\t\t\tsetProjectFilterQuery("");\n\t\t\tsetSidebarProjectHostFilter("all");\n\t\t\tsdfSet(null);\n'),
             ("device filter: dropdown in the Projects header",
              b"\t\tt10 = (0, import_jsx_runtime.jsx)(DashboardSidebarProjectsSortMenu, {\n",
-             b"\t\tt10 = (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [(0, import_jsx_runtime.jsx)(SdfDevices, {}), (0, import_jsx_runtime.jsx)(DashboardSidebarProjectsSortMenu, {\n"),
+             b"\t\tt10 = (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [(0, import_jsx_runtime.jsx)(SdfDevices, {}), (0, import_jsx_runtime.jsx)(DashboardSidebarProjectsSortMenu, {\n",
+             (SORT_MENU_ROW,)),  # sidebar-search-row moves the icon into the search row
             ("device filter: dropdown in the Projects header (close)",
              b"\t\t\tonHostFilterChange\n\t\t});\n\t\t$[28] = hostFilter;\n",
              b"\t\t\tonHostFilterChange\n\t\t})] });\n\t\t$[28] = hostFilter;\n"),
