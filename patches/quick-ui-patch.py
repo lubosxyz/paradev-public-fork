@@ -605,6 +605,14 @@ function DtsHostWorkspaces(props) {
 HOST_NAMES = (b"require_git_hook_tolerance", b"require_pull_request_threads", b"router", b"protectedProcedure", b"queryProcedure", b"isLocalCaller")
 BRIDGE_NAMES = (b"useLocalHostService", b"useCollections", b"getHostServiceClientByUrl", b"import_react", b"import_jsx_runtime")
 
+# status-chips output after sidebar-search-row (quick_2_0_10_search_row.py) put
+# its sticky search row between the header and the chips.
+CHIPS_BELOW_SEARCH = (b"(0, import_jsx_runtime.jsx)(DashboardSidebarHeader, { isCollapsed }),\n"
+                      b"\t\t\t\t(0, import_jsx_runtime.jsx)(SsfSearch, {}),\n"
+                      b"\t\t\t\t(0, import_jsx_runtime.jsx)(SsfChips, {}),\n")
+SHELL_CHIPS_BELOW_SEARCH = (b"!isChatSection && (0, import_jsx_runtime.jsx)(DashboardSidebarShellHeader, {}),\n"
+                            b"\t\t\t\t!isChatSection && (0, import_jsx_runtime.jsx)(SsfSearch, {}),\n"
+                            b"\t\t\t\t!isChatSection && (0, import_jsx_runtime.jsx)(SsfChips, {}),\n")
 ROW_ITEM = b"DashboardSidebarWorkspaceItem/index.ts\n"
 PROJECT_ITEM = b"DashboardSidebarProjectSection/index.ts\n"
 
@@ -662,11 +670,13 @@ EDITS: dict[str, list] = {
                 ("status chips: row (classic header)",
                  b"(0, import_jsx_runtime.jsx)(DashboardSidebarHeader, { isCollapsed }),\n",
                  b"(0, import_jsx_runtime.jsx)(DashboardSidebarHeader, { isCollapsed }),\n"
-                 b"\t\t\t\t(0, import_jsx_runtime.jsx)(SsfChips, {}),\n"),
+                 b"\t\t\t\t(0, import_jsx_runtime.jsx)(SsfChips, {}),\n",
+                 (CHIPS_BELOW_SEARCH,)),
                 ("status chips: row (shell header)",
                  b"!isChatSection && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(DashboardSidebarShellHeader, {}),\n",
                  b"!isChatSection && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(DashboardSidebarShellHeader, {}),\n"
-                 b"\t\t\t\t!isChatSection && (0, import_jsx_runtime.jsx)(SsfChips, {}),\n"),
+                 b"\t\t\t\t!isChatSection && (0, import_jsx_runtime.jsx)(SsfChips, {}),\n",
+                 (SHELL_CHIPS_BELOW_SEARCH,)),
                 ("status chips: workspace row hook",
                  b"\tconst isSelected = t3 === void 0 ? false : t3;\n\tconst { _: _t } = useLingui();\n"
                  b"\tconst { id, projectId, accentColor: t4, hostType,",
@@ -1003,6 +1013,10 @@ def release_bytes(release: str, b: bytes) -> bytes:
     return b
 
 
+def _anchors(old, fn):
+    return tuple(fn(o) for o in old) if isinstance(old, tuple) else fn(old)
+
+
 def _derive(release: str):
     base, _, drop = DERIVED[release]
     sub = lambda b: release_bytes(release, b)  # noqa: E731
@@ -1012,7 +1026,7 @@ def _derive(release: str):
         for marker, edits, names in parts:
             if any(d in marker for d in drop):
                 continue
-            derived.append((sub(marker), [(e[0], sub(e[1]), sub(e[2])) + ((tuple(sub(a) for a in e[3]),) if len(e) > 3 else ())
+            derived.append((sub(marker), [(e[0], _anchors(e[1], sub), sub(e[2])) + ((tuple(sub(a) for a in e[3]),) if len(e) > 3 else ())
                                           for e in edits], tuple(sub(n) for n in names)))
         out.append((name, derived))
     return out
@@ -1135,14 +1149,19 @@ def _apply_family(name, parts, files, data, chunks):
         for edit in edits:
             label, old, new = edit[:3]
             alts = edit[3] if len(edit) > 3 else ()
-            old, new = norm(old), norm(new)
+            new = norm(new)
             if new in body or any(norm(a) in body for a in alts):
                 already.append(label)
                 continue
-            n = body.count(old)
-            if n != 1:
-                errors.append(f"{label}: expected exactly one anchor in {path}, found {n}")
+            # `old` may be a tuple of anchors tried in order (e.g. an older
+            # output of the same edit first, then stock): the first that
+            # occurs exactly once is replaced.
+            olds = [norm(o) for o in (old if isinstance(old, tuple) else (old,))]
+            counts = [body.count(o) for o in olds]
+            if 1 not in counts:
+                errors.append(f"{label}: expected exactly one anchor in {path}, found {counts[0] if len(counts) == 1 else counts}")
                 continue
+            old = olds[counts.index(1)]
             body = body.replace(old, new, 1)
             done = done + [label]
         staged[path] = (body, done)

@@ -293,7 +293,8 @@ class ReleaseCases:
                 continue
             for _, edits, _ in parts:
                 for edit in edits:
-                    new = class_tokens(edit[2]) - class_tokens(edit[1]) - HOOK_CLASSES
+                    anchors = edit[1] if isinstance(edit[1], tuple) else (edit[1],)
+                    new = class_tokens(edit[2]) - set().union(*map(class_tokens, anchors)) - HOOK_CLASSES
                     missing |= {t for t in new if not has_class(css, t)}
         self.assertEqual(missing, set())
 
