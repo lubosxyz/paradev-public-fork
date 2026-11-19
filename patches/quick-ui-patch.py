@@ -33,6 +33,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import types
 from datetime import datetime
 from pathlib import Path
 
@@ -953,6 +954,100 @@ EDITS: dict[str, list] = {
 # A family whose anchors are another family's output is left out with it.
 REQUIRES = {"sidebar-one-row": ("compact-sidebar",)}
 
+# 2.0.10 is 2.0.9 with renamed bindings: every marker, anchor, new text and
+# required name goes through these substitutions. The main-process
+# notification sound is gone in 2.0.10, so that part of sound-waiting drops.
+DERIVED = {
+    "2.0.10": ("2.0.9", (
+        (b"navigateToV2Workspace", b"navigateToWorkspace"),
+        (b"function handleV2AgentLifecycleEvent(", b"function handleAgentLifecycleEvent("),
+        (b"require_git_hook_tolerance", b"require_dist"),
+        (b"{ v2WorkspaceLocalState: collection }", b"{ workspaceLocalState: collection }"),
+        (b"{ v2TerminalPresets: presets, v2UserPreferences: prefs }", b"{ terminalPresets: presets, userPreferences: prefs }"),
+    ), (b"\t\tconst isWaiting = isPermissionRequest || isPendingQuestion;\n",)),
+}
+# Families whose anchors do not match the release yet. They are left out by
+# default with a notice, so the rest still applies; an override file that
+# supplies the family (same name) takes it off this list.
+PENDING = {
+    "2.0.10": {
+        "compact-sidebar", "hide-nav-buttons", "sidebar-one-row", "sidebar-device-filter",
+        "palette-workspace-search", "pinned-activity-sort", "pin-projects",
+    },
+}
+# Sibling files that export FAMILIES (and optionally REQUIRES) in the EDITS
+# family format: a family with an existing name replaces it, a new name is
+# appended. An absent file is fine; a file that fails to load is an error.
+OVERRIDE_FILES = {
+    "2.0.9": ("quick_automations_209.py",),
+    "2.0.10": ("quick_2_0_10_header.py", "quick_2_0_10_lists.py", "quick_automations_2_0_10.py"),
+}
+OVERRIDE_DIR = HERE
+
+
+def release_bytes(release: str, b: bytes) -> bytes:
+    """`b` as it reads in `release` (identity unless the release is derived)."""
+    if release in DERIVED:
+        for old, new in DERIVED[release][1]:
+            b = b.replace(old, new)
+    return b
+
+
+def _derive(release: str):
+    base, _, drop = DERIVED[release]
+    sub = lambda b: release_bytes(release, b)  # noqa: E731
+    out = []
+    for name, parts in EDITS[base]:
+        derived = []
+        for marker, edits, names in parts:
+            if any(d in marker for d in drop):
+                continue
+            derived.append((sub(marker), [(e[0], sub(e[1]), sub(e[2])) + ((tuple(sub(a) for a in e[3]),) if len(e) > 3 else ())
+                                          for e in edits], tuple(sub(n) for n in names)))
+        out.append((name, derived))
+    return out
+
+
+def _load_override(path: Path):
+    spec = importlib.util.spec_from_file_location(f"quick_override_{path.stem}", path)
+    module = importlib.util.module_from_spec(spec)
+    if "quick_ui_patch" not in sys.modules:  # overrides may `import quick_ui_patch` for markers and helpers
+        sys.modules["quick_ui_patch"] = sys.modules.get(__name__) or types.SimpleNamespace(**globals())
+    try:
+        spec.loader.exec_module(module)
+        fams = list(module.FAMILIES)
+        for name, parts in fams:
+            assert isinstance(name, str) and all(len(part) == 3 for part in parts)
+    except Exception as exc:  # noqa: BLE001  (any failure names the file)
+        raise SystemExit(f"error: override {path.name} does not load: {type(exc).__name__}: {exc}") from exc
+    return fams, dict(getattr(module, "REQUIRES", {}))
+
+
+def release_families(release: str, overrides: bool = True):
+    """(families, pending names, requires, {family: override file}) for `release`."""
+    fams = list(EDITS[release]) if release in EDITS else _derive(release)
+    pending, requires, sources = set(PENDING.get(release, ())), dict(REQUIRES), {}
+    if overrides and OVERRIDE_DIR is not None:
+        for filename in OVERRIDE_FILES.get(release, ()):
+            path = Path(OVERRIDE_DIR) / filename
+            if not path.is_file():
+                continue
+            extra, extra_requires = _load_override(path)
+            requires.update(extra_requires)
+            for name, parts in extra:
+                at = [i for i, (n, _) in enumerate(fams) if n == name]
+                if at:
+                    fams[at[0]] = (name, parts)
+                else:
+                    fams.append((name, parts))
+                pending.discard(name)
+                sources[name] = filename
+    return fams, pending, requires, sources
+
+
+def releases() -> list[str]:
+    return [*EDITS, *DERIVED]
+
 PURE = re.compile(rb"/\* @__PURE__ \*/ (?=\(0, )")
 # More room, taken in this order and only while a file still does not fit:
 # top-level JSDoc blocks, then Lingui `/** i18n */` extraction markers. Both
@@ -987,8 +1082,8 @@ def asar_files(data: bytes):
     return out
 
 
-def families(release: str) -> list[str]:
-    return [name for name, _ in EDITS[release]]
+def families(release: str, overrides: bool = True) -> list[str]:
+    return [name for name, _ in release_families(release, overrides)[0]]
 
 
 class Chunk:
@@ -1042,18 +1137,23 @@ def _apply_family(name, parts, files, data, chunks):
     return staged, already, errors
 
 
-def plan(data: bytes, release: str, skip=()):
-    """Plan every family not in `skip`; abort before any write when a family fails."""
+def plan(data: bytes, release: str, skip=(), overrides: bool = True):
+    """Plan every family not in `skip` (nor pending); abort before any write when a family fails."""
     files = asar_files(data)
     chunks: dict[str, Chunk] = {}
     failed = []
     report = []
     skip = set(skip)
-    for name, parts in EDITS[release]:
+    fams, pending, requires, _ = release_families(release, overrides)
+    for name, parts in fams:
         if name in skip:
             report.append((name, "skipped", []))
             continue
-        needs = [dep for dep in REQUIRES.get(name, ()) if dep in skip]
+        if name in pending:
+            skip.add(name)
+            report.append((name, f"pending (not ported to {release} yet, skipped)", []))
+            continue
+        needs = [dep for dep in requires.get(name, ()) if dep in skip]
         if needs:
             skip.add(name)
             report.append((name, f"skipped (needs {', '.join(needs)})", []))
@@ -1113,21 +1213,26 @@ def main(argv=None) -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--skip", action="append", default=[], metavar="FAMILY", help="leave this family out (repeatable)")
     ap.add_argument("--list", action="store_true", help="list the families of the release and exit")
+    ap.add_argument("--no-overrides", action="store_true", help="ignore the sibling override files")
     ap.add_argument("--ack-invalid-apple-signature", action="store_true")
     args = ap.parse_args(argv)
 
     release = args.release or release_of(args.asar)
-    if release not in EDITS:
-        print(f"error: no quick patch for desktop {release!r} (known: {', '.join(EDITS)})", file=sys.stderr)
+    if release not in releases():
+        print(f"error: no quick patch for desktop {release!r} (known: {', '.join(releases())})", file=sys.stderr)
         return 2
+    overrides = not args.no_overrides
     if args.list:
-        for name, parts in EDITS[release]:
-            print(name)
+        fams, pending, _, sources = release_families(release, overrides)
+        for name, parts in fams:
+            notes = [f"from {sources[name]}"] if name in sources else []
+            notes += ["pending, skipped by default"] if name in pending else []
+            print(name + (f"  ({'; '.join(notes)})" if notes else ""))
             for _, edits, _ in parts:
                 for edit in edits:
                     print(f"  {edit[0]}")
         return 0
-    unknown = sorted(set(args.skip) - set(families(release)))
+    unknown = sorted(set(args.skip) - set(families(release, overrides)))
     if unknown:
         print(f"error: unknown family {', '.join(unknown)} (see --list)", file=sys.stderr)
         return 2
@@ -1138,7 +1243,7 @@ def main(argv=None) -> int:
         pa.require_asar_integrity_fuse_disabled(args.asar)
 
     data = args.asar.read_bytes()
-    writes, report = plan(data, release, set(args.skip))
+    writes, report = plan(data, release, set(args.skip), overrides)
     for name, state, _ in report:
         print(f"{name}: {state}")
     for path, _, body, done in writes:
