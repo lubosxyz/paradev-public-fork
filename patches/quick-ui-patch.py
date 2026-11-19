@@ -1287,14 +1287,16 @@ QUICK_MARKER = b"quick-ui-patch v"  # in TRAILER; the watcher detects a quick-pa
 
 
 def target_app(asar: Path, app: Path | None) -> Path | None:
-    """The app whose fuse and Apple seal the write affects: --app, else the .app holding the asar."""
-    if app is not None:
-        return app.expanduser().resolve()
-    p = asar.expanduser().resolve()
-    contents = p.parent.parent
-    if p.parent.name == "Resources" and contents.name == "Contents" and contents.parent.suffix == ".app":
-        return contents.parent
-    return None
+    """The app whose fuse and Apple seal the write affects.
+
+    An asar inside X.app belongs to X.app: --app may only name that same app
+    (realpath). A different --app is for a staged copy outside any bundle.
+    """
+    inside = next((parent for parent in asar.expanduser().resolve().parents if parent.suffix == ".app"), None)
+    named = app.expanduser().resolve() if app is not None else None
+    if inside is not None and named is not None and named != inside:
+        raise SystemExit(f"error: --asar lies inside {inside} but --app names {named}")
+    return named or inside
 
 
 def _file_sha(path: Path) -> str:
@@ -1323,7 +1325,11 @@ def main(argv=None) -> int:
     ap.add_argument("--ack-invalid-apple-signature", action="store_true")
     args = ap.parse_args(argv)
 
-    app = target_app(args.asar, args.app)
+    try:
+        app = target_app(args.asar, args.app)
+    except SystemExit as exc:
+        print(exc.code, file=sys.stderr)
+        return 1
     release = args.release or release_of(app / "Contents" / "Resources" / "app.asar" if app else args.asar)
     if release not in releases():
         print(f"error: no quick patch for desktop {release!r} (known: {', '.join(releases())})", file=sys.stderr)

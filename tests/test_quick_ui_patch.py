@@ -317,6 +317,14 @@ class ReleaseCases:
             code, _, err = self.cli("--asar", str(target), "--backup-dir", str(backups), "--ack-invalid-apple-signature", *extra)
             self.assertEqual(code, 1)
             self.assertIn("EnableEmbeddedAsarIntegrityValidation", err)
+        # review r2: an asar inside a fuse-enabled app with --app naming another, fuse-disabled app is refused, dry-run too
+        for extra in ((), ("--dry-run",), ("--ack-invalid-apple-signature",)):
+            code, _, err = self.cli("--asar", str(enabled / "Contents" / "Resources" / "app.asar"),
+                                    "--backup-dir", str(backups), "--app", str(app), *extra)
+            self.assertEqual(code, 1)
+            self.assertIn("lies inside", err)
+        code, _, err = self.cli("--asar", str(asar), "--backup-dir", str(backups), "--app", str(app), "--dry-run")
+        self.assertEqual(code, 0, err)  # the same app, named explicitly
         code, _, err = self.cli("--asar", str(staged), "--backup-dir", str(backups), "--app", str(app))
         self.assertEqual(code, 1)
         self.assertIn("--ack-invalid-apple-signature", err)
