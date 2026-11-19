@@ -206,6 +206,116 @@ SIDEBAR_NAMES = (
     b"PR_COLOR_BY_STATE", b"import_react", b"import_jsx_runtime",
 )
 
+# --- command palette workspace search (palette chunk with CommandListView) ---
+
+SSP_JS = b'''/* quick-ui-patch: command palette workspace search */
+function SspPaletteSearch({ query, onSelect }) {
+	return useIsV2CloudEnabled() && query.trim() ? (0, import_jsx_runtime.jsx)(SspPaletteResults, { query, onSelect }) : null;
+}
+function sspScore(w, tokens) {
+	const fields = [getV2WorkspaceDisplayName(w), w.name, w.branch, w.projectName].map((field) => (field ?? "").toLowerCase());
+	const phrase = tokens.join(" ");
+	return !tokens.every((token) => fields.some((field) => field.includes(token))) ? 0 : fields[0].startsWith(phrase) ? 4 : fields[0].includes(phrase) || fields[1].includes(phrase) ? 3 : fields[2].includes(phrase) ? 2 : 1;
+}
+function SspPaletteResults({ query, onSelect }) {
+	const { _: _t } = useLingui();
+	const { all: workspaces } = useAccessibleV2Workspaces();
+	const { projects: hostProjects } = useHostProjects();
+	const currentPath = useLocation({ select: (loc) => loc.pathname });
+	const navigate = useNavigate();
+	const setOpen = useFrameStackStore((s) => s.setOpen);
+	sspUseMetaEnter();
+	const { jsx, jsxs, Fragment } = import_jsx_runtime;
+	const byKey = new Map(hostProjects.map((p) => [p.projectKey, p]));
+	const icon = (w, p = byKey.get(w.projectId)) => p ? jsx(ProjectThumbnail, { projectName: p.name, iconUrl: resolveProjectIconUrl(p), color: p.color, className: "size-6 -my-2" }) : jsx("span", { className: "size-6 -my-2 shrink-0" });
+	const tokens = query.trim().toLowerCase().split(/\\s+/);
+	const projects = [...new Map(workspaces.filter((w) => w.projectId && tokens.every((t) => (w.projectName ?? "").toLowerCase().includes(t))).map((w) => [w.projectId, w])).values()].slice(0, 5);
+	const matches = workspaces.map((w) => [sspScore(w, tokens), w]).filter(([score]) => score > 0).sort((a, b) => b[0] - a[0]).slice(0, 8).map(([, w]) => w);
+	return jsxs(Fragment, { children: [
+		projects.length > 0 && jsx(CommandGroup, { heading: _t({ id: "-0B-ue" }), children: projects.map((w) => jsxs(CommandItem, { value: `ssp project ${w.projectId}`, onSelect: () => onSelect({ id: `ssp.project.${w.projectId}`, title: { id: "pmt7u4" }, renderFrame: () => jsx(SspProjectFrame, { projectId: w.projectId, name: w.projectName }) }), className: ROW_CLASS, children: [
+			icon(w),
+			jsx("span", { className: "min-w-0 flex-1 truncate font-normal", children: w.projectName }),
+			jsx(SspPlus, { projectId: w.projectId }),
+			jsx(HiChevronRight, { className: "text-muted-foreground" })
+		] }, w.projectId)) }, "ssp-projects"),
+		matches.length > 0 && jsx(CommandGroup, { heading: _t({ id: "pmt7u4" }), children: matches.map((w) => jsxs(CommandItem, { value: `ssp workspace ${w.id}`, onSelect: () => {
+			void navigateToV2Workspace(w.id, navigate);
+			setOpen(false);
+		}, className: cn(ROW_CLASS, currentPath === `/v2-workspace/${w.id}` && "bg-accent/50"), children: [
+			icon(w),
+			jsx("span", { className: "min-w-0 flex-1 truncate font-normal", children: getV2WorkspaceDisplayName(w) }),
+			jsxs("span", { className: "flex min-w-0 max-w-56 items-center gap-1 text-muted-foreground text-xs", children: [
+				jsx(LuGitBranch, { className: "!size-3 shrink-0" }),
+				jsx("span", { className: "truncate", children: `${w.projectName ?? _t({ id: "4cEClj" })} \\u00b7 ${w.branch}` })
+			] })
+		] }, w.id)) }, "ssp-workspaces")
+	] });
+}
+function SspProjectFrame({ projectId, name }) {
+	const { _: _t } = useLingui();
+	const query = useCommandPaletteQuery().trim();
+	const create = sspUseCreate();
+	const options = (0, import_react.useMemo)(() => ({ searchQuery: query, projectFilters: [projectId] }), [query, projectId]);
+	const { all: workspaces } = useAccessibleV2Workspaces(options);
+	const currentPath = useLocation({ select: (loc) => loc.pathname });
+	const navigate = useNavigate();
+	const setOpen = useFrameStackStore((s) => s.setOpen);
+	const { jsx, jsxs } = import_jsx_runtime;
+	const rows = workspaces.filter((w) => w.projectId === projectId);
+	const last = query !== "" && rows.length > 0;
+	const item = jsx(CommandGroup, { heading: last ? void 0 : name, children: jsxs(CommandItem, { value: `ssp new ${projectId}`, onSelect: () => create(projectId, query), className: ROW_CLASS, children: [
+		jsx(HiMiniPlus, { className: "text-muted-foreground" }),
+		jsx("span", { className: "min-w-0 flex-1 truncate font-normal", children: _t({ id: "S9bzia", values: { name } }) })
+	] }) }, "ssp-new");
+	const list = rows.length > 0 && jsx(CommandGroup, { heading: last ? name : void 0, children: rows.map((w) => jsxs(CommandItem, { value: `ssp workspace ${w.id}`, onSelect: () => {
+		void navigateToV2Workspace(w.id, navigate);
+		setOpen(false);
+	}, className: cn(ROW_CLASS, currentPath === `/v2-workspace/${w.id}` && "bg-accent/50"), children: [
+		jsx("span", { className: "min-w-0 flex-1 truncate font-normal", children: getV2WorkspaceDisplayName(w) }),
+		jsxs("span", { className: "flex min-w-0 max-w-56 items-center gap-1 text-muted-foreground text-xs", children: [
+			jsx(LuGitBranch, { className: "!size-3 shrink-0" }),
+			jsx("span", { className: "truncate", children: w.branch })
+		] })
+	] }, w.id)) }, "ssp-rows");
+	return jsxs(CommandList, { children: last ? [list, item] : [item, list] });
+}
+function SspPlus({ projectId }) {
+	const { _: _t } = useLingui();
+	const create = sspUseCreate();
+	return (0, import_jsx_runtime.jsxs)("button", { type: "button", tabIndex: -1, title: _t({ id: "curoK5" }), onClick: (e) => {
+		e.stopPropagation();
+		create(projectId);
+	}, className: "ssp-plus flex items-center gap-1 rounded px-1 text-muted-foreground text-xs hover:bg-accent hover:text-foreground", children: [(0, import_jsx_runtime.jsx)(HiMiniPlus, { className: "!size-3.5" }), "\\u2318\\u21b5"] });
+}
+function sspUseCreate() {
+	const openNew = useOpenNewWorkspace();
+	const setOpen = useFrameStackStore((s) => s.setOpen);
+	return (projectId, name) => {
+		name && useNewWorkspaceDraftStore.getState().updateDraft({ workspaceName: name, workspaceNameEdited: true });
+		setOpen(false);
+		openNew(projectId);
+	};
+}
+function sspUseMetaEnter() {
+	(0, import_react.useEffect)(() => {
+		const onKey = (e) => {
+			const plus = e.key === "Enter" && e.metaKey && e.target.closest?.("[cmdk-root]")?.querySelector("[cmdk-item][aria-selected=true] .ssp-plus");
+			plus && (e.preventDefault(), e.stopPropagation(), plus.click());
+		};
+		addEventListener("keydown", onKey, true);
+		return () => removeEventListener("keydown", onKey, true);
+	}, []);
+}
+'''
+PALETTE = b"function CommandListView(t0) {\n"
+PALETTE_HI2 = b'import { q as HiOutlineChartBar, st as HiOutlineCpuChip, y as HiExclamationTriangle } from "./hi2-cwVOPylO.js";\n'
+PALETTE_NAMES = (
+    b"useLingui", b"useAccessibleV2Workspaces", b"useHostProjects", b"useLocation", b"useNavigate",
+    b"useFrameStackStore", b"navigateToV2Workspace", b"getV2WorkspaceDisplayName", b"LuGitBranch", b"cn",
+    b"CommandGroup", b"CommandItem", b"CommandList", b"useCommandPaletteQuery", b"useOpenNewWorkspace",
+    b"useIsV2CloudEnabled", b"ROW_CLASS", b"import_react", b"import_jsx_runtime",
+)
+
 ROW_ITEM = b"DashboardSidebarWorkspaceItem/index.ts\n"
 PROJECT_ITEM = b"DashboardSidebarProjectSection/index.ts\n"
 
@@ -425,10 +535,36 @@ EDITS: dict[str, list] = {
                  b'className: "size-5 text-[11px]"'),
             ], ()),
         ]),
+        ("palette-workspace-search", [
+            (PALETTE, [
+                ("palette search: imports",
+                 PALETTE_HI2,
+                 PALETTE_HI2[:-1].replace(b" } from", b", f as HiChevronRight, A as HiMiniPlus } from") + b"\n"
+                 b'import { t as ProjectThumbnail } from "./ProjectThumbnail-DAruebfa.js";\n'
+                 b'import { n as resolveProjectIconUrl } from "./resolveProjectIconUrl-CcUkJ5FA.js";\n'
+                 b'import { t as useNewWorkspaceDraftStore } from "./new-workspace-draft--7jV-xin.js";\n'),
+                ("palette search: module code",
+                 PALETTE,
+                 SSP_JS + PALETTE),
+                ("palette search: results above the commands",
+                 b"\tif ($[14] !== t3 || $[15] !== t4) {\n\t\tt5 = (0, import_jsx_runtime.jsxs)(CommandList, { children: [\n\t\t\tt2,\n\t\t\tt3,\n",
+                 b"\tif (true) {\n\t\tt5 = (0, import_jsx_runtime.jsxs)(CommandList, { children: [\n\t\t\tt2,\n"
+                 b'\t\t\t(0, import_jsx_runtime.jsx)(SspPaletteSearch, { query, onSelect }, "ssp"),\n\t\t\tt3,\n'),
+            ], PALETTE_NAMES),
+        ]),
     ],
 }
 
 PURE = re.compile(rb"/\* @__PURE__ \*/ (?=\(0, )")
+# More room, taken in this order and only while a file still does not fit:
+# top-level JSDoc blocks, then Lingui `/** i18n */` extraction markers. Both
+# are comments (the newline before the next statement stays, so ASI cannot
+# change) and no anchor contains them, so a later upgrade of a file that has
+# lost them reaches the bytes of a run from stock.
+ROOM = (
+    re.compile(rb"\n/\*\*\n(?:\*(?!/)[^\n]*\n)*\*/(?=\n)"),
+    re.compile(rb"/\*\* i18n \*/"),
+)
 
 
 def norm(b: bytes) -> bytes:
@@ -466,9 +602,14 @@ class Chunk:
         self.done: list[str] = []
 
     def final(self) -> bytes:
-        if len(self.body) > len(self.raw):
-            raise SystemExit(f"error: {self.path}: not enough room ({len(self.body) - len(self.raw)} B short)")
-        return self.body + b" " * (len(self.raw) - len(self.body))
+        body = self.body
+        for room in ROOM:
+            if len(body) <= len(self.raw):
+                break
+            body = room.sub(b"", body)
+        if len(body) > len(self.raw):
+            raise SystemExit(f"error: {self.path}: not enough room ({len(body) - len(self.raw)} B short)")
+        return body + b" " * (len(self.raw) - len(body))
 
 
 def _apply_family(name, parts, files, data, chunks):
