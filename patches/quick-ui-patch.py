@@ -1299,11 +1299,12 @@ def target_app(asar: Path, app: Path | None) -> Path | None:
     return named or inside
 
 
-def _file_sha(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as fh:
-        for block in iter(lambda: fh.read(1 << 20), b""):
-            digest.update(block)
+def _fd_sha(fd: int) -> str:
+    """SHA-256 of the open file itself (not of whatever its path names now)."""
+    digest, at = hashlib.sha256(), 0
+    while block := os.pread(fd, 1 << 20, at):
+        digest.update(block)
+        at += len(block)
     return digest.hexdigest()
 
 
@@ -1360,8 +1361,22 @@ def main(argv=None) -> int:
             return 1
 
     asar = args.asar
-    before = _identity(os.stat(asar))
-    data = asar.read_bytes()
+    # The target is opened once; its bytes, digest and identity all come from
+    # this descriptor, and the path is held to it right before the swap.
+    src = os.open(asar, os.O_RDONLY)
+    try:
+        return _patch_open(args, pa, app, release, overrides, asar, src)
+    finally:
+        os.close(src)
+
+
+def _patch_open(args, pa, app, release, overrides, asar: Path, src: int) -> int:
+    before = _identity(os.fstat(src))
+    if _identity(os.stat(asar)) != before:
+        print(f"error: {asar} changed while opening; nothing written", file=sys.stderr)
+        return 1
+    with os.fdopen(os.dup(src), "rb") as fh:
+        data = fh.read()
     writes, report = plan(data, release, set(args.skip), overrides)
     for name, state, _ in report:
         print(f"{name}: {state}")
@@ -1415,9 +1430,16 @@ def main(argv=None) -> int:
             os.fsync(fh.fileno())
         os.chmod(tmp, os.stat(asar).st_mode & 0o777)
         # The target must still be the bundle that was read and planned: an
-        # updater may have replaced it meanwhile.
-        if _identity(os.stat(asar)) != before or _file_sha(asar) != sha(data):
+        # updater may have rewritten it in place or swapped another file onto
+        # the path meanwhile. The opened file must still hold the read bytes
+        # and identity, and the path must still name that same file. What
+        # remains is the window between the last os.stat and os.replace (a few
+        # syscalls, sub-millisecond); no unprivileged rename-over can close it.
+        if _fd_sha(src) != sha(data) or _identity(os.fstat(src)) != before:
             print(f"error: {asar} changed while patching; nothing written", file=sys.stderr)
+            return 1
+        if _identity(os.stat(asar)) != before:
+            print(f"error: {asar} was replaced while patching; nothing written", file=sys.stderr)
             return 1
         os.replace(tmp, asar)
         published = True

@@ -395,6 +395,33 @@ class ReleaseCases:
     def test_one_revert_restores_stock_after_skip_status_chips(self):
         self.revert_after("status-chips")
 
+    # Value: protects=a new archive swapped onto the path while the final digest is computed is not overwritten
+    # (review r2: the hash ran over the old inode and os.replace clobbered the new release); fails_when=the final
+    # check hashes or stats something other than the opened file plus the path right before the swap.
+    def test_target_swapped_mid_hash_is_not_overwritten(self):
+        target = self.dir / "swapped.asar"
+        clone(self.STOCK, target)
+        backups = self.dir / "swap-backups"
+        backups.mkdir(exist_ok=True)
+        newer = bytearray(self.stock)
+        newer[-1:] = b"!"
+        fd_sha = Q._fd_sha
+
+        def hook(fd):  # the "updater" renames a new release onto the path mid-hash
+            staged = self.dir / "updater-staged.asar"
+            staged.write_bytes(bytes(newer))
+            os.replace(staged, target)
+            return fd_sha(fd)
+
+        Q._fd_sha = hook
+        self.addCleanup(setattr, Q, "_fd_sha", fd_sha)
+        code, _, err = self.cli("--asar", str(target), "--backup-dir", str(backups))
+        self.assertEqual(code, 1)
+        self.assertIn("replaced while patching", err)
+        self.assertEqual(target.read_bytes(), bytes(newer))
+        self.assertEqual(list(backups.iterdir()), [])
+        self.assertEqual([p for p in self.dir.iterdir() if p.name.endswith(".patching")], [])
+
     # Value: protects=one real `patch-asar.py --revert` restores stock after a quick upgrade (review r1), and a
     # quick-patched bundle without a verified chain to stock is refused; fails_when=the upgrade backs up the earlier
     # quick generation, so revert lands on it.
