@@ -39,7 +39,6 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 DEFAULT_ASAR = Path("/Applications/Superset.app/Contents/Resources/app.asar")
 DEFAULT_BACKUP_DIR = Path.home() / ".superset"
-MARKER = b"quick-ui-patch v1"
 
 # --- injected renderer code (layout chunk with DashboardSidebarContent) -------
 
@@ -210,73 +209,140 @@ SIDEBAR_NAMES = (
 ROW_ITEM = b"DashboardSidebarWorkspaceItem/index.ts\n"
 PROJECT_ITEM = b"DashboardSidebarProjectSection/index.ts\n"
 
-# (file marker, edits [(label, old, new)], required names)
+# Files are named by a content marker (chunk hashes change per build).
+LAYOUT = b"var DashboardSidebarContent = (0, import_react.memo)(function DashboardSidebarContent(t0) {"
+HOTKEYS = b"\tTOGGLE_TERMINAL_RICH_INPUT: {\n"
+MAIN = b"function initTray() {\n"
+
+# EDITS[release] = [(family, [(file marker, [edit, ...], required names), ...]), ...]
+# edit = (label, old, new) or (label, old, new, alts): `new` (or any of `alts`,
+# the shape a later family leaves behind) already present = applied; else `old`
+# must occur exactly once. Anchors are compared with `/* @__PURE__ */` removed.
 EDITS: dict[str, list] = {
     "2.0.9": [
-        (b"var DashboardSidebarContent = (0, import_react.memo)(function DashboardSidebarContent(t0) {", [
-            ("status chips: module code",
-             b"var DashboardSidebarContent = (0, import_react.memo)(function DashboardSidebarContent(t0) {",
-             SSF_JS + b"var DashboardSidebarContent = (0, import_react.memo)(function DashboardSidebarContent(t0) {"),
-            ("status chips: sidebar data",
-             b'\tconst isFilterActive = trimmedFilterQuery !== "" || hostFilter !== "all";\n',
-             b'\tconst isFilterActive = trimmedFilterQuery !== "" || hostFilter !== "all";\n'
-             b"\tssfSet(displayedGroups, displayedPinnedWorkspaces, displayedSessionWorkspaces, navigate, isCollapsed);\n"),
-            ("status chips: row (classic header)",
-             b"(0, import_jsx_runtime.jsx)(DashboardSidebarHeader, { isCollapsed }),\n",
-             b"(0, import_jsx_runtime.jsx)(DashboardSidebarHeader, { isCollapsed }),\n"
-             b"\t\t\t\t(0, import_jsx_runtime.jsx)(SsfChips, {}),\n"),
-            ("status chips: row (shell header)",
-             b"!isChatSection && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(DashboardSidebarShellHeader, {}),\n",
-             b"!isChatSection && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(DashboardSidebarShellHeader, {}),\n"
-             b"\t\t\t\t!isChatSection && (0, import_jsx_runtime.jsx)(SsfChips, {}),\n"),
-            ("status chips: workspace row hook",
-             b"\tconst isSelected = t3 === void 0 ? false : t3;\n\tconst { _: _t } = useLingui();\n"
-             b"\tconst { id, projectId, accentColor: t4, hostType,",
-             b"\tconst isSelected = t3 === void 0 ? false : t3;\n\tconst { _: _t } = useLingui();\n"
-             b"\tconst ssfH = ssfUseHide(t0.workspace, isSelected, isCollapsed);\n"
-             b"\tconst { id, projectId, accentColor: t4, hostType,"),
-            ("status chips: workspace row guard",
-             b"\treturn t30;\n}\n// src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/" + ROW_ITEM,
-             b"\treturn ssfH ? null : t30;\n}\n// src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/" + ROW_ITEM),
-            ("status chips: project section hook",
-             b"\tconst { project, isSidebarCollapsed: t1, isDraggingProject: t2, workspaceShortcutLabels, onWorkspaceHover, onToggleCollapse, dragHandleListeners, dragHandleAttributes } = t0;\n"
-             b"\tconst isSidebarCollapsed = t1 === void 0 ? false : t1;\n",
-             b"\tconst { project: ssfP, isSidebarCollapsed: t1, isDraggingProject: t2, workspaceShortcutLabels, onWorkspaceHover, onToggleCollapse, dragHandleListeners, dragHandleAttributes } = t0;\n"
-             b"\tconst isSidebarCollapsed = t1 === void 0 ? false : t1;\n"
-             b"\tconst [ssfX, project] = ssfUseProject(ssfP, isSidebarCollapsed);\n"),
-            ("status chips: project section guard",
-             b"\treturn t16;\n}\n// src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/" + PROJECT_ITEM,
-             b"\treturn ssfX ? null : t16;\n}\n// src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/" + PROJECT_ITEM),
-        ], SIDEBAR_NAMES),
-        (b"\tTOGGLE_TERMINAL_RICH_INPUT: {\n", [
-            ("hotkeys: Rich Input on Cmd+Shift+I",
-             b'\tTOGGLE_TERMINAL_RICH_INPUT: {\n\t\tkey: {\n\t\t\tmac: L$1("meta+i"),\n',
-             b'\tTOGGLE_TERMINAL_RICH_INPUT: {\n\t\tkey: {\n\t\t\tmac: L$1("meta+shift+i"),\n'),
-            ("hotkeys: Close Tab on Cmd+Option+W",
-             b'\tCLOSE_TAB: {\n\t\tkey: {\n\t\t\tmac: L$1("meta+shift+w"),\n',
-             b'\tCLOSE_TAB: {\n\t\tkey: {\n\t\t\tmac: L$1("meta+alt+w"),\n'),
-            ("command palette: Clear Terminal on Cmd+Shift+K",
-             b'\tCLEAR_TERMINAL: {\n\t\tkey: {\n\t\t\tmac: L$1("meta+k"),\n',
-             b'\tCLEAR_TERMINAL: {\n\t\tkey: {\n\t\t\tmac: L$1("meta+shift+k"),\n'),
-            ("command palette: open on Cmd+K",
-             b'\tOPEN_COMMAND_PALETTE: {\n\t\tkey: {\n\t\t\tmac: L$1("meta+shift+k"),\n',
-             b'\tOPEN_COMMAND_PALETTE: {\n\t\tkey: {\n\t\t\tmac: L$1("meta+k"),\n'),
-        ], ()),
-        (b"function handleV2AgentLifecycleEvent(", [
-            ("sound: renderer only when waiting",
-             b"\tif (shouldSuppress(target, layouts)) return;\n\tconst ringtoneId = useRingtoneStore.getState().selectedRingtoneId;\n\tplayRingtone({\n",
-             b"\tif (shouldSuppress(target, layouts)) return;\n\tconst ringtoneId = useRingtoneStore.getState().selectedRingtoneId;\n"
-             b'\t(payload.eventType === "PermissionRequest" || payload.eventType === "PendingQuestion") && playRingtone({\n'),
-        ], ()),
-        (b"\t\tconst isWaiting = isPermissionRequest || isPendingQuestion;\n", [
-            ("sound: main only when waiting",
-             b"\t\tthis.track(key, notification);\n\t\tthis.deps.playSound();\n",
-             b"\t\tthis.track(key, notification);\n\t\tisWaiting && this.deps.playSound();\n"),
-        ], ()),
+        ("status-chips", [
+            (LAYOUT, [
+                ("status chips: module code",
+                 LAYOUT,
+                 SSF_JS + LAYOUT),
+                ("status chips: sidebar data",
+                 b'\tconst isFilterActive = trimmedFilterQuery !== "" || hostFilter !== "all";\n',
+                 b'\tconst isFilterActive = trimmedFilterQuery !== "" || hostFilter !== "all";\n'
+                 b"\tssfSet(displayedGroups, displayedPinnedWorkspaces, displayedSessionWorkspaces, navigate, isCollapsed);\n"),
+                ("status chips: row (classic header)",
+                 b"(0, import_jsx_runtime.jsx)(DashboardSidebarHeader, { isCollapsed }),\n",
+                 b"(0, import_jsx_runtime.jsx)(DashboardSidebarHeader, { isCollapsed }),\n"
+                 b"\t\t\t\t(0, import_jsx_runtime.jsx)(SsfChips, {}),\n"),
+                ("status chips: row (shell header)",
+                 b"!isChatSection && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(DashboardSidebarShellHeader, {}),\n",
+                 b"!isChatSection && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(DashboardSidebarShellHeader, {}),\n"
+                 b"\t\t\t\t!isChatSection && (0, import_jsx_runtime.jsx)(SsfChips, {}),\n"),
+                ("status chips: workspace row hook",
+                 b"\tconst isSelected = t3 === void 0 ? false : t3;\n\tconst { _: _t } = useLingui();\n"
+                 b"\tconst { id, projectId, accentColor: t4, hostType,",
+                 b"\tconst isSelected = t3 === void 0 ? false : t3;\n\tconst { _: _t } = useLingui();\n"
+                 b"\tconst ssfH = ssfUseHide(t0.workspace, isSelected, isCollapsed);\n"
+                 b"\tconst { id, projectId, accentColor: t4, hostType,"),
+                ("status chips: workspace row guard",
+                 b"\treturn t30;\n}\n// src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/" + ROW_ITEM,
+                 b"\treturn ssfH ? null : t30;\n}\n// src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/" + ROW_ITEM),
+                ("status chips: project section hook",
+                 b"\tconst { project, isSidebarCollapsed: t1, isDraggingProject: t2, workspaceShortcutLabels, onWorkspaceHover, onToggleCollapse, dragHandleListeners, dragHandleAttributes } = t0;\n"
+                 b"\tconst isSidebarCollapsed = t1 === void 0 ? false : t1;\n",
+                 b"\tconst { project: ssfP, isSidebarCollapsed: t1, isDraggingProject: t2, workspaceShortcutLabels, onWorkspaceHover, onToggleCollapse, dragHandleListeners, dragHandleAttributes } = t0;\n"
+                 b"\tconst isSidebarCollapsed = t1 === void 0 ? false : t1;\n"
+                 b"\tconst [ssfX, project] = ssfUseProject(ssfP, isSidebarCollapsed);\n"),
+                ("status chips: project section guard",
+                 b"\treturn t16;\n}\n// src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/" + PROJECT_ITEM,
+                 b"\treturn ssfX ? null : t16;\n}\n// src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/" + PROJECT_ITEM),
+            ], SIDEBAR_NAMES),
+            (HOTKEYS, [
+                ("hotkeys: Rich Input on Cmd+Shift+I",
+                 b'\tTOGGLE_TERMINAL_RICH_INPUT: {\n\t\tkey: {\n\t\t\tmac: L$1("meta+i"),\n',
+                 b'\tTOGGLE_TERMINAL_RICH_INPUT: {\n\t\tkey: {\n\t\t\tmac: L$1("meta+shift+i"),\n'),
+                ("hotkeys: Close Tab on Cmd+Option+W",
+                 b'\tCLOSE_TAB: {\n\t\tkey: {\n\t\t\tmac: L$1("meta+shift+w"),\n',
+                 b'\tCLOSE_TAB: {\n\t\tkey: {\n\t\t\tmac: L$1("meta+alt+w"),\n'),
+            ], ()),
+        ]),
+        ("palette-cmd-k", [
+            (HOTKEYS, [
+                ("command palette: Clear Terminal on Cmd+Shift+K",
+                 b'\tCLEAR_TERMINAL: {\n\t\tkey: {\n\t\t\tmac: L$1("meta+k"),\n',
+                 b'\tCLEAR_TERMINAL: {\n\t\tkey: {\n\t\t\tmac: L$1("meta+shift+k"),\n'),
+                ("command palette: open on Cmd+K",
+                 b'\tOPEN_COMMAND_PALETTE: {\n\t\tkey: {\n\t\t\tmac: L$1("meta+shift+k"),\n',
+                 b'\tOPEN_COMMAND_PALETTE: {\n\t\tkey: {\n\t\t\tmac: L$1("meta+k"),\n'),
+            ], ()),
+        ]),
+        ("sound-waiting", [
+            (b"function handleV2AgentLifecycleEvent(", [
+                ("sound: renderer only when waiting",
+                 b"\tif (shouldSuppress(target, layouts)) return;\n\tconst ringtoneId = useRingtoneStore.getState().selectedRingtoneId;\n\tplayRingtone({\n",
+                 b"\tif (shouldSuppress(target, layouts)) return;\n\tconst ringtoneId = useRingtoneStore.getState().selectedRingtoneId;\n"
+                 b'\t(payload.eventType === "PermissionRequest" || payload.eventType === "PendingQuestion") && playRingtone({\n'),
+            ], ()),
+            (b"\t\tconst isWaiting = isPermissionRequest || isPendingQuestion;\n", [
+                ("sound: main only when waiting",
+                 b"\t\tthis.track(key, notification);\n\t\tthis.deps.playSound();\n",
+                 b"\t\tthis.track(key, notification);\n\t\tisWaiting && this.deps.playSound();\n"),
+            ], ()),
+        ]),
+        ("project-icon-size", [
+            (LAYOUT, [
+                ("project icon: thumbnail size-6, kept on hover",
+                 b'className: "size-4 group-hover:hidden"',
+                 b'className: "size-6 group-hover:!block"'),
+                ("project icon: hover chevron hidden",
+                 b't9 = cn("hidden size-4 text-muted-foreground transition-transform group-hover:block", t8);',
+                 b't9 = cn("hidden size-6 text-muted-foreground transition-transform", t8);'),
+                ("project icon: container size-6",
+                 b'className: "flex size-4 shrink-0 items-center justify-center",\n\t\t\tchildren: [t7, t10]',
+                 b'className: "flex size-6 shrink-0 items-center justify-center",\n\t\t\tchildren: [t7, t10]'),
+            ], ()),
+        ]),
+        ("custom-project-icons", [
+            (b"function resolveProjectIconUrl(project) {\n", [
+                ("custom icons: shared resolver",
+                 b"`https://github.com/${project.repoOwner}.png?size=64`",
+                 b"`superset-icon://projects/${project.projectKey}?v=64`"),
+            ], ()),
+            (b"function projectIconUrl(project) {\n", [
+                ("custom icons: environments picker",
+                 b"`https://github.com/${project.repoOwner}.png?size=64`",
+                 b"`superset-icon://projects/${project.projectKey}?v=64`"),
+            ], ()),
+            (b"iconUrl: project_0.repoOwner ? `https://github.com/", [
+                ("custom icons: new workspace page",
+                 b"`https://github.com/${project_0.repoOwner}.png?size=64`",
+                 b"`superset-icon://projects/${project_0.projectKey}?v=64`"),
+            ], ()),
+        ]),
+        ("roomy-rows", [
+            (LAYOUT, [
+                ("rows: workspace row h-8",
+                 b'cn("group relative flex h-7 w-full items-center pr-2", t22, t23)',
+                 b'cn("group relative flex h-8 w-full items-center pr-2", t22, t23)'),
+                ("rows: project row h-8",
+                 b'cn("group mx-2 flex h-7 items-center rounded-md pl-2 pr-1 text-[13px] font-medium", "hover:bg-fill-hover',
+                 b'cn("group mx-2 flex h-8 items-center rounded-md pl-2 pr-1 text-[13px] font-medium", "hover:bg-fill-hover'),
+            ], ()),
+        ]),
+        ("hide-tray", [
+            (MAIN, [
+                ("tray: never created",
+                 b"function initTray() {\n\tif (tray) {",
+                 b"function initTray() {\n\tif (true) {"),
+            ], ()),
+        ]),
     ],
 }
 
 PURE = re.compile(rb"/\* @__PURE__ \*/ (?=\(0, )")
+
+
+def norm(b: bytes) -> bytes:
+    return PURE.sub(b"", b)
 
 
 def asar_files(data: bytes):
@@ -297,58 +363,87 @@ def asar_files(data: bytes):
     return out
 
 
-def patch_chunk(chunk: bytes, edits, names, path: str) -> tuple[bytes, list[str]]:
-    if MARKER in chunk or all(new in chunk for _, _, new in edits if new.strip()):
-        raise AlreadyPatched(path)
-    for name in names:
-        if not re.search(rb"\b" + re.escape(name) + rb"\b", chunk):
-            raise SystemExit(f"error: {path}: {name.decode()} missing from module scope")
-    body, done = chunk, []
-    for label, old, new in edits:
-        n = body.count(old)
-        if n != 1:
-            raise SystemExit(f"error: {label}: expected exactly one anchor in {path}, found {n}")
-        body = body.replace(old, new, 1)
-        done.append(label)
-    grow = len(body) - len(chunk)
-    if grow > 0:
-        out, cut = [], 0
-        pos = 0
-        for m in PURE.finditer(body):
-            if cut >= grow:
-                break
-            out.append(body[pos:m.start()])
-            pos = m.end()
-            cut += m.end() - m.start()
-        out.append(body[pos:])
-        body = b"".join(out)
-        if cut < grow:
-            raise SystemExit(f"error: {path}: not enough room ({grow - cut} B short)")
-    body += b" " * (len(chunk) - len(body))
-    assert len(body) == len(chunk)
-    return body, done
+def families(release: str) -> list[str]:
+    return [name for name, _ in EDITS[release]]
 
 
-class AlreadyPatched(Exception):
-    pass
+class Chunk:
+    """One asar file, kept in canonical form: every PURE annotation dropped, trailing pad trimmed."""
+
+    def __init__(self, path: str, off: int, raw: bytes):
+        self.path, self.off, self.raw = path, off, raw
+        self.body = norm(raw).rstrip(b" ")
+        self.done: list[str] = []
+
+    def final(self) -> bytes:
+        if len(self.body) > len(self.raw):
+            raise SystemExit(f"error: {self.path}: not enough room ({len(self.body) - len(self.raw)} B short)")
+        return self.body + b" " * (len(self.raw) - len(self.body))
 
 
-def plan(data: bytes, release: str):
-    files = asar_files(data)
-    writes = []
-    for marker, edits, names in EDITS[release]:
+def _apply_family(name, parts, files, data, chunks):
+    """Return (staged {path: (body, done)}, already, errors) for one family without committing."""
+    staged, already, errors = {}, [], []
+    for marker, edits, names in parts:
         hits = [(p, o, s) for p, o, s in files if marker in data[o:o + s]]
         if len(hits) != 1:
-            raise SystemExit(f"error: expected one file with {marker[:60]!r}, found {len(hits)}")
-        path, off, size = hits[0]
-        chunk = data[off:off + size]
-        try:
-            body, done = patch_chunk(chunk, edits, names, path)
-        except AlreadyPatched:
-            print(f"already patched: {path}")
+            errors.append(f"expected one file with {marker[:60]!r}, found {len(hits)}")
             continue
-        writes.append((path, off, body, done))
-    return writes
+        path, off, size = hits[0]
+        chunk = chunks.get(path) or Chunk(path, off, data[off:off + size])
+        body, done = staged.get(path, (chunk.body, []))
+        for ident in names:
+            if not re.search(rb"\b" + re.escape(ident) + rb"\b", body):
+                errors.append(f"{path}: {ident.decode()} missing from module scope")
+        for edit in edits:
+            label, old, new = edit[:3]
+            alts = edit[3] if len(edit) > 3 else ()
+            old, new = norm(old), norm(new)
+            if new in body or any(norm(a) in body for a in alts):
+                already.append(label)
+                continue
+            n = body.count(old)
+            if n != 1:
+                errors.append(f"{label}: expected exactly one anchor in {path}, found {n}")
+                continue
+            body = body.replace(old, new, 1)
+            done = done + [label]
+        staged[path] = (body, done)
+        chunks.setdefault(path, chunk)
+    return staged, already, errors
+
+
+def plan(data: bytes, release: str, skip=()):
+    """Plan every family not in `skip`; abort before any write when a family fails."""
+    files = asar_files(data)
+    chunks: dict[str, Chunk] = {}
+    failed = []
+    report = []
+    for name, parts in EDITS[release]:
+        if name in skip:
+            report.append((name, "skipped", []))
+            continue
+        trial = dict(chunks)
+        staged, already, errors = _apply_family(name, parts, files, data, trial)
+        if errors:
+            failed.append((name, errors))
+            continue
+        for path, (body, done) in staged.items():
+            chunk = trial[path]
+            chunk.body, chunk.done = body, chunk.done + done
+            chunks[path] = chunk
+        applied = [label for _, (_, done) in staged.items() for label in done]
+        report.append((name, "apply" if applied else "already applied", applied))
+    if failed:
+        lines = [f"error: family {name!r} does not match this bundle (use --skip {name}):\n  " + "\n  ".join(errs)
+                 for name, errs in failed]
+        raise SystemExit("\n".join(lines))
+    writes = []
+    for path, chunk in chunks.items():
+        body = chunk.final()
+        if body != chunk.raw:
+            writes.append((path, chunk.off, body, chunk.done or ["normalize (no new edit)"]))
+    return writes, report
 
 
 def node_check(path: str, body: bytes) -> None:
@@ -381,12 +476,25 @@ def main(argv=None) -> int:
     ap.add_argument("--release", help="override CFBundleShortVersionString")
     ap.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--skip", action="append", default=[], metavar="FAMILY", help="leave this family out (repeatable)")
+    ap.add_argument("--list", action="store_true", help="list the families of the release and exit")
     ap.add_argument("--ack-invalid-apple-signature", action="store_true")
     args = ap.parse_args(argv)
 
     release = args.release or release_of(args.asar)
     if release not in EDITS:
         print(f"error: no quick patch for desktop {release!r} (known: {', '.join(EDITS)})", file=sys.stderr)
+        return 2
+    if args.list:
+        for name, parts in EDITS[release]:
+            print(name)
+            for _, edits, _ in parts:
+                for edit in edits:
+                    print(f"  {edit[0]}")
+        return 0
+    unknown = sorted(set(args.skip) - set(families(release)))
+    if unknown:
+        print(f"error: unknown family {', '.join(unknown)} (see --list)", file=sys.stderr)
         return 2
     spec = importlib.util.spec_from_file_location("patch_asar", HERE / "patch-asar.py")
     pa = importlib.util.module_from_spec(spec)
@@ -395,7 +503,9 @@ def main(argv=None) -> int:
         pa.require_asar_integrity_fuse_disabled(args.asar)
 
     data = args.asar.read_bytes()
-    writes = plan(data, release)
+    writes, report = plan(data, release, set(args.skip))
+    for name, state, _ in report:
+        print(f"{name}: {state}")
     for path, _, body, done in writes:
         node_check(path, body)
         for label in done:
