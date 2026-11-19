@@ -9,6 +9,7 @@ is tests/search-row-2010-harness.mjs.
 import hashlib
 import importlib.util
 import io
+import json
 import os
 import subprocess
 import sys
@@ -58,6 +59,17 @@ def run_cli(asar: Path, backups: Path, *extra):
             code = exc.code if isinstance(exc.code, int) else 1
             err.write(str(exc.code))
     return code, out.getvalue(), err.getvalue()
+
+
+def write_older_generation(asar: Path, backups: Path, data: bytes) -> None:
+    """Install `data` (an older quick generation, edited by hand) as the bundle, with a verified manifest
+    chain to stock: a stock backup whose patch-asar.py manifest records `data`'s digest. The quick patch
+    refuses a quick-patched input without that chain (it backs up the stock release, not the input)."""
+    asar.write_bytes(data)
+    backup = backups / "app.asar.backup-pre-ui-patch-00000000-000000-older-generation"
+    subprocess.run(["cp", "-c", str(STOCK), str(backup)], check=True)
+    manifest = {"backup_sha256": sha(STOCK.read_bytes()), "format": 1, "patched_sha256": sha(data), "size": len(data)}
+    backup.with_name(backup.name + ".json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
 
 def layout(data: bytes) -> bytes:
@@ -162,7 +174,7 @@ def test_upgrade_moves_a_row_below_the_chips_above_them(copy, patched):
                 assert body.count(search + chips) == 1
                 body = body.replace(search + chips, chips + search)
             data[off:off + size] = body
-    asar.write_bytes(bytes(data))
+    write_older_generation(asar, backups, bytes(data))
     code, out, err = run_cli(asar, backups)
     assert code == 0, err
     assert "search row: move above the chips (classic header)" in out
@@ -221,7 +233,7 @@ def test_upgrade_from_the_v1_module_code(copy, patched):
                 body = body.replace(new, old)
             assert len(body) <= size
             data[off:off + size] = body + b" " * (size - len(body))
-    asar.write_bytes(bytes(data))
+    write_older_generation(asar, backups, bytes(data))
     code, out, err = run_cli(asar, backups)
     assert code == 0, err
     assert "search row: PINNED guard at the final return (v1 guard out)" in out
