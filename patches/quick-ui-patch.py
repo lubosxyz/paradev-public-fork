@@ -1308,6 +1308,23 @@ def _fd_sha(fd: int) -> str:
     return digest.hexdigest()
 
 
+def _chain_end(pa, digest: str, backup_dir: Path) -> Path | None:
+    """The backup at the end of the verified manifest chain from `digest`, or None without a chain.
+
+    The chain is walked for every input, marker or not: a partial bundle from
+    an older quick patch may carry no marker yet still have a chain to stock.
+    """
+    backup_dir = backup_dir.expanduser().resolve()
+    seen, end = {digest}, None
+    while (found := pa._verified_backup_for(digest, backup_dir)) is not None:
+        end, manifest = found
+        digest = manifest["backup_sha256"]
+        if digest in seen:
+            raise SystemExit(f"error: backup manifests form a cycle at {end}")
+        seen.add(digest)
+    return end
+
+
 def _identity(st: os.stat_result):
     return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns
 
@@ -1404,12 +1421,13 @@ def _patch_open(args, pa, app, release, overrides, asar: Path, src: int) -> int:
     # quick patch already changed, that is the unpatched release at the end of
     # the verified manifest chain, never the earlier quick generation.
     base = data
-    if QUICK_MARKER in data:
-        root = pa.stock_snapshot(asar, args.backup_dir)
-        if root.resolve() == asar.expanduser().resolve():
+    root = _chain_end(pa, sha(data), args.backup_dir)
+    if root is None:
+        if QUICK_MARKER in data:
             print("error: the bundle is quick-patched but no verified backup chain leads to its unpatched "
                   f"release in {args.backup_dir}; refusing (restore stock first)", file=sys.stderr)
             return 1
+    else:
         base = root.read_bytes()
         if QUICK_MARKER in base or len(base) != len(data):
             print(f"error: the backup chain ends at {root}, which is not an unpatched release; refusing", file=sys.stderr)

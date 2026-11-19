@@ -27,6 +27,7 @@ SCRATCH = Path(
 )
 QUICK_V1_COMMIT = "60bf0edbb8"
 QUICK_V1_SHA256_PREFIX = "bbff33acdb84"
+LEGACY_PARTIAL_COMMIT = "d692428b92"  # stock-chain backups, but no per-file marker yet
 HOOK_CLASSES = {"ssp-plus"}  # selector hooks for injected code, not styles
 SINGLE_WORD_UTILITIES = {"hidden", "flex", "grid", "block", "truncate", "relative", "absolute", "invisible", "grow"}
 
@@ -388,6 +389,42 @@ class ReleaseCases:
             pa.revert(target, backups)
         self.assertEqual(sha(target.read_bytes()), sha(self.stock))
         return partial
+
+    # Value: protects=review r3 repro: a partial bundle from d692428b92 (before the trailer: `--skip status-chips`
+    # leaves no marker) with its manifest chain to stock, then a full run of this patcher, then one real patch-asar
+    # revert restores stock; fails_when=the chain walk is skipped for a marker-free input, so the backup is the
+    # partial bundle and revert lands on it.
+    def test_one_revert_restores_stock_after_a_legacy_partial(self):
+        try:
+            legacy = subprocess.run(["git", "-C", str(ROOT), "show", f"{LEGACY_PARTIAL_COMMIT}:patches/quick-ui-patch.py"],
+                                    check=True, capture_output=True).stdout
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest(f"the legacy patcher needs a git checkout with commit {LEGACY_PARTIAL_COMMIT} (not in {ROOT})")
+        legacy_dir = self.dir / "legacy"
+        legacy_dir.mkdir(exist_ok=True)
+        (legacy_dir / "patch-asar.py").write_bytes((ROOT / "patches" / "patch-asar.py").read_bytes())
+        (legacy_dir / "quick-ui-patch.py").write_bytes(legacy)
+        target = self.dir / "legacy-partial.asar"
+        clone(self.STOCK, target)
+        backups = self.dir / "legacy-backups"
+        backups.mkdir(exist_ok=True)
+        subprocess.run([sys.executable, str(legacy_dir / "quick-ui-patch.py"), "--asar", str(target), "--release",
+                        self.RELEASE, "--backup-dir", str(backups), "--no-overrides", "--skip", "status-chips"],
+                       check=True, capture_output=True)
+        partial = target.read_bytes()
+        self.assertNotEqual(partial, self.stock)
+        self.assertNotIn(Q.QUICK_MARKER, partial)  # the legacy output carries no marker
+        code, out, err = self.cli("--asar", str(target), "--backup-dir", str(backups))
+        self.assertEqual(code, 0, err)
+        self.assertIn("(unpatched release)", out)
+        self.assertEqual(target.read_bytes(), self.patched)
+        spec = importlib.util.spec_from_file_location("patch_asar_for_legacy_revert", ROOT / "patches" / "patch-asar.py")
+        pa = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pa)
+        pa.LOCK_ROOT = self.dir / "locks"  # never under ~/.superset
+        with redirect_stdout(io.StringIO()):
+            pa.revert(target, backups)
+        self.assertEqual(sha(target.read_bytes()), sha(self.stock))
 
     # Value: protects=after `--skip status-chips` (no status-chips code, so only the trailer marks the bundle) one real
     # patch-asar revert after the full run restores stock (review r2); fails_when=the second run backs up the partial
